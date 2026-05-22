@@ -1,388 +1,597 @@
-import React, { useEffect, useState, useCallback } from "react";
+﻿import React, { useEffect, useState, useCallback, useRef } from "react";
 import { teamService, userService } from "../services/api";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
-/* ─── Create / Edit Team Modal ───────────────────────────── */
-function TeamModal({ team, battalionUsers, onClose, onSaved }) {
-  const isEdit = !!team;
-  const [form, setForm] = useState({
-    name: team?.name || "",
-    team_ic: team?.team_ic || "",
-    members: team?.members || [],
-  });
-  const [errors, setErrors] = useState({});
-  const [submitting, setSubmitting] = useState(false);
+const ROLE_LABELS = {
+  investigator: "Investigator",
+  personnel:    "Personnel",
+  detachment:   "IC Det",
+};
 
-  function toggleMember(id) {
-    setForm((f) => ({
-      ...f,
-      members: f.members.includes(id)
-        ? f.members.filter((m) => m !== id)
-        : [...f.members, id],
-    }));
-  }
+function displayUser(u) {
+  if (!u) return "—";
+  const name = u.name ?? String(u);
+  // Don't prepend rank if name already starts with it
+  if (!u.rank || name.startsWith(u.rank)) return name;
+  return `${u.rank} ${name}`;
+}
 
-  function handleIcChange(val) {
-    // If the newly selected IC was already a member, remove them
-    setForm((f) => ({
-      ...f,
-      team_ic: val,
-      members: f.members.filter((m) => String(m) !== String(val)),
-    }));
-  }
-
-  function validate() {
-    const e = {};
-    if (!form.name.trim()) e.name = "Team name is required.";
-    if (!form.team_ic) e.team_ic = "Team IC is required.";
-    if (form.members.length < 2) e.members = "At least 2 members required.";
-    return e;
-  }
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    const e2 = validate();
-    if (Object.keys(e2).length) { setErrors(e2); return; }
-    setSubmitting(true); setErrors({});
-    try {
-      const payload = {
-        name: form.name.trim(),
-        team_ic: form.team_ic,
-        members: form.members,
-      };
-      if (isEdit) {
-        await teamService.update(team.id, payload);
-      } else {
-        await teamService.create(payload);
-      }
-      onSaved();
-    } catch (err) {
-      const data = err?.response?.data;
-      if (data && typeof data === "object") {
-        const mapped = {};
-        if (data.name) mapped.name = [].concat(data.name).join(" ");
-        if (data.team_ic) mapped.team_ic = [].concat(data.team_ic).join(" ");
-        if (data.members) mapped.members = [].concat(data.members).join(" ");
-        if (data.non_field_errors) mapped.general = [].concat(data.non_field_errors).join(" ");
-        setErrors(Object.keys(mapped).length ? mapped : { general: "Failed to save team." });
-      } else {
-        setErrors({ general: "Failed to save team." });
-      }
-    } finally { setSubmitting(false); }
-  }
+// Fixed-position modal listing team members
+function MembersModal({ teamName, members, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700 max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700 shrink-0">
-          <h3 className="text-white font-semibold text-base">
-            {isEdit ? "Edit Team" : "Create New Team"}
-          </h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div
+        ref={ref}
+        className="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-sm"
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <h3 className="text-sm font-semibold text-white">{teamName} — Members</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto">
-          {errors.general && (
-            <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">
-              {errors.general}
+        <div className="p-2 max-h-72 overflow-y-auto">
+          {members.length === 0 ? (
+            <p className="text-xs text-gray-500 px-3 py-4 text-center">No members assigned.</p>
+          ) : members.map((m, i) => (
+            <div key={m.id ?? i} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-700/60">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />
+              <span className="text-sm text-gray-200 flex-1">{displayUser(m)}</span>
+              <span className="text-xs text-gray-500">{m.service_number}</span>
             </div>
-          )}
-
-          {/* Team Name */}
-          <div>
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Team Name <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="e.g. Alpha Investigation Team"
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {errors.name && <p className="text-red-400 text-xs mt-1">{errors.name}</p>}
-          </div>
-
-          {/* Team IC */}
-          <div>
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Team IC (In-Charge) <span className="text-red-400">*</span>
-            </label>
-            <select
-              value={form.team_ic}
-              onChange={(e) => handleIcChange(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">— Select Team IC —</option>
-              {battalionUsers.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.rank ? `${u.rank} ` : ""}{u.name} ({u.service_number})
-                </option>
-              ))}
-            </select>
-            {errors.team_ic && <p className="text-red-400 text-xs mt-1">{errors.team_ic}</p>}
-          </div>
-
-          {/* Members */}
-          <div>
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Members <span className="text-red-400">*</span>
-              <span className="text-gray-500 ml-1 normal-case">(min. 2, selected: {form.members.length})</span>
-            </label>
-            <div className="bg-gray-700/50 border border-gray-600 rounded max-h-48 overflow-y-auto">
-              {battalionUsers.filter((u) => String(u.id) !== String(form.team_ic)).length === 0 ? (
-                <p className="text-gray-500 text-xs p-3">No users available.</p>
-              ) : (
-                battalionUsers.filter((u) => String(u.id) !== String(form.team_ic)).map((u) => (
-                  <label
-                    key={u.id}
-                    className="flex items-center gap-3 px-3 py-2 hover:bg-gray-700/60 cursor-pointer border-b border-gray-700/50 last:border-0"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={form.members.includes(u.id)}
-                      onChange={() => toggleMember(u.id)}
-                      className="rounded border-gray-500 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-sm text-white">
-                      {u.rank ? `${u.rank} ` : ""}{u.name}
-                    </span>
-                    <span className="text-xs text-gray-400 ml-auto">{u.service_number}</span>
-                  </label>
-                ))
-              )}
-            </div>
-            {errors.members && <p className="text-red-400 text-xs mt-1">{errors.members}</p>}
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium rounded transition-colors flex items-center justify-center gap-2"
-            >
-              {submitting ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Saving…
-                </>
-              ) : isEdit ? "Save Changes" : "Create Team"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Confirm Delete Dialog ──────────────────────────────── */
-function ConfirmDelete({ team, onClose, onConfirm }) {
-  const [deleting, setDeleting] = useState(false);
-  async function doDelete() {
-    setDeleting(true);
-    try { await onConfirm(); } finally { setDeleting(false); }
-  }
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm border border-gray-700 p-6">
-        <h3 className="text-white font-semibold text-base mb-2">Delete Team?</h3>
-        <p className="text-gray-400 text-sm mb-5">
-          Are you sure you want to delete <span className="text-white font-medium">{team.name}</span>? This cannot be undone.
-        </p>
-        <div className="flex gap-3">
-          <button onClick={onClose} className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded">Cancel</button>
-          <button onClick={doDelete} disabled={deleting}
-            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm font-medium rounded">
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
+          ))}
+        </div>
+        <div className="px-4 py-2 border-t border-gray-700 text-right">
+          <span className="text-xs text-gray-500">{members.length} member{members.length !== 1 ? "s" : ""}</span>
         </div>
       </div>
     </div>
   );
 }
 
-/* ─── Teams Page ─────────────────────────────────────────── */
-export default function Teams({ user }) {
-  const [teams, setTeams] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [battalionUsers, setBattalionUsers] = useState([]);
-  const [showCreate, setShowCreate] = useState(false);
-  const [editTeam, setEditTeam] = useState(null);
-  const [deleteTeam, setDeleteTeam] = useState(null);
 
-  const loadTeams = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await teamService.list();
-      setTeams(toArray(res.data));
-    } catch {
-      setTeams([]);
-    } finally {
-      setLoading(false);
-    }
+// Shared form for Create/Edit outside Teams so React never remounts it
+function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligibleMems, error, detUsers, workloadMap }) {
+  return (
+    <div className="space-y-4">
+      {error && (
+        <p className="text-xs text-red-400 bg-red-900/30 rounded px-3 py-2">{error}</p>
+      )}
+      <div>
+        <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+          Team Name <span className="text-red-400">*</span>
+        </label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Alpha Investigation Team"
+          className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+          Team IC <span className="text-red-400">*</span>
+        </label>
+        <select
+          value={ic}
+          onChange={(e) => onICChange(e.target.value)}
+          className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">-- Select Team IC --</option>
+          {detUsers.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.rank ? `${u.rank} ` : ""}{u.name} - {ROLE_LABELS[u.role] || u.role} ({u.service_number})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <label className="text-xs text-gray-400 uppercase tracking-wider">
+            Members <span className="text-red-400">*</span>{" "}
+            <span className="text-gray-600 normal-case tracking-normal">-- at least 2{ic ? " (IC excluded)" : ""}</span>
+          </label>
+          <span className="text-xs text-gray-600 italic">least engaged first</span>
+        </div>
+        <div className="flex items-center gap-4 mb-2 px-1">
+          <span className="inline-flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />0 cases</span>
+          <span className="inline-flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 rounded-full bg-yellow-500 inline-block" />1-2 cases</span>
+          <span className="inline-flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" />3+ cases</span>
+        </div>
+        {eligibleMems.length === 0 ? (
+          <p className="text-sm text-gray-500 bg-gray-700/50 rounded-lg px-3 py-4 text-center">
+            {ic ? "No other members available." : "No investigators or personnel found."}
+          </p>
+        ) : (
+          <div className="bg-gray-700/60 rounded-lg p-3 max-h-52 overflow-y-auto space-y-0.5">
+            {eligibleMems.map((u) => {
+              const load = workloadMap[u.id] ?? 0;
+              const dot  = load === 0 ? "bg-emerald-500" : load <= 2 ? "bg-yellow-500" : "bg-red-500";
+              const badge = load === 0 ? "bg-emerald-900/50 text-emerald-400" : load <= 2 ? "bg-yellow-900/50 text-yellow-400" : "bg-red-900/50 text-red-400";
+              return (
+                <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-600/40 px-2 py-1.5 rounded">
+                  <input
+                    type="checkbox"
+                    checked={mems.includes(u.id)}
+                    onChange={() => toggleMem(u.id)}
+                    className="accent-blue-500 shrink-0"
+                  />
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+                  <span className="text-sm text-gray-200 flex-1">
+                    {u.rank ? `${u.rank} ` : ""}{u.name}
+                  </span>
+                  <span className="text-xs text-indigo-400">{ROLE_LABELS[u.role] || u.role}</span>
+                  <span className="text-xs text-gray-500">{u.service_number}</span>
+                  <span
+                    title={`${load} case${load !== 1 ? "s" : ""} under investigation`}
+                    className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${badge}`}
+                  >{load}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-xs text-gray-500 mt-1.5">
+          {mems.length} member{mems.length !== 1 ? "s" : ""} selected
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export default function Teams({ user }) {
+  const isDetachmentIC = user?.role === "detachment";
+  const detachmentId   = user?.detachment ?? user?.detachment_id;
+
+  const [teams, setTeams]               = useState([]);
+  const [loadingTeams, setLoadingTeams] = useState(true);
+  const [detUsers, setDetUsers]         = useState([]);
+  const [memberListPopup, setMemberListPopup] = useState(null); // { teamName, members }
+
+  // ── Active tab ────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState("teams"); // "teams" | "workload"
+
+  // ── Workload ──────────────────────────────────────────────────
+  const [workload, setWorkload]           = useState([]);
+  const [loadingWorkload, setLoadingWorkload] = useState(false);
+  // map userId → total_engagement for badge display in form
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement]));
+
+  const loadWorkload = useCallback(() => {
+    setLoadingWorkload(true);
+    teamService.workload()
+      .then((r) => setWorkload(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setWorkload([]))
+      .finally(() => setLoadingWorkload(false));
   }, []);
 
-  useEffect(() => {
-    loadTeams();
-    // Only investigators can be IC or members of an investigation team
-    userService.list({ role: "investigator" }).then((res) => {
-      const all = toArray(res.data);
-      setBattalionUsers(all.filter((u) => u.role === "investigator"));
-    }).catch(() => {});
-  }, [loadTeams]);
+  // â”€â”€ Create modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [showCreate, setShowCreate]   = useState(false);
+  const [teamName, setTeamName]       = useState("");
+  const [teamIC, setTeamIC]           = useState("");
+  const [members, setMembers]         = useState([]);
+  const [creating, setCreating]       = useState(false);
+  const [createError, setCreateError] = useState("");
 
-  const isAdmin = user?.role === "admin";
+  // â”€â”€ Edit modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [editingTeam, setEditingTeam]   = useState(null);
+  const [editName, setEditName]         = useState("");
+  const [editIC, setEditIC]             = useState("");
+  const [editMembers, setEditMembers]   = useState([]);
+  const [editing, setEditing]           = useState(false);
+  const [editError, setEditError]       = useState("");
+
+  // â”€â”€ Delete confirm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deleting, setDeleting]               = useState(false);
+
+  const loadTeams = useCallback(() => {
+    setLoadingTeams(true);
+    teamService.list({ page_size: 200 })
+      .then((r) => setTeams(toArray(r.data)))
+      .catch(() => setTeams([]))
+      .finally(() => setLoadingTeams(false));
+  }, []);
+
+  useEffect(() => { loadTeams(); loadWorkload(); }, [loadTeams, loadWorkload]);
+
+  useEffect(() => {
+    if (!detachmentId) return;
+    userService.list({ detachment: detachmentId, page_size: 200 })
+      .then((r) => {
+        const all = toArray(r.data);
+        setDetUsers(all.filter((u) => ["investigator", "personnel", "detachment"].includes(u.role)));
+      })
+      .catch(() => setDetUsers([]));
+  }, [detachmentId]);
+
+  // â”€â”€ Create helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Sort least-engaged first using workload data
+  const byLoad = (a, b) => (workloadMap[a.id] ?? 0) - (workloadMap[b.id] ?? 0);
+  const eligibleCreateMembers = detUsers
+    .filter((u) => String(u.id) !== String(teamIC))
+    .sort(byLoad);
+
+  const handleICChange = (val) => {
+    setTeamIC(val);
+    setMembers((prev) => prev.filter((id) => String(id) !== String(val)));
+  };
+
+  const toggleMember = (id) =>
+    setMembers((prev) => prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]);
+
+  const openCreate = () => {
+    setTeamName(""); setTeamIC(""); setMembers([]); setCreateError("");
+    setShowCreate(true);
+  };
+
+  const handleCreate = async () => {
+    if (!teamName.trim())   { setCreateError("Team name is required."); return; }
+    if (!teamIC)            { setCreateError("Team IC is required."); return; }
+    if (members.length < 2) { setCreateError("Select at least 2 members."); return; }
+    setCreating(true); setCreateError("");
+    try {
+      await teamService.create({ name: teamName.trim(), team_ic: teamIC, members });
+      setShowCreate(false);
+      loadTeams();
+    } catch (e) {
+      const d = e?.response?.data;
+      setCreateError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to create team.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // â”€â”€ Edit helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const eligibleEditMembers = detUsers
+    .filter((u) => String(u.id) !== String(editIC))
+    .sort(byLoad);
+
+  const handleEditICChange = (val) => {
+    setEditIC(val);
+    setEditMembers((prev) => prev.filter((id) => String(id) !== String(val)));
+  };
+
+  const toggleEditMember = (id) =>
+    setEditMembers((prev) => prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]);
+
+  const openEdit = (t) => {
+    setEditingTeam(t);
+    setEditName(t.name ?? "");
+    setEditIC(t.team_ic != null ? String(t.team_ic) : "");
+    // members PKs, exclude IC
+    const mPks = (t.members ?? []).map((m) => (typeof m === "object" ? m.id : m));
+    setEditMembers(mPks.filter((id) => String(id) !== String(t.team_ic)));
+    setEditError("");
+  };
+
+  const handleEdit = async () => {
+    if (!editName.trim())        { setEditError("Team name is required."); return; }
+    if (!editIC)                 { setEditError("Team IC is required."); return; }
+    if (editMembers.length < 2)  { setEditError("Select at least 2 members."); return; }
+    setEditing(true); setEditError("");
+    try {
+      await teamService.update(editingTeam.id, {
+        name: editName.trim(),
+        team_ic: editIC,
+        members: editMembers,
+      });
+      setEditingTeam(null);
+      loadTeams();
+    } catch (e) {
+      const d = e?.response?.data;
+      setEditError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to update team.");
+    } finally {
+      setEditing(false);
+    }
+  };
+
+  // â”€â”€ Delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const handleDelete = async (id) => {
+    setDeleting(true);
+    try {
+      await teamService.delete(id);
+      setConfirmDeleteId(null);
+      loadTeams();
+    } catch {
+      // ignore
+    } finally {
+      setDeleting(false);
+    }
+  };
+
 
   return (
-    <div className="p-4 sm:p-6 space-y-5">
+    <div className="p-4 md:p-6 min-h-screen bg-gray-900">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-lg sm:text-xl font-bold text-white">Investigation Teams</h2>
-          <p className="text-gray-400 text-sm mt-0.5">
-            {user?.battalion_name} — {teams.length} team{teams.length !== 1 ? "s" : ""}
+          <h2 className="text-2xl font-bold text-white">Investigation Teams</h2>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {user?.detachment_name ? `${user.detachment_name} Detachment` : "Detachment Teams"}
           </p>
         </div>
-        {isAdmin && (
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded transition-colors"
+            onClick={(e) => { e.stopPropagation(); loadTeams(); }}
+            className="flex items-center gap-2 text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
           >
-            + New Team
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh
           </button>
-        )}
+          {isDetachmentIC && (
+            <button
+              onClick={(e) => { e.stopPropagation(); openCreate(); }}
+              className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Team
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Teams list */}
-      {loading ? (
-        <div className="text-center text-gray-500 py-12">Loading teams…</div>
+      {/* Tab switcher */}
+      <div className="flex gap-1 mb-5 bg-gray-800 rounded-lg p-1 w-fit border border-gray-700">
+        <button
+          onClick={() => setActiveTab("teams")}
+          className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${activeTab === "teams" ? "bg-blue-600 text-white shadow" : "text-gray-400 hover:text-white"}`}
+        >Teams</button>
+        <button
+          onClick={() => setActiveTab("workload")}
+          className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${activeTab === "workload" ? "bg-blue-600 text-white shadow" : "text-gray-400 hover:text-white"}`}
+        >Workload</button>
+      </div>
+
+      {/* Workload tab */}
+      {activeTab === "workload" && (
+        <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-300">Personnel Engagement (Cases Under Investigation)</h3>
+            {loadingWorkload && <span className="text-xs text-gray-500 animate-pulse">Loading...</span>}
+          </div>
+          {workload.length === 0 && !loadingWorkload ? (
+            <p className="text-gray-500 text-sm text-center py-10">No workload data available.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-800/80 text-left">
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider w-10">#</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Name</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As IC</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As Member</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-700/50">
+                  {[...workload].sort((a, b) => (a.total_engagement ?? 0) - (b.total_engagement ?? 0)).map((w, idx) => {
+                    const total = w.total_engagement ?? 0;
+                    const totalColor = total === 0 ? "text-emerald-400" : total <= 2 ? "text-yellow-400" : "text-red-400";
+                    const barColor  = total === 0 ? "bg-emerald-500" : total <= 2 ? "bg-yellow-500" : "bg-red-500";
+                    const maxLoad   = Math.max(...workload.map((x) => x.total_engagement ?? 0), 1);
+                    return (
+                      <tr key={w.id} className="hover:bg-gray-700/40 transition-colors">
+                        <td className="px-4 py-3 text-gray-500 text-xs">{idx + 1}</td>
+                        <td className="px-4 py-3">
+                          <div className="text-white text-sm font-medium">{w.rank ? `${w.rank} ` : ""}{w.name}</div>
+                          <div className="text-xs text-gray-500">{w.service_number}</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-indigo-400">{ROLE_LABELS[w.role] || w.role}</td>
+                        <td className="px-4 py-3 text-center text-xs text-gray-300">{w.ic_cases ?? 0}</td>
+                        <td className="px-4 py-3 text-center text-xs text-gray-300">{w.member_cases ?? 0}</td>
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex flex-col items-center gap-1">
+                            <span className={`text-sm font-bold ${totalColor}`}>{total}</span>
+                            <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                              <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.round((total / maxLoad) * 100)}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Teams table */}
+      {activeTab === "teams" && (
+        <>
+          {loadingTeams ? (
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => <div key={i} className="h-12 bg-gray-800 rounded animate-pulse" />)}
+        </div>
       ) : teams.length === 0 ? (
-        <div className="bg-gray-800 rounded-lg p-10 text-center">
-          <svg className="w-10 h-10 text-gray-600 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div className="bg-gray-800 rounded-xl p-10 text-center">
+          <svg className="w-12 h-12 mx-auto mb-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
-          <p className="text-gray-500 text-sm">No investigation teams yet.</p>
-          {isAdmin && (
-            <button
-              onClick={() => setShowCreate(true)}
-              className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded"
-            >
-              Create first team
+          <p className="text-gray-500">No investigation teams yet.</p>
+          {isDetachmentIC && (
+            <button onClick={openCreate} className="mt-4 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+              Create First Team
             </button>
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {teams.map((team) => (
-            <div key={team.id} className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
-              {/* Team header */}
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h3 className="text-white font-semibold text-sm">{team.name}</h3>
-                  <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-blue-700/50 text-blue-300 mt-1">
-                    Investigation Team
-                  </span>
-                </div>
-                {isAdmin && (
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      onClick={() => setEditTeam(team)}
-                      className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                      title="Edit"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => setDeleteTeam(team)}
-                      className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded transition-colors"
-                      title="Delete"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </div>
+        <div className="overflow-x-auto rounded-xl border border-gray-700">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-800 border-b border-gray-700 text-left">
+                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider w-10">#</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Team Name</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Team IC</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Members</th>
+                {isDetachmentIC && (
+                  <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-right">Action</th>
                 )}
-              </div>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-700/60">
+              {teams.map((t, idx) => {
+                const memberDetail = Array.isArray(t.members_detail) ? t.members_detail : [];
+                const count = memberDetail.length || (Array.isArray(t.members) ? t.members.length : 0);
+                const icDetail = t.team_ic_detail;
 
-              {/* Team IC */}
-              <div className="flex items-center gap-2 py-2 border-t border-gray-700">
-                <span className="text-xs text-gray-400 shrink-0">Team IC:</span>
-                {team.team_ic_detail ? (
-                  <span className="text-xs text-white font-medium">
-                    {team.team_ic_detail.rank ? `${team.team_ic_detail.rank} ` : ""}{team.team_ic_detail.name}
-                  </span>
-                ) : (
-                  <span className="text-xs text-gray-500">—</span>
-                )}
-              </div>
+                return (
+                  <tr key={t.id} className="bg-gray-800/60 hover:bg-gray-800 transition-colors">
+                    <td className="px-4 py-3 text-gray-500 text-xs">{idx + 1}</td>
+                    <td className="px-4 py-3 text-white font-semibold">{t.name}</td>
+                    <td className="px-4 py-3">
+                      {icDetail
+                        ? <span className="text-indigo-300 text-sm">{displayUser(icDetail)}</span>
+                        : <span className="text-gray-600 italic text-xs">â€”</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => setMemberListPopup({ teamName: t.name, members: memberDetail })}
+                        className="inline-flex items-center gap-1.5 bg-gray-700 hover:bg-indigo-700/60 border border-gray-600 hover:border-indigo-500 text-gray-200 text-xs font-medium px-3 py-1 rounded-full transition-colors"
+                      >
+                        <svg className="w-3 h-3 text-indigo-400" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
+                        </svg>
+                        {count} member{count !== 1 ? "s" : ""}
+                      </button>
+                    </td>
+                    {isDetachmentIC && (
+                      <td className="px-4 py-3 text-right">
+                        {confirmDeleteId === t.id ? (
+                          <span className="inline-flex items-center gap-2">
+                            <span className="text-xs text-gray-400">Delete?</span>
+                            <button
+                              onClick={() => handleDelete(t.id)}
+                              disabled={deleting}
+                              className="text-xs text-red-400 hover:text-red-300 font-semibold disabled:opacity-60"
+                            >Yes</button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="text-xs text-gray-400 hover:text-white"
+                            >No</button>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-3">
+                            <button
+                              onClick={() => openEdit(t)}
+                              className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+                            >Edit</button>
+                            <button
+                              onClick={() => setConfirmDeleteId(t.id)}
+                              className="text-xs text-red-400 hover:text-red-300 font-medium"
+                            >Delete</button>
+                          </span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+          )}
+        </>
+      )}
 
-              {/* Members */}
-              <div>
-                <p className="text-xs text-gray-400 mb-1.5">
-                  Members ({team.members_detail?.length || 0})
-                </p>
-                <div className="space-y-1">
-                  {team.members_detail?.slice(0, 4).map((m) => (
-                    <div key={m.id} className="flex items-center justify-between text-xs">
-                      <span className="text-gray-300">{m.rank ? `${m.rank} ` : ""}{m.name}</span>
-                      <span className="text-gray-500">{m.service_number}</span>
-                    </div>
-                  ))}
-                  {(team.members_detail?.length || 0) > 4 && (
-                    <p className="text-xs text-gray-500">
-                      +{team.members_detail.length - 4} more
-                    </p>
-                  )}
-                  {(!team.members_detail || team.members_detail.length === 0) && (
-                    <p className="text-xs text-gray-600">No members listed.</p>
-                  )}
-                </div>
-              </div>
+      {/* Members List Modal */}
+      {memberListPopup && (
+        <MembersModal
+          teamName={memberListPopup.teamName}
+          members={memberListPopup.members}
+          onClose={() => setMemberListPopup(null)}
+        />
+      )}
+
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setShowCreate(false)}>
+          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto border border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-white">Create Investigation Team</h2>
+              <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
-          ))}
+            <TeamFormFields
+              name={teamName} setName={setTeamName}
+              ic={teamIC} onICChange={handleICChange}
+              mems={members} toggleMem={toggleMember}
+              eligibleMems={eligibleCreateMembers}
+              error={createError}
+              detUsers={detUsers}
+              workloadMap={workloadMap}
+            />
+            <div className="flex gap-3 justify-end mt-6">
+              <button onClick={() => setShowCreate(false)} className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">Cancel</button>
+              <button
+                onClick={handleCreate}
+                disabled={creating || !teamName.trim() || !teamIC || members.length < 2}
+                className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {creating ? "Creatingâ€¦" : "Create Team"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Modals */}
-      {(showCreate || editTeam) && (
-        <TeamModal
-          team={editTeam || null}
-          battalionUsers={battalionUsers}
-          onClose={() => { setShowCreate(false); setEditTeam(null); }}
-          onSaved={() => { setShowCreate(false); setEditTeam(null); loadTeams(); }}
-        />
-      )}
-
-      {deleteTeam && (
-        <ConfirmDelete
-          team={deleteTeam}
-          onClose={() => setDeleteTeam(null)}
-          onConfirm={async () => {
-            await teamService.delete(deleteTeam.id);
-            setDeleteTeam(null);
-            loadTeams();
-          }}
-        />
+      {/* â”€â”€ Edit Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {editingTeam && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setEditingTeam(null)}>
+          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto border border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-white">Edit Team â€” {editingTeam.name}</h2>
+              <button onClick={() => setEditingTeam(null)} className="text-gray-400 hover:text-white">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <TeamFormFields
+              name={editName} setName={setEditName}
+              ic={editIC} onICChange={handleEditICChange}
+              mems={editMembers} toggleMem={toggleEditMember}
+              eligibleMems={eligibleEditMembers}
+              error={editError}
+            />
+            <div className="flex gap-3 justify-end mt-6">
+              detUsers={detUsers}
+              workloadMap={workloadMap}
+            />
+              <button
+                onClick={handleEdit}
+                disabled={editing || !editName.trim() || !editIC || editMembers.length < 2}
+                className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {editing ? "Savingâ€¦" : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -11,30 +11,16 @@ export const offenceService = {
 
 export const authService = {
   login: (service_number, password) =>
-    api.post("/api/auth/login/", { service_number, password }).then((res) => {
-      sessionStorage.setItem("access_token", res.data.access);
-      sessionStorage.setItem("refresh_token", res.data.refresh);
-      return res;
-    }),
-  logout: () => {
-    sessionStorage.removeItem("access_token");
-    sessionStorage.removeItem("refresh_token");
-    return api.post("/api/auth/logout/");
-  },
+    api.post("/api/auth/login/", { service_number, password }),
+  logout: () => api.post("/api/auth/logout/"),
   me: () => api.get("/api/auth/me/"),
-  changePassword: (data) =>
-    api.post("/api/auth/change-password/", data).then((res) => {
-      if (res.data.access) {
-        sessionStorage.setItem("access_token", res.data.access);
-        sessionStorage.setItem("refresh_token", res.data.refresh);
-      }
-      return res;
-    }),
+  changePassword: (data) => api.post("/api/auth/change-password/", data),
 };
 
 export const caseService = {
   list: (params) => api.get("/api/cases/", { params }),
   get: (id) => api.get(`/api/cases/${id}/`),
+  activity: (id) => api.get(`/api/cases/${id}/activity/`),
   create: (formData) =>
     api.post("/api/cases/", formData, {
       headers: { "Content-Type": "multipart/form-data" },
@@ -44,22 +30,29 @@ export const caseService = {
     api.patch(`/api/cases/${id}/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }),
-  delete: (id) => api.delete(`/api/cases/${id}/`),
-  attachBrief: (id, formData) =>
-    api.patch(`/api/cases/${id}/attach_brief/`, formData, {
+  close: (id, formData) =>
+    api.patch(`/api/cases/${id}/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }),
-  forwardBrief: (id, data) => api.post(`/api/cases/${id}/forward_brief/`, data),
-  serveCase: (id) => api.post(`/api/cases/${id}/serve_case/`),
+  listCourtHearings: (id) => api.get(`/api/cases/${id}/court-hearings/`),
+  addCourtHearing: (id, data) => api.post(`/api/cases/${id}/court-hearings/`, data),
+  updateCourtHearing: (id, hearingId, data) => api.patch(`/api/cases/${id}/court-hearings/${hearingId}/`, data),
+  deleteCourtHearing: (id, hearingId) => api.delete(`/api/cases/${id}/court-hearings/${hearingId}/`),
+  listCourtMilestones: (id) => api.get(`/api/cases/${id}/court-milestones/`),
+  addCourtMilestone: (id, data) => api.post(`/api/cases/${id}/court-milestones/`, data),
+  updateCourtMilestone: (id, milestoneId, data) => api.patch(`/api/cases/${id}/court-milestones/${milestoneId}/`, data),
+  deleteCourtMilestone: (id, milestoneId) => api.delete(`/api/cases/${id}/court-milestones/${milestoneId}/`),
+  delete: (id) => api.delete(`/api/cases/${id}/`),
 };
 
-export const abstractService = {
-  list: (caseId) => api.get("/api/cases/abstracts/", { params: { case: caseId } }),
-  create: (formData) =>
-    api.post("/api/cases/abstracts/", formData, {
+export const attachmentService = {
+  list: (caseId) => api.get(`/api/cases/${caseId}/attachments/`),
+  upload: (caseId, formData) =>
+    api.post(`/api/cases/${caseId}/attachments/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }),
-  delete: (id) => api.delete(`/api/cases/abstracts/${id}/`),
+  delete: (caseId, attId) => api.delete(`/api/cases/${caseId}/attachments/${attId}/`),
+  activity: (caseId) => api.get(`/api/cases/${caseId}/activity/`),
 };
 
 export const incidentService = {
@@ -71,9 +64,21 @@ export const incidentService = {
 };
 
 export const notificationService = {
-  list: () => api.get("/api/notifications/"),
+  list: (params) => api.get("/api/notifications/", { params }),
   markRead: (id) => api.post(`/api/notifications/${id}/mark_read/`),
   markAllRead: () => api.post("/api/notifications/mark_all_read/"),
+  delete: (id) => api.delete(`/api/notifications/${id}/`),
+  deleteAll: () =>
+    api
+      .get("/api/notifications/", { params: { page_size: 200 } })
+      .then((res) => {
+        const items = Array.isArray(res.data)
+          ? res.data
+          : Array.isArray(res.data?.results)
+          ? res.data.results
+          : [];
+        return Promise.all(items.map((n) => api.delete(`/api/notifications/${n.id}/`)));
+      }),
 };
 
 export const morningBriefService = {
@@ -106,8 +111,13 @@ export const formationService = {
 
 export const userService = {
   list: (params) => api.get("/api/auth/users/", { params }),
+  create: (data) => api.post("/api/auth/users/", data),
   update: (id, data) => api.patch(`/api/auth/users/${id}/`, data),
   delete: (id) => api.delete(`/api/auth/users/${id}/`),
+};
+
+export const analyticsService = {
+  resolution: () => api.get("/api/cases/analytics/"),
 };
 
 export const teamService = {
@@ -116,6 +126,7 @@ export const teamService = {
   create: (data) => api.post("/api/cases/investigation-teams/", data),
   update: (id, data) => api.patch(`/api/cases/investigation-teams/${id}/`, data),
   delete: (id) => api.delete(`/api/cases/investigation-teams/${id}/`),
+  workload: () => api.get("/api/cases/investigation-teams/user-workload/"),
 };
 
 export const guardroomService = {

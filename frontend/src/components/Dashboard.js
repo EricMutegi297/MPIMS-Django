@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Routes, Route, NavLink, useNavigate } from "react-router-dom";
-import { authService, notificationService } from "../services/api";
+import { Routes, Route, NavLink, useNavigate, useLocation } from "react-router-dom";
+import { authService, notificationService, offenceService } from "../services/api";
 import Overview from "./Overview";
 import HQDashboard from "./HQDashboard";
-import BattalionDashboard from "./BattalionDashboard";
 import Cases from "./Cases";
 import Incidents from "./Incidents";
 import MorningBriefs from "./MorningBriefs";
@@ -11,12 +10,16 @@ import Guardrooms from "./Guardrooms";
 import Users from "./Users";
 import Notifications from "./Notifications";
 import Formations from "./Formations";
-import FormationManagement from "./FormationManagement";
-import UnitsManagement from "./UnitsManagement";
-import OffencePage from "./OffencePage";
-import Teams from "./Teams";
+import Offences from "./Offences";
+import OffenceModal from "./OffenceModal";
+import ChangePassword from "./ChangePassword";
 import InvestigatorDashboard from "./InvestigatorDashboard";
-import { offenceService } from "../services/api";
+import BattalionDashboard from "./BattalionDashboard";
+import DetachmentDashboard from "./DetachmentDashboard";
+import Teams from "./Teams";
+import Analytics from "./Analytics";
+import Statistics from "./Statistics";
+import DetachmentOverview from "./DetachmentOverview";
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -37,6 +40,8 @@ const ROLE_LABELS = {
 // Navigation items in sidebar order
 function getNavItems(user) {
   const isSuperuser = !!user?.is_superuser;
+  const isHqsBnAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
+  const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
@@ -79,7 +84,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "users", label: "Users", path: "/dashboard/users", show: ["admin", "mpc_hqs", "personnel"].includes(user?.role),
+      key: "users", label: "Users", path: "/dashboard/users", show: isSuperuser || ["admin", "mpc_hqs", "personnel", "detachment"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -87,7 +92,19 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "battalions", label: "Battalions", path: "/dashboard/Battalions", show: isSuperuser,
+      key: "battalion-detachments",
+      label: "Detachments",
+      path: "/dashboard/battalion-detachments",
+      show: (user?.role === "admin" || isSuperuser) && !isHqsBnAdmin,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+            d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+        </svg>
+      ),
+    },
+    {
+      key: "battalions", label: "Battalions", path: "/dashboard/Battalions", show: ((["admin", "Superuser"].includes(user?.role) || isSuperuser) && !isBattalionAdmin),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
@@ -95,7 +112,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "formations", label: "Formations", path: "/dashboard/formations", show: isSuperuser,
+      key: "formations", label: "Formations", path: "/dashboard/formations", show: ((["admin", "Superuser"].includes(user?.role) || isSuperuser) && !isHqsBnAdmin && !isBattalionAdmin),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 01-8 0M12 3v4m0 0a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h1a4 4 0 014 4z" />
@@ -103,10 +120,62 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "units", label: "Units", path: "/dashboard/units", show: isSuperuser,
+      key: "det-teams", label: "Teams", path: "/dashboard/det-teams", show: user?.role === "detachment",
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M3 12h18M3 17h18" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+      ),
+    },
+    {
+      key: "my-team", label: "My Team", path: "/dashboard/my-team", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+      ),
+    },
+    {
+      key: "court-martial",
+      label: "Court Martial",
+      path: "/dashboard/court-martial",
+      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+        </svg>
+      ),
+    },
+    {
+      key: "dci-civ-police",
+      label: "DCI/Civ Police",
+      path: "/dashboard/dci-civ-police",
+      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      ),
+    },
+    {
+      key: "statistics",
+      label: "Statistics",
+      path: "/dashboard/statistics",
+      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+        </svg>
+      ),
+    },
+    {
+      key: "analytics",
+      label: "Analytics",
+      path: "/dashboard/analytics",
+      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
         </svg>
       ),
     },
@@ -115,7 +184,7 @@ function getNavItems(user) {
       {
         key: "offence",
         label: "Offence",
-        path: "/dashboard/offence",
+        path: "#offence-modal",
         show: true,
         icon: (
           <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -132,35 +201,46 @@ function getNavItems(user) {
         </svg>
       ),
     },
-    {
-      key: "teams", label: "Teams", path: "/dashboard/teams",
-      show: user?.role === "admin" && user?.battalion_type === "special",
-      icon: (
-        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-      ),
-    },
-    {
-      key: "my-team", label: "My Team", path: "/dashboard/my-team",
-      show: user?.role === "investigator",
-      icon: (
-        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-        </svg>
-      ),
-    },
   ];
   return items.filter((item) => item.show);
 }
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
   const [offences, setOffences] = useState([]);
-  const [offencesLoading, setOffencesLoading] = useState(true);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [offenceModalOpen, setOffenceModalOpen] = useState(false);
+
+  const closeAllModules = React.useCallback(() => {
+    setMobileNavOpen(false);
+    setLogoutConfirmOpen(false);
+    setOffenceModalOpen(false);
+  }, []);
+
+  const openMobileNav = () => {
+    closeAllModules();
+    setMobileNavOpen(true);
+  };
+
+  const openOffenceModal = () => {
+    closeAllModules();
+    setOffenceModalOpen(true);
+  };
+
+  const openLogoutConfirm = () => {
+    closeAllModules();
+    setLogoutConfirmOpen(true);
+  };
+
+  const loadOffences = React.useCallback(() => {
+    offenceService.list().then((r) => setOffences(Array.isArray(r.data) ? r.data : r.data?.results ?? [])).catch(() => {});
+  }, []);
 
   useEffect(() => {
     authService
@@ -170,58 +250,52 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, [navigate]);
 
-  useEffect(() => {
-    if (!user) return;
+  const refreshUnreadCount = React.useCallback(() => {
     notificationService
-      .list()
+      .list({ page_size: 100 })
       .then((res) => {
         const items = Array.isArray(res.data) ? res.data : Array.isArray(res.data?.results) ? res.data.results : [];
         setUnreadCount(items.filter((n) => !n.is_read).length);
       })
       .catch(() => {});
-  }, [user]);
-
-  // Fetch offences
-  const fetchOffences = async () => {
-    setOffencesLoading(true);
-    try {
-      const res = await offenceService.list();
-      setOffences(Array.isArray(res.data.results) ? res.data.results : res.data);
-    } catch (err) {
-      console.error("[Offences API error]", err, err?.response);
-      if (err?.response) {
-        console.error("API response data:", err.response.data);
-      }
-    }
-    setOffencesLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
-    if (user) fetchOffences();
-    // eslint-disable-next-line
-  }, [user]);
+    if (!user) return;
+    refreshUnreadCount();
+    const id = setInterval(refreshUnreadCount, 30000);
+    return () => clearInterval(id);
+  }, [user, refreshUnreadCount]);
 
-  const handleLogout = async () => {
-    await authService.logout();
-    navigate("/login");
+  const handleLogout = () => {
+    openLogoutConfirm();
   };
 
-
-  // Mobile sidebar state
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  // Offence panel and modal state
-  const [offencePanelOpen, setOffencePanelOpen] = useState(false);
-  const [offenceModalOpen, setOffenceModalOpen] = useState(false);
-  const handleOffenceSave = async (data) => {
+  const confirmLogout = async () => {
+    setLoggingOut(true);
     try {
-      await offenceService.create(data);
-      fetchOffences();
-    } catch (err) {
-      // Optionally show error
+      await authService.logout();
+      navigate("/login");
+    } finally {
+      setLoggingOut(false);
+      setLogoutConfirmOpen(false);
     }
-    setOffenceModalOpen(false);
   };
+
+  const handleOffenceSave = (data) => {
+    return offenceService.create(data)
+      .then(() => { loadOffences(); })
+      .catch(() => {});
+  };
+
+  // Load offences for all authenticated users
+  React.useEffect(() => {
+    if (user) loadOffences();
+  }, [user, loadOffences]);
+
+  React.useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
 
   if (loading) {
     return (
@@ -231,69 +305,77 @@ export default function Dashboard() {
     );
   }
 
+  // Show HQDashboard for HQ battalion admins, Overview for others
+  const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
+
+  // Roles that are scoped to either a detachment or a battalion
+  const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
+  const hasDetachment = !!user?.detachment;
 
   // Sidebar navigation items
   const visibleNav = getNavItems(user);
   const roleLabel = !!user?.is_superuser
     ? "Superuser"
     : ROLE_LABELS[user?.role] || user?.role;
-  const battalionLabel = user?.battalion_name
+  const battalionLabel = isDetachmentLevelRole && hasDetachment && user?.detachment_name
+    ? `${user.detachment_name} Detachment Dashboard`
+    : user?.battalion_name && String(user?.battalion_type || "").toLowerCase() === "hqs"
+    ? `${user.battalion_name} Dashboard`
+    : user?.battalion_name
     ? `${user.battalion_name} ${String(user.battalion_type || "").toUpperCase()} Dashboard`
     : "General Dashboard";
 
-  // Show HQDashboard for HQ battalion admins, BattalionDashboard for regular battalion admins, Overview for others
-  const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs" && !user?.is_superuser;
-  const isBattalionAdmin = Boolean(user?.is_battalion_admin);
-  const isInvestigator = user?.role === "investigator";
+  if (location.pathname === "/dashboard/change-password") {
+    return <ChangePassword user={user} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-900 flex">
-      {/* Mobile overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 z-20 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <aside className={`
-        fixed inset-y-0 left-0 z-30 w-56 bg-gray-800 flex flex-col
-        transform transition-transform duration-300 ease-in-out
-        lg:relative lg:translate-x-0 lg:z-auto
-        ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}
-      `}>
+      {/* Desktop Sidebar */}
+      <aside className="hidden lg:flex w-56 bg-gray-800 flex-col">
         <div className="px-5 py-4 border-b border-gray-700">
           <h1 className="text-lg font-bold text-white tracking-widest uppercase">MPIMS</h1>
           <p className="text-xs text-gray-400 mt-0.5">{roleLabel}</p>
           <p className="text-xs text-gray-500 mt-1">{battalionLabel}</p>
-          <p className="text-[10px] text-gray-500 mt-1">
-            role={String(user?.role)} | is_superuser={String(!!user?.is_superuser)}
-          </p>
         </div>
         <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-          {visibleNav.map((item) => (
-            <NavLink
-              key={item.key}
-              to={item.path}
-              end={item.exact}
-              className={({ isActive }) =>
-                `flex items-center justify-between w-full px-3 py-2 rounded text-sm font-medium transition-colors ${
-                  isActive ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700 hover:text-white"
-                }`
-              }
-            >
-              <span className="flex items-center gap-2">
-                {item.icon}
-                {item.label}
-              </span>
-              {item.key === "notifications" && unreadCount > 0 && (
-                <span className="bg-red-500 text-white text-xs rounded-full px-1.5 min-w-[20px] text-center">
-                  {unreadCount}
+          {visibleNav.map((item) =>
+            item.key === "offence" ? (
+              <button
+                key={item.key}
+                type="button"
+                onClick={openOffenceModal}
+                className="flex items-center justify-between w-full px-3 py-2 rounded text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  {item.icon}
+                  {item.label}
                 </span>
-              )}
-            </NavLink>
-          ))}
+              </button>
+            ) : (
+              <NavLink
+                key={item.key}
+                to={item.path}
+                end={item.exact}
+                className={({ isActive }) =>
+                  `flex items-center justify-between w-full px-3 py-2 rounded text-sm font-medium transition-colors ${
+                    isActive ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700 hover:text-white"
+                  }`
+                }
+              >
+                <span className="flex items-center gap-2">
+                  {item.icon}
+                  {item.label}
+                </span>
+                {item.key === "notifications" && unreadCount > 0 && (
+                  <span className="bg-red-500 text-white text-xs rounded-full px-1.5 min-w-[20px] text-center">
+                    {unreadCount}
+                  </span>
+                )}
+              </NavLink>
+            )
+          )}
         </nav>
         <div className="px-2 pb-4">
           <button
@@ -305,47 +387,178 @@ export default function Dashboard() {
         </div>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto bg-gray-900 min-w-0">
-        {/* Mobile top bar */}
-        <div className="sticky top-0 z-10 lg:hidden bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center gap-3">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="text-gray-400 hover:text-white focus:outline-none"
-            aria-label="Open menu"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-          <span className="text-white font-bold tracking-widest uppercase text-sm">MPIMS</span>
-          {unreadCount > 0 && (
-            <span className="ml-auto bg-red-500 text-white text-xs rounded-full px-1.5 min-w-[20px] text-center">
-              {unreadCount}
-            </span>
-          )}
+      {/* Mobile Top Bar */}
+      <div className="lg:hidden fixed top-0 inset-x-0 z-30 bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={openMobileNav}
+          className="inline-flex items-center justify-center w-9 h-9 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors"
+          aria-label="Open navigation menu"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <div className="min-w-0 text-center px-2">
+          <p className="text-sm font-semibold text-white truncate">MPIMS</p>
+          <p className="text-[11px] text-gray-400 truncate">{roleLabel}</p>
         </div>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="text-xs px-2.5 py-1.5 rounded bg-red-600 text-white hover:bg-red-700 transition-colors"
+        >
+          Logout
+        </button>
+      </div>
+
+      {/* Mobile Sidebar Drawer */}
+      {mobileNavOpen && (
+        <div className="lg:hidden fixed inset-0 z-40 flex">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close navigation menu"
+          />
+          <aside className="relative w-72 max-w-[85vw] bg-gray-800 flex flex-col h-full shadow-2xl">
+            <div className="px-5 py-4 border-b border-gray-700 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h1 className="text-lg font-bold text-white tracking-widest uppercase">MPIMS</h1>
+                <p className="text-xs text-gray-400 mt-0.5 truncate">{roleLabel}</p>
+                <p className="text-xs text-gray-500 mt-1 truncate">{battalionLabel}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileNavOpen(false)}
+                className="w-8 h-8 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+                aria-label="Close menu"
+              >
+                ×
+              </button>
+            </div>
+            <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+              {visibleNav.map((item) =>
+                item.key === "offence" ? (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={openOffenceModal}
+                    className="flex items-center justify-between w-full px-3 py-2 rounded text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                  >
+                    <span className="flex items-center gap-2">
+                      {item.icon}
+                      {item.label}
+                    </span>
+                  </button>
+                ) : (
+                  <NavLink
+                    key={item.key}
+                    to={item.path}
+                    end={item.exact}
+                    onClick={() => setMobileNavOpen(false)}
+                    className={({ isActive }) =>
+                      `flex items-center justify-between w-full px-3 py-2 rounded text-sm font-medium transition-colors ${
+                        isActive ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700 hover:text-white"
+                      }`
+                    }
+                  >
+                    <span className="flex items-center gap-2">
+                      {item.icon}
+                      {item.label}
+                    </span>
+                    {item.key === "notifications" && unreadCount > 0 && (
+                      <span className="bg-red-500 text-white text-xs rounded-full px-1.5 min-w-[20px] text-center">
+                        {unreadCount}
+                      </span>
+                    )}
+                  </NavLink>
+                )
+              )}
+            </nav>
+            <div className="px-2 pb-4">
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-3 py-2 rounded text-sm font-medium text-gray-300 bg-red-600 hover:bg-red-700 transition-colors"
+              >
+                Logout
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* Main content */}
+      <main className="flex-1 overflow-auto bg-gray-900 pt-14 lg:pt-0">
         <Routes>
           <Route path="/" element={
             isHqsAdmin ? <HQDashboard user={user} /> :
-            isBattalionAdmin ? <BattalionDashboard user={user} /> :
-            isInvestigator ? <InvestigatorDashboard user={user} /> :
+            (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
+            (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
+            user?.battalion_type ? <BattalionDashboard user={user} /> :
             <Overview user={user} />
           } />
-          <Route path="cases/*" element={<Cases user={user} />} />
-          <Route path="incidents/*" element={<Incidents user={user} />} />
-          <Route path="morning-briefs/*" element={<MorningBriefs user={user} />} />
-          <Route path="guardrooms/*" element={<Guardrooms user={user} />} />
-          <Route path="users/*" element={<Users user={user} />} />
-          <Route path="Battalions" element={<Formations user={user} />} />
-          <Route path="formations" element={<FormationManagement user={user} />} />
-          <Route path="units" element={<UnitsManagement user={user} />} />
-          <Route path="offence" element={<OffencePage user={user} />} />
-          <Route path="notifications" element={<Notifications onRead={() => setUnreadCount(0)} />} />
-          <Route path="teams" element={<Teams user={user} />} />
-          <Route path="my-team" element={<InvestigatorDashboard user={user} />} />
+          <Route path="/cases/*" element={<Cases user={user} />} />
+          <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
+          <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />
+          <Route path="/incidents/*" element={<Incidents user={user} />} />
+          <Route path="/morning-briefs/*" element={<MorningBriefs user={user} />} />
+          <Route path="/guardrooms/*" element={<Guardrooms user={user} />} />
+          <Route path="/users/*" element={<Users user={user} />} />
+          <Route path="/Battalions" element={<Formations user={user} />} />
+          <Route path="/formations" element={<Formations user={user} />} />
+          <Route path="/formations-btn" element={<Offences user={user} />} />
+          <Route
+            path="/notifications"
+            element={<Notifications onRead={refreshUnreadCount} />}
+          />
+          <Route path="/change-password" element={<ChangePassword user={user} />} />
+          <Route path="/det-teams" element={<Teams user={user} />} />
+          <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
+          <Route path="/statistics" element={<Statistics user={user} />} />
+          <Route path="/analytics" element={<Analytics user={user} />} />
+          <Route path="/battalion-detachments" element={<DetachmentOverview user={user} />} />
         </Routes>
+        <OffenceModal open={offenceModalOpen} onClose={() => setOffenceModalOpen(false)} onSave={handleOffenceSave} user={user} offences={offences} />
       </main>
+
+      {logoutConfirmOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setLogoutConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-800 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-gray-700 px-5 py-4">
+              <h3 className="text-lg font-semibold text-white">Confirm Logout</h3>
+              <p className="mt-1 text-sm text-gray-400">You are about to end your current session.</p>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm text-gray-300">Do you want to log out now?</p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-gray-700 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setLogoutConfirmOpen(false)}
+                disabled={loggingOut}
+                className="rounded px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmLogout}
+                disabled={loggingOut}
+                className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                {loggingOut ? "Logging out..." : "Logout"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

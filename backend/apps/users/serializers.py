@@ -8,7 +8,6 @@ class UserSerializer(serializers.ModelSerializer):
     battalion_type = serializers.SerializerMethodField()
     detachment_name = serializers.SerializerMethodField()
     is_superuser = serializers.SerializerMethodField()
-    is_battalion_admin = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -16,7 +15,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
             "battalion_name", "battalion_type", "detachment_name",
-            "is_active", "is_superuser", "is_battalion_admin", "must_change_password", "created_at",
+            "is_active", "is_superuser", "must_change_password", "created_at",
         ]
         read_only_fields = ["id", "created_at"]
 
@@ -32,9 +31,6 @@ class UserSerializer(serializers.ModelSerializer):
     def get_is_superuser(self, obj):
         return bool(obj.is_superuser)
 
-    def get_is_battalion_admin(self, obj):
-        return bool(obj.role == "admin" and not obj.is_superuser and obj.battalion_id)
-
 
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)
@@ -45,6 +41,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment", "password",
         ]
+        extra_kwargs = {
+            "rank":  {"required": True, "allow_blank": False},
+            "email": {"required": True, "allow_blank": False},
+        }
 
     def validate(self, data):
         exempt_roles = {"corps_cmd", "cop"}
@@ -80,10 +80,10 @@ class LoginSerializer(serializers.Serializer):
 
 
 class ChangePasswordSerializer(serializers.Serializer):
-    current_password = serializers.CharField(write_only=True)
+    old_password = serializers.CharField(write_only=True)
     new_password = serializers.CharField(write_only=True, min_length=6)
 
-    def validate_current_password(self, value):
+    def validate_old_password(self, value):
         user = self.context["request"].user
         if not user.check_password(value):
             raise serializers.ValidationError("Current password is incorrect.")

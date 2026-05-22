@@ -1,615 +1,587 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { caseService, incidentService, guardroomService, userService, teamService, formationService } from "../services/api";
+import { caseService, incidentService, formationService, guardroomService } from "../services/api";
+import NotificationBell from "./NotificationBell";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
-/* ─── Assign Team Modal (Special Battalion) ──────────────── */
-function AssignTeamModal({ caseItem, teams, onClose, onSuccess }) {
-  const [selectedTeam, setSelectedTeam] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
+const PAGE_SIZE = 25;
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!selectedTeam) { setError("Please select a team."); return; }
-    setSubmitting(true); setError("");
-    try {
-      await caseService.update(caseItem.id, { assigned_team: selectedTeam });
-      onSuccess();
-    } catch (err) {
-      const msg = err?.response?.data?.assigned_team || err?.response?.data?.non_field_errors || "Failed to assign team.";
-      setError([].concat(msg).join(" "));
-    } finally { setSubmitting(false); }
-  }
+const STATUS_STYLE = {
+  new:                 "bg-gray-500/20 text-gray-300",
+  open:                "bg-blue-500/20 text-blue-400",
+  tasked:              "bg-yellow-500/20 text-yellow-400",
+  under_investigation: "bg-indigo-500/20 text-indigo-400",
+  pending:             "bg-orange-500/20 text-orange-400",
+  served:              "bg-purple-500/20 text-purple-400",
+  closed:              "bg-green-500/20 text-green-400",
+  referred:            "bg-cyan-500/20 text-cyan-400",
+};
 
+function StatCard({ icon, label, value, accent, loading, onClick }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-md border border-gray-700">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
-          <div>
-            <h3 className="text-white font-semibold text-base">Assign to Investigation Team</h3>
-            <p className="text-gray-400 text-xs mt-0.5">
-              <span className="text-blue-400 font-mono">{caseItem.case_number}</span>
-              {" — "}{caseItem.accused_name || caseItem.title || "Case"}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          {error && (
-            <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">{error}</div>
-          )}
-          <div>
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Investigation Team <span className="text-red-400">*</span>
-            </label>
-            {teams.length === 0 ? (
-              <p className="text-yellow-400 text-sm">No teams found. Create a team first via the Teams menu.</p>
-            ) : (
-              <select
-                value={selectedTeam}
-                onChange={(e) => setSelectedTeam(e.target.value)}
-                className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">— Select team —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}{t.team_ic_detail ? ` (IC: ${t.team_ic_detail.name})` : ""}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded">Cancel</button>
-            <button type="submit" disabled={submitting || teams.length === 0}
-              className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium rounded flex items-center justify-center gap-2">
-              {submitting ? (
-                <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Assigning…</>
-              ) : "Assign Team"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Task to Detachment Modal (Normal Battalion) ────────── */
-function TaskDetachmentModal({ caseItem, detachments, onClose, onSuccess }) {
-  const [selectedDet, setSelectedDet] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!selectedDet) { setError("Please select a detachment."); return; }
-    setSubmitting(true); setError("");
-    try {
-      await caseService.update(caseItem.id, { tasked_detachment: selectedDet });
-      onSuccess();
-    } catch (err) {
-      const msg = err?.response?.data?.tasked_detachment || err?.response?.data?.non_field_errors || "Failed to task detachment.";
-      setError([].concat(msg).join(" "));
-    } finally { setSubmitting(false); }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-md border border-gray-700">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
-          <div>
-            <h3 className="text-white font-semibold text-base">Task Case to Detachment</h3>
-            <p className="text-gray-400 text-xs mt-0.5">
-              <span className="text-blue-400 font-mono">{caseItem.case_number}</span>
-              {" — "}{caseItem.accused_name || caseItem.title || "Case"}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          {error && (
-            <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm rounded px-3 py-2">{error}</div>
-          )}
-          <div>
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Detachment <span className="text-red-400">*</span>
-            </label>
-            {detachments.length === 0 ? (
-              <p className="text-yellow-400 text-sm">No detachments found for this battalion.</p>
-            ) : (
-              <select
-                value={selectedDet}
-                onChange={(e) => setSelectedDet(e.target.value)}
-                className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">— Select detachment —</option>
-                {detachments.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}{d.company ? ` (Coy ${d.company})` : ""}</option>
-                ))}
-              </select>
-            )}
-          </div>
-          <p className="text-xs text-gray-500">Note: Tasking to a detachment will not change the case status.</p>
-          <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded">Cancel</button>
-            <button type="submit" disabled={submitting || detachments.length === 0}
-              className="flex-1 px-4 py-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-medium rounded flex items-center justify-center gap-2">
-              {submitting ? (
-                <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>Tasking…</>
-              ) : "Task to Detachment"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-
-function StatCard({ label, value, sub, color, onClick, icon, compact }) {
-  const borders = {
-    blue: "border-blue-500", red: "border-red-500", yellow: "border-yellow-500",
-    green: "border-green-500", purple: "border-purple-500", teal: "border-teal-500",
-    orange: "border-orange-500", gray: "border-gray-500", indigo: "border-indigo-500",
-  };
-  const accents = {
-    blue: "text-blue-400", red: "text-red-400", yellow: "text-yellow-400",
-    green: "text-green-400", purple: "text-purple-400", teal: "text-teal-400",
-    orange: "text-orange-400", gray: "text-gray-400", indigo: "text-indigo-400",
-  };
-  const accentClass = accents[color] || "text-white";
-  return (
-    <button
-      type="button"
+    <Tag
       onClick={onClick}
-      disabled={!onClick}
-      className={`
-        group relative bg-gray-800 rounded-xl border-l-4 ${borders[color] || borders.blue}
-        ${compact ? "p-3" : "p-4"} w-full text-left transition-all duration-200
-        ${onClick ? "hover:scale-[1.02] hover:shadow-lg cursor-pointer" : "cursor-default"}
-        focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-blue-500
-      `}
+      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
+        onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""
+      }`}
     >
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs text-gray-400 uppercase tracking-wider">{label}</p>
-          <p className={`${compact ? "text-2xl" : "text-3xl"} font-bold mt-1 ${accentClass}`}>{value ?? 0}</p>
-          {sub && <p className="text-xs text-gray-400 mt-1">{sub}</p>}
-        </div>
-        {icon && (
-          <div className={`p-2 rounded-lg bg-gray-700/60 ${accentClass} shrink-0`}>{icon}</div>
+      <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
+      <div className="min-w-0">
+        <p className="text-xs text-gray-500 truncate">{label}</p>
+        {loading ? (
+          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
+        ) : (
+          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
         )}
       </div>
-      {onClick && (
-        <div className="flex items-center gap-1 mt-2 text-xs text-gray-500 group-hover:text-gray-300 transition-colors">
-          <span>View all</span>
-          <svg className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-        </div>
-      )}
-    </button>
+    </Tag>
   );
 }
 
-function InfoRow({ label, value }) {
+function Badge({ label, style }) {
   return (
-    <div className="flex justify-between py-2 border-b border-gray-700 last:border-0">
-      <span className="text-xs text-gray-400">{label}</span>
-      <span className="text-xs text-white font-medium">{value || "—"}</span>
+    <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${style}`}>
+      {label?.replace(/_/g, " ")}
+    </span>
+  );
+}
+
+function Footer() {
+  const [now, setNow] = React.useState(new Date());
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const pad = (n) => String(n).padStart(2, "0");
+  const yy = String(now.getFullYear()).slice(2);
+  const mm = pad(now.getMonth() + 1);
+  const dd = pad(now.getDate());
+  const hh = pad(now.getHours());
+  const min = pad(now.getMinutes());
+  const ss = pad(now.getSeconds());
+  return (
+    <footer className="mt-8 border-t border-gray-700/60 py-3 px-1 flex items-center justify-between text-[11px] text-gray-600 select-none">
+      <span className="font-semibold tracking-widest uppercase text-gray-500">MPIMS</span>
+      <span className="font-mono">
+        {yy}{mm}{dd}&nbsp;&nbsp;{hh}{min}{ss}
+      </span>
+    </footer>
+  );
+}
+
+function PaginationBar({ page, totalPages, totalCount, onChange }) {
+  if (totalPages <= 1) return null;
+  const start = (page - 1) * PAGE_SIZE + 1;
+  const end = Math.min(page * PAGE_SIZE, totalCount);
+
+  const pages = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (page > 3) pages.push("…");
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
+    if (page < totalPages - 2) pages.push("…");
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
+      <span>Showing {start}–{end} of {totalCount} cases</span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onChange(page - 1)}
+          disabled={page === 1}
+          className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          ← Prev
+        </button>
+        {pages.map((p, i) =>
+          p === "…" ? (
+            <span key={`ellipsis-${i}`} className="px-1">…</span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => onChange(p)}
+              className={`w-7 h-7 rounded transition-colors ${
+                p === page
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-400"
+              }`}
+            >
+              {p}
+            </button>
+          )
+        )}
+        <button
+          onClick={() => onChange(page + 1)}
+          disabled={page === totalPages}
+          className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          Next →
+        </button>
+      </div>
     </div>
   );
 }
 
 export default function BattalionDashboard({ user }) {
   const navigate = useNavigate();
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [teams, setTeams] = useState([]);
-  const [detachments, setDetachments] = useState([]);
-  const [assignTeamModal, setAssignTeamModal] = useState(null);
-  const [taskDetModal, setTaskDetModal] = useState(null);
+  const isNormalAdmin = user?.role === "admin" && user?.battalion_type === "normal";
 
-  const isSpecial = user?.battalion_type === "special";
-  const isNormal = user?.battalion_type === "normal";
-  const isAdmin = user?.role === "admin";
+  const [cases, setCases]           = useState([]);
+  const [incidents, setIncidents]   = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [loadingCounts, setLoadingCounts] = useState(true);
+  const [loadingCases, setLoadingCases]   = useState(true);
+  const [page, setPage]             = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [statusCounts, setStatusCounts] = useState({
+    total: 0, new: 0, newOpen: 0, tasked: 0, under_investigation: 0,
+    pending: 0, served: 0, closed: 0,
+  });
+  const [totalInc, setTotalInc]   = useState(0);
+  const [openInc, setOpenInc]     = useState(0);
+  const [totalGuardrooms, setTotalGuardrooms] = useState(0);
+  const [expandedDesc, setExpandedDesc] = useState({});
 
-  useEffect(() => {
-    async function loadStats() {
-      setLoading(true);
-      const [casesRes, incidentsRes, guardroomsRes, usersRes] = await Promise.allSettled([
-        caseService.list(),
-        incidentService.list(),
-        guardroomService.list(),
-        userService.list(),
-      ]);
+  // Task-to-detachment modal state
+  const [taskModal, setTaskModal]       = useState(null); // case object or null
+  const [detachments, setDetachments]   = useState([]);
+  const [selDetachment, setSelDetachment] = useState("");
+  const [taskingCase, setTaskingCase]   = useState(false);
+  const [taskError, setTaskError]       = useState("");
 
-      const cases = toArray(casesRes.value?.data);
-      const incidents = toArray(incidentsRes.value?.data);
-      const guardrooms = toArray(guardroomsRes.value?.data);
-      const users = toArray(usersRes.value?.data);
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+  const descLimit = 120;
 
-      setStats({
-        totalCases: cases.length,
-        newCases: cases.filter((c) => c.status === "new").length,
-        taskedCases: cases.filter((c) => c.status === "tasked").length,
-        underInvestigation: cases.filter((c) => c.status === "under_investigation").length,
-        pendingCases: cases.filter((c) => c.status === "pending").length,
-        servedCases: cases.filter((c) => c.status === "served").length,
-        closedCases: cases.filter((c) => c.status === "closed").length,
-        totalIncidents: incidents.length,
-        activeIncidents: incidents.filter((i) => i.status !== "closed" && i.status !== "resolved").length,
-        totalGuardrooms: guardrooms.length,
-        activeGuardrooms: guardrooms.filter((g) => g.is_active).length,
-        totalPersonnel: users.length,
-        activePersonnel: users.filter((u) => u.is_active).length,
-        recentCases: cases.slice(0, 5),
-        recentIncidents: incidents.slice(0, 5),
+  // One-time counts fetch (tiny requests — just need the `count` field)
+  const loadCounts = useCallback(async () => {
+    setLoadingCounts(true);
+    try {
+      const [allRes, newRes, openRes, taskedRes, uiRes, peRes, seRes, clRes, incRes, incOpenRes, guardroomRes] =
+        await Promise.all([
+          caseService.list({ page_size: 1 }),
+          caseService.list({ page_size: 1, status: "new" }),
+          caseService.list({ page_size: 1, status: "open" }),
+          caseService.list({ page_size: 1, status: "tasked" }),
+          caseService.list({ page_size: 1, status: "under_investigation" }),
+          caseService.list({ page_size: 1, status: "pending" }),
+          caseService.list({ page_size: 1, status: "served" }),
+          caseService.list({ page_size: 1, status: "closed" }),
+          incidentService.list({ page_size: 1 }),
+          incidentService.list({ page_size: 1, status: "reported" }),
+          guardroomService.list(),
+        ]);
+      setStatusCounts({
+        total:               allRes.data.count   || 0,
+        new:                 newRes.data.count   || 0,
+        newOpen:             (newRes.data.count || 0) + (openRes.data.count || 0),
+        tasked:              taskedRes.data.count || 0,
+        under_investigation: uiRes.data.count    || 0,
+        pending:             peRes.data.count    || 0,
+        served:              seRes.data.count    || 0,
+        closed:              clRes.data.count    || 0,
       });
+      setTotalInc(incRes.data.count || 0);
+      setOpenInc(incOpenRes.data.count || 0);
+      setTotalGuardrooms(toArray(guardroomRes.data).length);
+    } catch {
+      // keep zeros
+    } finally {
+      setLoadingCounts(false);
       setLoading(false);
     }
-    loadStats();
   }, []);
 
-  // Load teams for Special battalion, detachments for Normal battalion
-  useEffect(() => {
-    if (!user) return;
-    if (isSpecial) {
-      teamService.list().then((res) => setTeams(toArray(res.data))).catch(() => {});
+  // Paginated cases for the table
+  const loadCases = useCallback(async () => {
+    setLoadingCases(true);
+    try {
+      const res = await caseService.list({ page, page_size: PAGE_SIZE });
+      setCases(toArray(res.data));
+      setTotalCount(res.data.count || 0);
+    } catch {
+      setCases([]);
+      setTotalCount(0);
+    } finally {
+      setLoadingCases(false);
     }
-    if (isNormal && user.battalion_id) {
-      formationService.detachments({ battalion: user.battalion_id })
-        .then((res) => setDetachments(toArray(res.data)))
+  }, [page]);
+
+  useEffect(() => { loadCounts(); }, [loadCounts]);
+  useEffect(() => { loadCases(); },  [loadCases]);
+
+  // Keep incidents in one go (typically far fewer than cases)
+  useEffect(() => {
+    incidentService.list({ page_size: 200 })
+      .then((r) => setIncidents(toArray(r.data)))
+      .catch(() => {});
+  }, []);
+
+  // Load detachments under this battalion (for normal admin modal)
+  useEffect(() => {
+    if (isNormalAdmin && (user?.battalion_id ?? user?.battalion)) {
+      formationService.detachments({ battalion: user.battalion_id ?? user.battalion, page_size: 100 })
+        .then((r) => setDetachments(toArray(r.data)))
         .catch(() => {});
     }
-  }, [user, isSpecial, isNormal]);
+  }, [isNormalAdmin, user?.battalion_id, user?.battalion]);
 
-  const BATTALION_TYPE_LABELS = {
-    special: "Special",
-    normal: "Normal",
-    hqs: "HQs",
-    protection: "Protection",
+  const openTaskModal = (caseObj) => {
+    setTaskModal(caseObj);
+    setSelDetachment("");
+    setTaskError("");
   };
 
-  const battalionType = user?.battalion_type
-    ? BATTALION_TYPE_LABELS[user.battalion_type] || user.battalion_type
-    : null;
+  const handleTaskToDetachment = async () => {
+    if (!selDetachment) { setTaskError("Please select a detachment."); return; }
+    setTaskingCase(true);
+    setTaskError("");
+    try {
+      await caseService.update(taskModal.id, { tasked_detachment: selDetachment });
+      setTaskModal(null);
+      loadCases();
+      loadCounts();
+    } catch (e) {
+      setTaskError(e?.response?.data?.detail || "Failed to task case to detachment.");
+    } finally {
+      setTaskingCase(false);
+    }
+  };
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const displayName = user?.name?.split(" ")[0] || "Officer";
 
   return (
-    <div className="p-3 sm:p-6 space-y-4 sm:space-y-6">
+    <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
+
       {/* Header */}
-      <div className="bg-gray-800 rounded-lg p-4 sm:p-5 border border-gray-700">
-        <div className="flex items-start justify-between flex-wrap gap-3">
-          <div>
-            <h2 className="text-lg sm:text-xl font-bold text-white">
-              {user?.battalion_name || "Battalion"} Dashboard
-            </h2>
-            {battalionType && (
-              <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded bg-blue-700 text-blue-100 font-medium">
-                {battalionType} Battalion
-              </span>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-white">
+            {greeting}, {displayName}
+          </h2>
+          <p className="text-sm text-gray-400 mt-0.5">
+            {user?.battalion_name
+              ? `${user.battalion_name} — Battalion Overview`
+              : "Battalion Overview"}
+          </p>
+        </div>
+        <NotificationBell />
+      </div>
+
+      {/* ── Row 1: Total Cases + Incidents ─────────────────────── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard
+          loading={loadingCounts}
+          label="Total Cases"
+          value={statusCounts.total}
+          accent="bg-blue-500/10"
+          onClick={() => navigate("/dashboard/cases")}
+          icon={
+            <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Guardrooms"
+          value={totalGuardrooms}
+          accent="bg-gray-500/10"
+          onClick={() => navigate("/dashboard/guardrooms")}
+          icon={
+            <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12l5-7 5 7v7a1 1 0 01-1 1H6a1 1 0 01-1-1v-7z" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Total Incidents"
+          value={totalInc}
+          accent="bg-red-500/10"
+          onClick={() => navigate("/dashboard/incidents")}
+          icon={
+            <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Active Incidents"
+          value={openInc}
+          accent="bg-orange-500/10"
+          onClick={() => navigate("/dashboard/incidents")}
+          icon={
+            <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          }
+        />
+      </div>
+
+      {/* ── Row 2: Status Breakdown Cards ──────────────────────── */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
+          Case Status Breakdown
+        </h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <StatCard
+            loading={loadingCounts}
+            label="Tasked"
+            value={statusCounts.tasked}
+            accent="bg-yellow-500/10"
+            onClick={() => navigate("/dashboard/cases?status=tasked")}
+            icon={
+              <svg className="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
+              </svg>
+            }
+          />
+          <StatCard
+            loading={loadingCounts}
+            label="Under Investigation"
+            value={statusCounts.under_investigation}
+            accent="bg-indigo-500/10"
+            onClick={() => navigate(
+              user?.role === "investigator"
+                ? "/dashboard/my-team?status=under_investigation"
+                : "/dashboard/cases?status=under_investigation"
             )}
-            <p className="text-gray-400 text-sm mt-2">
-              Welcome, <span className="text-white font-medium">{user?.rank} {user?.name}</span>
-            </p>
-          </div>
-          <div className="text-right text-xs text-gray-500">
-            <p>Service No: <span className="text-gray-300">{user?.service_number}</span></p>
-            <p className="mt-0.5">Role: <span className="text-gray-300 capitalize">{user?.role}</span></p>
-          </div>
+            icon={
+              <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            }
+          />
+          <StatCard
+            loading={loadingCounts}
+            label="Pending"
+            value={statusCounts.pending}
+            accent="bg-orange-500/10"
+            onClick={() => navigate("/dashboard/cases?status=pending")}
+            icon={
+              <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+          />
+          <StatCard
+            loading={loadingCounts}
+            label="Served"
+            value={statusCounts.served}
+            accent="bg-purple-500/10"
+            onClick={() => navigate("/dashboard/cases?status=served")}
+            icon={
+              <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+          />
+          <StatCard
+            loading={loadingCounts}
+            label="Closed"
+            value={statusCounts.closed}
+            accent="bg-green-500/10"
+            onClick={() => navigate("/dashboard/cases?status=closed")}
+            icon={
+              <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            }
+          />
         </div>
       </div>
 
-      {/* Stats */}
-      {loading ? (
-        <div className="text-center text-gray-500 py-8">Loading statistics…</div>
-      ) : stats ? (
-        <>
-          {/* Case status breakdown */}
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Case Overview</p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2 sm:gap-3">
-              <StatCard
-                label="All Cases"
-                value={stats.totalCases}
-                color="blue"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" /></svg>}
-              />
-              <StatCard
-                label="New"
-                value={stats.newCases}
-                color="teal"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>}
-              />
-              <StatCard
-                label="Tasked"
-                value={stats.taskedCases}
-                color="yellow"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>}
-              />
-              <StatCard
-                label="Under Investigation"
-                value={stats.underInvestigation}
-                color="indigo"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 115 11a6 6 0 0112 0z" /></svg>}
-              />
-              <StatCard
-                label="Pending"
-                value={stats.pendingCases}
-                color="orange"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
-              />
-              <StatCard
-                label="Served"
-                value={stats.servedCases}
-                color="green"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
-              />
-              <StatCard
-                label="Closed"
-                value={stats.closedCases}
-                color="gray"
-                compact
-                onClick={() => navigate("/dashboard/cases")}
-                icon={<svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
-              />
-            </div>
+      {/* ── Cases Table (paginated) ─────────────────────────────── */}
+      <div>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Cases</h3>
+            {!loadingCounts && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400">
+                {statusCounts.total} total
+              </span>
+            )}
           </div>
-
-          {/* Other stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
-            <StatCard
-              label="Incidents"
-              value={stats.totalIncidents}
-              sub={`${stats.activeIncidents} unresolved`}
-              color="red"
-              onClick={() => navigate("/dashboard/incidents")}
-              icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>}
-            />
-            <StatCard
-              label="Guardrooms"
-              value={stats.totalGuardrooms}
-              sub={`${stats.activeGuardrooms} active`}
-              color="purple"
-              onClick={() => navigate("/dashboard/guardrooms")}
-              icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>}
-            />
-            <StatCard
-              label="Personnel"
-              value={stats.totalPersonnel}
-              sub={`${stats.activePersonnel} active`}
-              color="yellow"
-              onClick={() => navigate("/dashboard/users")}
-              icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>}
-            />
-          </div>
-
-          {/* Recent activity */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Recent Cases */}
-            <div className="bg-gray-800 rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-                <span className="text-white text-sm font-medium">Recent Cases</span>
-                <button
-                  onClick={() => navigate("/dashboard/cases")}
-                  className="text-xs text-blue-400 hover:text-blue-300"
-                >
-                  View all
-                </button>
-              </div>
-              {stats.recentCases.length === 0 ? (
-                <p className="px-4 py-6 text-sm text-gray-500 text-center">No cases yet.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                <table className="w-full text-xs min-w-[320px]">
-                  <thead className="bg-gray-700/50 text-gray-400 uppercase">
-                    <tr>
-                      <th className="text-left px-4 py-2">No.</th>
-                      <th className="text-left px-4 py-2">Accused</th>
-                      <th className="text-left px-4 py-2">Status</th>
-                      <th className="text-left px-4 py-2 hidden sm:table-cell">Date</th>
-                      {isAdmin && (isSpecial || isNormal) && <th className="px-4 py-2"></th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stats.recentCases.map((c) => (
-                      <tr key={c.id} className="border-t border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={() => navigate("/dashboard/cases")}>
-                        <td className="px-4 py-2 text-blue-400 font-mono">{c.case_number || "—"}</td>
-                        <td className="px-4 py-2 text-white truncate max-w-[120px]">{c.accused_name || c.title || "—"}</td>
-                        <td className="px-4 py-2">
-                          <StatusBadge status={c.status} />
-                        </td>
-                        <td className="px-4 py-2 text-gray-400 hidden sm:table-cell">{c.created_at?.slice(0, 10)}</td>
-                        {isAdmin && (isSpecial || isNormal) && (
-                          <td className="px-4 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                            {c.status === "tasked" && isSpecial && !c.assigned_team && (
-                              <button
-                                onClick={() => setAssignTeamModal(c)}
-                                className="px-2 py-1 bg-indigo-700 hover:bg-indigo-600 text-white text-[11px] font-medium rounded whitespace-nowrap transition-colors"
-                              >
-                                Assign Team
-                              </button>
-                            )}
-                            {c.status === "tasked" && isSpecial && c.assigned_team && (
-                              <span className="text-[11px] text-indigo-400 font-medium">✓ Team Assigned</span>
-                            )}
-                            {c.status === "tasked" && isNormal && (
-                              <button
-                                onClick={() => setTaskDetModal(c)}
-                                className="px-2 py-1 bg-teal-700 hover:bg-teal-600 text-white text-[11px] font-medium rounded whitespace-nowrap transition-colors"
-                              >
-                                {c.tasked_detachment ? "Re-assign Det." : "Task to Det."}
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              )}
-            </div>
-
-            {/* Recent Incidents */}
-            <div className="bg-gray-800 rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-                <span className="text-white text-sm font-medium">Recent Incidents</span>
-                <button
-                  onClick={() => navigate("/dashboard/incidents")}
-                  className="text-xs text-blue-400 hover:text-blue-300"
-                >
-                  View all
-                </button>
-              </div>
-              {stats.recentIncidents.length === 0 ? (
-                <p className="px-4 py-6 text-sm text-gray-500 text-center">No incidents yet.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                <table className="w-full text-xs min-w-[300px]">
-                  <thead className="bg-gray-700/50 text-gray-400 uppercase">
-                    <tr>
-                      <th className="text-left px-4 py-2">No.</th>
-                      <th className="text-left px-4 py-2">Type</th>
-                      <th className="text-left px-4 py-2">Severity</th>
-                      <th className="text-left px-4 py-2 hidden sm:table-cell">Date</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stats.recentIncidents.map((i) => (
-                      <tr key={i.id} className="border-t border-gray-700 hover:bg-gray-700/30 cursor-pointer" onClick={() => navigate("/dashboard/incidents")}>
-                        <td className="px-4 py-2 text-blue-400 font-mono">{i.incident_number || "—"}</td>
-                        <td className="px-4 py-2 text-white truncate max-w-[120px]">{i.incident_type}</td>
-                        <td className="px-4 py-2">
-                          <SeverityBadge severity={i.severity} />
-                        </td>
-                        <td className="px-4 py-2 text-gray-400 hidden sm:table-cell">{i.date_occurred?.slice(0, 10)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="bg-gray-800 rounded-lg p-4">
-            <p className="text-xs text-gray-400 uppercase tracking-wider mb-3">Quick Actions</p>
-            <div className="flex flex-wrap gap-2">
-              {[
-                { label: "View Cases", path: "/dashboard/cases" },
-                { label: "Log Incident", path: "/dashboard/incidents" },
-                { label: "Morning Briefs", path: "/dashboard/morning-briefs" },
-                { label: "Guardrooms", path: "/dashboard/guardrooms" },
-                { label: "Manage Users", path: "/dashboard/users" },
-                ...(isSpecial && isAdmin ? [{ label: "Teams", path: "/dashboard/teams" }] : []),
-              ].map((action) => (
-                <button
-                  key={action.path}
-                  onClick={() => navigate(action.path)}
-                  className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded transition-colors"
-                >
-                  {action.label}
-                </button>
+          <button
+            onClick={() => navigate("/dashboard/cases")}
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
+          >
+            Manage →
+          </button>
+        </div>
+        <div className="bg-gray-800 rounded-xl overflow-hidden">
+          {loadingCases ? (
+            <div className="p-4 space-y-3">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="h-7 bg-gray-700 rounded animate-pulse" />
               ))}
             </div>
-          </div>
-        </>
-      ) : null}
+          ) : cases.length === 0 ? (
+            <p className="p-5 text-gray-500 text-sm">No cases assigned to this battalion.</p>
+          ) : (
+            <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+              <table className="w-full min-w-[1100px] text-sm">
+              <thead>
+                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Service No</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Rank</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Accused</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
+                  {isNormalAdmin && (
+                    <th className="text-left px-3 md:px-5 py-3 font-medium">Actions</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {cases.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-b border-gray-700/40 hover:bg-gray-700/30 transition-colors"
+                  >
+                    <td
+                      className="px-3 md:px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap cursor-pointer"
+                      onClick={() => navigate("/dashboard/cases")}
+                    >
+                      {c.case_number || "--"}
+                    </td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_service_number || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_rank || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_name || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.offence_name || c.offence || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px] cursor-pointer" onClick={() => navigate("/dashboard/cases")}>
+                      {(() => {
+                        const desc = c.description || "--";
+                        const expanded = !!expandedDesc[c.id];
+                        const longDesc = desc.length > descLimit;
+                        const shown = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;
+                        return (
+                          <>
+                            <p className="whitespace-pre-wrap break-words">{shown}</p>
+                            {longDesc && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedDesc((prev) => ({ ...prev, [c.id]: !prev[c.id] }));
+                                }}
+                                className="mt-1 text-xs text-blue-400 hover:underline"
+                              >
+                                {expanded ? "Show less" : "Show more"}
+                              </button>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-3 md:px-5 py-3 cursor-pointer" onClick={() => navigate("/dashboard/cases")}>
+                      <Badge
+                        label={c.status}
+                        style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
+                      />
+                    </td>
+                    {isNormalAdmin && (
+                      <td className="px-3 md:px-5 py-3">
+                        {c.status === "tasked" && !c.tasked_detachment && (
+                          <button
+                            onClick={() => openTaskModal(c)}
+                            className="px-3 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white transition-colors"
+                          >
+                            Task to Detachment
+                          </button>
+                        )}
+                        {c.tasked_detachment && (
+                          <span className="text-xs text-gray-500 italic">
+                            Detachment tasked
+                          </span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        <PaginationBar
+          page={page}
+          totalPages={totalPages}
+          totalCount={totalCount}
+          onChange={setPage}
+        />
+      </div>
 
-      {/* Modals */}
-      {assignTeamModal && (
-        <AssignTeamModal
-          caseItem={assignTeamModal}
-          teams={teams}
-          onClose={() => setAssignTeamModal(null)}
-          onSuccess={() => {
-            setAssignTeamModal(null);
-            // Refresh recent cases
-            caseService.list().then((res) => {
-              const cases = toArray(res.data);
-              setStats((s) => s ? { ...s, recentCases: cases.slice(0, 5), taskedCases: cases.filter((c) => c.status === "tasked").length, underInvestigation: cases.filter((c) => c.status === "under_investigation").length } : s);
-            }).catch(() => {});
-          }}
-        />
-      )}
-      {taskDetModal && (
-        <TaskDetachmentModal
-          caseItem={taskDetModal}
-          detachments={detachments}
-          onClose={() => setTaskDetModal(null)}
-          onSuccess={() => {
-            setTaskDetModal(null);
-            caseService.list().then((res) => {
-              const cases = toArray(res.data);
-              setStats((s) => s ? { ...s, recentCases: cases.slice(0, 5) } : s);
-            }).catch(() => {});
-          }}
-        />
+      <Footer />
+
+      {/* Task to Detachment Modal */}
+      {taskModal && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setTaskModal(null)}
+        >
+          <div
+            className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white mb-1">Task Case to Detachment</h2>
+            <p className="text-sm text-gray-400 mb-5">
+              Case <span className="font-mono text-gray-300">{taskModal.case_number}</span>:{" "}
+              {taskModal.title || taskModal.offence}
+            </p>
+
+            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+              Select Detachment
+            </label>
+            <select
+              value={selDetachment}
+              onChange={(e) => setSelDetachment(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 mb-4"
+            >
+              <option value="">-- Choose Detachment --</option>
+              {detachments.map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
+            </select>
+
+            {detachments.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No detachments found under this battalion.</p>
+            )}
+
+            {taskError && (
+              <p className="text-xs text-red-400 mb-4">{taskError}</p>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setTaskModal(null)}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTaskToDetachment}
+                disabled={taskingCase || !selDetachment}
+                className="px-4 py-2 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {taskingCase ? "Tasking..." : "Task to Detachment"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
-  );
-}
-
-function StatusBadge({ status }) {
-  const map = {
-    new: "bg-teal-900/50 text-teal-300",
-    open: "bg-blue-900/50 text-blue-300",
-    tasked: "bg-yellow-900/50 text-yellow-300",
-    under_investigation: "bg-indigo-900/50 text-indigo-300",
-    pending: "bg-orange-900/50 text-orange-300",
-    served: "bg-green-900/50 text-green-300",
-    closed: "bg-gray-700 text-gray-400",
-    referred: "bg-purple-900/50 text-purple-300",
-  };
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium capitalize ${map[status] || "bg-gray-700 text-gray-400"}`}>
-      {status?.replace(/_/g, " ")}
-    </span>
-  );
-}
-
-function SeverityBadge({ severity }) {
-  const map = {
-    low: "bg-green-900/50 text-green-300",
-    medium: "bg-yellow-900/50 text-yellow-300",
-    high: "bg-orange-900/50 text-orange-300",
-    critical: "bg-red-900/50 text-red-300",
-  };
-  return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium capitalize ${map[severity] || "bg-gray-700 text-gray-400"}`}>
-      {severity}
-    </span>
   );
 }

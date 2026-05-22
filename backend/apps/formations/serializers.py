@@ -16,48 +16,26 @@ class DetachmentSerializer(serializers.ModelSerializer):
 
 
 class UnitSerializer(serializers.ModelSerializer):
-    def validate(self, attrs):
-        formation = attrs.get("formation", getattr(self.instance, "formation", None))
-        if formation is None:
-            raise serializers.ValidationError({"formation": "Formation is required."})
-        return attrs
+    formation_name = serializers.SerializerMethodField()
+
+    def get_formation_name(self, obj):
+        return obj.formation.name if obj.formation else None
 
     class Meta:
         model = Unit
-        fields = [
-            "id",
-            "name",
-            "code",
-            "formation",
-            "service",
-            "mobile_no",
-            "email",
-            "location_county",
-            "battalion",
-        ]
-        extra_kwargs = {
-            "formation": {"required": True, "allow_null": False},
-            "battalion": {"required": False, "allow_null": True},
-        }
+        fields = ["id", "name", "code", "formation", "formation_name",
+                  "service", "email", "mobile_no", "location_county"]
 
 
 class BattalionSerializer(serializers.ModelSerializer):
-    units = UnitSerializer(many=True, read_only=True)
     detachments = DetachmentSerializer(many=True, read_only=True)
+    case_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Battalion
         fields = [
-            "id",
-            "name",
-            "email",
-            "phone",
-            "aor",
-            "code",
-            "battalion_type",
-            "formation",
-            "units",
-            "detachments",
+            "id", "name", "email", "phone", "aor", "code",
+            "battalion_type", "formation", "detachments", "case_count",
         ]
         extra_kwargs = {
             "formation": {"required": False, "allow_null": True},
@@ -65,9 +43,9 @@ class BattalionSerializer(serializers.ModelSerializer):
 
 
 class FormationSerializer(serializers.ModelSerializer):
-    battalions = BattalionSerializer(many=True, read_only=True)
     units = UnitSerializer(many=True, read_only=True)
+    battalions = BattalionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Formation
-        fields = ["id", "name", "location", "battalions", "units"]
+        fields = ["id", "name", "location", "units", "battalions"]

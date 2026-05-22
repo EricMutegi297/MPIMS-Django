@@ -9,17 +9,6 @@ class IncidentViewSet(viewsets.ModelViewSet):
     filterset_fields = ["status", "severity", "unit", "battalion", "is_belated"]
     search_fields = ["incident_number", "incident_type", "description", "location"]
 
-    def get_queryset(self):
-        user = self.request.user
-        qs = Incident.objects.select_related("reported_by", "unit", "battalion")
-        if not user.is_authenticated:
-            return qs.none()
-        if user.is_superuser:
-            return qs.all()
-        if user.battalion_id:
-            return qs.filter(battalion_id=user.battalion_id)
-        return qs.all()
-
     def perform_create(self, serializer):
         from django.utils import timezone
         from datetime import timedelta

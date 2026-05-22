@@ -1,8 +1,20 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
-import { caseService, teamService, abstractService } from "../services/api";
+﻿import React, { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
+import { caseService, teamService, attachmentService } from "../services/api";
+import NotificationBell from "./NotificationBell";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function normalizeDateForApi(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const isoPrefix = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]/);
+  if (isoPrefix) return isoPrefix[1];
+  return text;
 }
 
 const STATUS_COLORS = {
@@ -11,440 +23,1479 @@ const STATUS_COLORS = {
   tasked: "bg-yellow-500/20 text-yellow-400",
   under_investigation: "bg-indigo-500/20 text-indigo-400",
   pending: "bg-orange-500/20 text-orange-400",
-  served: "bg-teal-500/20 text-teal-400",
+  served: "bg-purple-500/20 text-purple-400",
   closed: "bg-green-500/20 text-green-400",
+  referred: "bg-cyan-500/20 text-cyan-400",
   dismissed: "bg-red-500/20 text-red-400",
-  referred: "bg-purple-500/20 text-purple-400",
 };
 
-/* ─── Clickable Stat Card ───────────────────────────────── */
-function StatCard({ label, value, color = "text-white", active, onClick, loading }) {
+const FILTERS = [
+  {
+    key: "all",
+    label: "My Cases",
+    valueColor: "text-white",
+    ring: "ring-gray-500",
+    activeBg: "bg-gray-700",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+      </svg>
+    ),
+  },
+  {
+    key: "under_investigation",
+    label: "Under Investigation",
+    valueColor: "text-indigo-400",
+    ring: "ring-indigo-500",
+    activeBg: "bg-indigo-500/10",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+    ),
+  },
+  {
+    key: "pending",
+    label: "Pending",
+    valueColor: "text-orange-400",
+    ring: "ring-orange-500",
+    activeBg: "bg-orange-500/10",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
+    key: "served",
+    label: "Served",
+    valueColor: "text-purple-400",
+    ring: "ring-purple-500",
+    activeBg: "bg-purple-500/10",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
+    key: "closed",
+    label: "Closed",
+    valueColor: "text-green-400",
+    ring: "ring-green-500",
+    activeBg: "bg-green-500/10",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" />
+      </svg>
+    ),
+  },
+];
+
+function FilterCard({ cfg, value, isActive, loading, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`bg-gray-800 rounded-lg p-4 border text-left w-full transition-all ${
-        active
-          ? "border-indigo-500 ring-1 ring-indigo-500 shadow-lg shadow-indigo-900/20"
-          : "border-gray-700 hover:border-gray-500"
+      className={`w-full text-left rounded-lg p-4 border transition-all focus:outline-none ${
+        isActive
+          ? `${cfg.activeBg} border-gray-500 ring-2 ${cfg.ring}`
+          : "bg-gray-800 border-gray-700 hover:border-gray-500"
       }`}
     >
-      <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${color}`}>{loading ? "…" : value}</p>
+      <div className="flex items-center justify-between mb-2">
+        <span className={`${isActive ? cfg.valueColor : "text-gray-500"}`}>{cfg.icon}</span>
+        {isActive && (
+          <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">active</span>
+        )}
+      </div>
+      <p className="text-xs text-gray-400 uppercase tracking-wider mb-1 leading-tight">{cfg.label}</p>
+      <p className={`text-2xl font-bold ${cfg.valueColor}`}>{loading ? "..." : value}</p>
     </button>
   );
 }
 
-/* ─── Attachment Badge ───────────────────────────────────── */
-function AttachBadge({ label, present }) {
+// ── Activity helpers ──────────────────────────────────────────────────────────
+const ACTION_META = {
+  case_created:          { color: "text-green-400",  bg: "bg-green-500/10",  label: "Case Created" },
+  status_changed:        { color: "text-blue-400",   bg: "bg-blue-500/10",   label: "Status Changed" },
+  attachment_uploaded:   { color: "text-blue-400",   bg: "bg-blue-500/10",   label: "File Uploaded" },
+  attachment_deleted:    { color: "text-red-400",    bg: "bg-red-500/10",    label: "File Deleted" },
+  team_assigned:         { color: "text-purple-400", bg: "bg-purple-500/10", label: "Team Assigned" },
+  battalion_tasked:      { color: "text-yellow-400", bg: "bg-yellow-500/10", label: "Tasked" },
+  case_updated:          { color: "text-gray-400",   bg: "bg-gray-700",      label: "Updated" },
+};
+
+function ActionIcon({ action }) {
+  const icons = {
+    case_created: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />,
+    status_changed: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />,
+    attachment_uploaded: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />,
+    attachment_deleted: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />,
+    team_assigned: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />,
+    battalion_tasked: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />,
+  };
+  const meta = ACTION_META[action] || ACTION_META.case_updated;
+  const path = icons[action] || <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />;
   return (
-    <span
-      title={present ? `${label} attached` : `${label} not attached`}
-      className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded font-medium ${
-        present
-          ? "bg-green-500/20 text-green-400 border border-green-500/30"
-          : "bg-gray-700 text-gray-500 border border-gray-600"
-      }`}
-    >
-      {present ? "✓" : "✗"} {label}
+    <span className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${meta.bg}`}>
+      <svg className={`w-3.5 h-3.5 ${meta.color}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">{path}</svg>
     </span>
   );
 }
 
-/* ─── Brief Upload Modal ─────────────────────────────────── */
-function BriefModal({ caseObj, onClose, onSuccess }) {
-  const [file, setFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!file) { setError("Please select a file."); return; }
-    setLoading(true);
-    setError("");
-    try {
-      const fd = new FormData();
-      fd.append("brief_document", file);
-      const res = await caseService.attachBrief(caseObj.id, fd);
-      onSuccess(res.data);
-      onClose();
-    } catch (err) {
-      setError(err.response?.data?.detail || "Upload failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white font-semibold">Attach Brief</h3>
-          <span className="text-gray-400 text-sm font-mono">{caseObj.case_number}</span>
-        </div>
-        {error && (
-          <p className="text-red-400 text-sm mb-3 bg-red-900/20 border border-red-700/30 rounded px-3 py-2">{error}</p>
-        )}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm text-gray-400 mb-1">Brief Document</label>
-            <input
-              type="file"
-              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-              onChange={(e) => setFile(e.target.files[0])}
-              className="w-full text-sm text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-indigo-600 file:text-white file:text-sm cursor-pointer"
-            />
-          </div>
-          <div className="flex gap-3 justify-end pt-1">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded disabled:opacity-50 transition-colors"
-            >
-              {loading ? "Uploading…" : "Attach Brief"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
+function fmtTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return d.toLocaleDateString();
 }
 
-/* ─── Abstract Attachments Modal ─────────────────────────── */
-function AbstractModal({ caseObj, onClose, onCountChange }) {
+// ── Attach Modal ─────────────────────────────────────────────────────────────
+function AttachModal({ caseObj, onClose, onUploaded }) {
+  const [activeTab, setActiveTab] = useState("files");
   const [attachments, setAttachments] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingList, setLoadingList] = useState(true);
+  const [label, setLabel] = useState("");
   const [file, setFile] = useState(null);
-  const [desc, setDesc] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState("");
-  const fileRef = useRef(null);
+  const [deleting, setDeleting] = useState(null);
+  const [err, setErr] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await abstractService.list(caseObj.id);
-      const items = toArray(res.data);
-      setAttachments(items);
-      return items.length;
-    } catch {
-      setAttachments([]);
-      return 0;
-    } finally {
-      setLoading(false);
-    }
+  // Activity log state
+  const [activityLog, setActivityLog] = useState([]);
+  const [loadingActivity, setLoadingActivity] = useState(false);
+  const [activityLoaded, setActivityLoaded] = useState(false);
+
+  const fetchAttachments = useCallback(() => {
+    setLoadingList(true);
+    attachmentService
+      .list(caseObj.id)
+      .then((res) => setAttachments(toArray(res.data)))
+      .catch(() => {})
+      .finally(() => setLoadingList(false));
   }, [caseObj.id]);
 
-  useEffect(() => { load(); }, [load]);
+  const fetchActivity = useCallback(() => {
+    if (activityLoaded) return;
+    setLoadingActivity(true);
+    attachmentService
+      .activity(caseObj.id)
+      .then((res) => {
+        setActivityLog(toArray(res.data));
+        setActivityLoaded(true);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingActivity(false));
+  }, [caseObj.id, activityLoaded]);
+
+  useEffect(() => {
+    fetchAttachments();
+  }, [fetchAttachments]);
+
+  useEffect(() => {
+    if (activeTab === "activity") fetchActivity();
+  }, [activeTab, fetchActivity]);
+
+  // Refresh activity after an upload/delete
+  const refreshActivity = () => {
+    setActivityLoaded(false);
+  };
 
   const handleUpload = async (e) => {
     e.preventDefault();
-    if (!file) { setError("Select a file."); return; }
+    if (!file) { setErr("Please select a file."); return; }
     setUploading(true);
-    setError("");
+    setErr("");
     try {
       const fd = new FormData();
-      fd.append("case", caseObj.id);
+      if (label.trim()) fd.append("label", label.trim());
       fd.append("file", file);
-      if (desc) fd.append("description", desc);
-      await abstractService.create(fd);
+      const res = await attachmentService.upload(caseObj.id, fd);
+      setAttachments((prev) => [res.data, ...prev]);
+      setLabel("");
       setFile(null);
-      setDesc("");
-      if (fileRef.current) fileRef.current.value = "";
-      const newCount = await load();
-      onCountChange?.(newCount);
-    } catch (err) {
-      setError(err.response?.data?.detail || "Upload failed.");
+      refreshActivity();
+      onUploaded();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      setErr(data?.file?.[0] || data?.detail || "Upload failed. Please try again.");
     } finally {
       setUploading(false);
     }
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async (att) => {
+    setDeleting(att.id);
     try {
-      await abstractService.delete(id);
-      const newCount = await load();
-      onCountChange?.(newCount);
-    } catch { /* ignore */ }
+      await attachmentService.delete(caseObj.id, att.id);
+      setAttachments((prev) => prev.filter((a) => a.id !== att.id));
+      refreshActivity();
+      onUploaded();
+    } catch {
+      // silently ignore
+    } finally {
+      setDeleting(null);
+    }
   };
 
+  // Official documents: RFI is always shown when the case has RFI metadata,
+  // even if no uploaded RFI file exists yet.
+  const systemFiles = [
+    (caseObj.rfi_document || caseObj.rfi_no || caseObj.rfi_date) && {
+      key: "rfi",
+      label: "RFI",
+      url: caseObj.rfi_document || null,
+      fileName: caseObj.rfi_document
+        ? caseObj.rfi_document.split("/").pop()
+        : [caseObj.rfi_no, caseObj.rfi_date].filter(Boolean).join(" • ") || "RFI reference",
+      meta: !caseObj.rfi_document
+        ? [caseObj.rfi_no && `No: ${caseObj.rfi_no}`, caseObj.rfi_date && `Date: ${caseObj.rfi_date}`].filter(Boolean).join(" | ")
+        : "",
+    },
+    caseObj.tasking_letter && { key: "tasking", label: "Tasking Letter", url: caseObj.tasking_letter, fileName: caseObj.tasking_letter.split("/").pop() },
+  ].filter(Boolean);
+
+  const totalFileCount = systemFiles.length + attachments.length;
+  const canUpload = caseObj.status === "under_investigation" || caseObj.status === "pending";
+
+  const tabs = [
+    { key: "files",    label: `Files (${totalFileCount})` },
+    { key: "activity", label: "Activity" },
+  ];
+
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-lg flex flex-col max-h-[90vh]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="bg-gray-800 rounded-xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
+
+        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700 shrink-0">
           <div>
-            <h3 className="text-white font-semibold">Abstract Attachments</h3>
-            <p className="text-gray-500 text-xs font-mono">{caseObj.case_number}</p>
+            <h3 className="text-white font-semibold text-sm">Case Documents</h3>
+            <p className="text-gray-500 text-xs mt-0.5 font-mono">{caseObj.case_number}</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl leading-none">×</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors p-1">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        <div className="p-5 overflow-y-auto flex-1 space-y-2">
-          {loading ? (
-            <p className="text-gray-500 text-sm text-center py-6">Loading…</p>
-          ) : attachments.length === 0 ? (
-            <p className="text-gray-500 text-sm text-center py-6">No abstract attachments yet.</p>
-          ) : (
-            attachments.map((a) => (
-              <div key={a.id} className="flex items-start justify-between gap-3 bg-gray-700/40 rounded-lg p-3 border border-gray-600/40">
-                <div className="min-w-0 flex-1">
-                  <a
-                    href={a.file}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-400 text-sm hover:underline truncate block"
-                  >
-                    {a.file?.split("/").pop() || "File"}
-                  </a>
-                  {a.description && <p className="text-gray-400 text-xs mt-0.5">{a.description}</p>}
-                  <p className="text-gray-600 text-xs mt-0.5">{a.uploaded_at?.slice(0, 10)}</p>
-                </div>
-                <button
-                  onClick={() => handleDelete(a.id)}
-                  className="text-red-400 hover:text-red-300 text-xs shrink-0 px-2 py-1 rounded hover:bg-red-900/20 transition-colors"
-                >
-                  Remove
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-        <div className="p-5 border-t border-gray-700 shrink-0">
-          {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
-          <form onSubmit={handleUpload} className="space-y-2">
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.xlsx,.csv"
-              onChange={(e) => setFile(e.target.files[0])}
-              className="w-full text-xs text-gray-300 file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-gray-200 file:text-xs cursor-pointer"
-            />
-            <input
-              type="text"
-              placeholder="Description (optional)"
-              value={desc}
-              onChange={(e) => setDesc(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 text-white rounded px-3 py-1.5 text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-700 px-5 shrink-0">
+          {tabs.map((t) => (
             <button
-              type="submit"
-              disabled={uploading}
-              className="w-full py-2 text-sm bg-yellow-600 hover:bg-yellow-700 text-white rounded disabled:opacity-50 transition-colors"
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              className={`py-2.5 px-1 mr-5 text-xs font-medium border-b-2 transition-colors ${
+                activeTab === t.key
+                  ? "border-blue-500 text-blue-400"
+                  : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
             >
-              {uploading ? "Uploading…" : "Add Attachment"}
+              {t.label}
             </button>
-          </form>
+          ))}
         </div>
-      </div>
-    </div>
-  );
-}
 
-/* ─── Serve Case Confirm Modal ───────────────────────────── */
-function ServeModal({ caseObj, abstractCount, onClose, onSuccess }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleServe = async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await caseService.serveCase(caseObj.id);
-      onSuccess(res.data);
-      onClose();
-    } catch (err) {
-      setError(err.response?.data?.detail || "Failed to serve case.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-sm p-6">
-        <h3 className="text-white font-semibold mb-3">Serve Case</h3>
-        <p className="text-gray-400 text-sm mb-1">
-          Mark <span className="text-white font-mono">{caseObj.case_number}</span> as{" "}
-          <span className="text-teal-400 font-semibold">Served</span>?
-        </p>
-        <p className="text-gray-500 text-xs mb-4">
-          {abstractCount} abstract attachment{abstractCount !== 1 ? "s" : ""} on file.
-          This action cannot be undone.
-        </p>
-        {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
-        <div className="flex gap-3 justify-end">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={handleServe}
-            disabled={loading}
-            className="px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white rounded disabled:opacity-50 transition-colors"
-          >
-            {loading ? "Processing…" : "Confirm Serve"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Case Row (with actions for under_investigation) ────── */
-function CaseRow({ c, onRefresh }) {
-  const [caseData, setCaseData] = useState(c);
-  const [briefModal, setBriefModal] = useState(false);
-  const [abstractModal, setAbstractModal] = useState(false);
-  const [serveModal, setServeModal] = useState(false);
-  const [forwarding, setForwarding] = useState("");
-
-  const isUnderInv = caseData.status === "under_investigation";
-
-  const handleForward = async (target) => {
-    setForwarding(target);
-    try {
-      const res = await caseService.forwardBrief(caseData.id, { forward_to: target });
-      setCaseData(res.data);
-    } catch { /* ignore */ } finally {
-      setForwarding("");
-    }
-  };
-
-  return (
-    <>
-      <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors align-top">
-        <td className="px-4 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">
-          {caseData.case_number}
-        </td>
-        <td className="px-4 py-3">
-          <div className="text-white text-sm font-medium">{caseData.accused_name || "—"}</div>
-          <div className="text-gray-500 text-xs hidden md:block">{caseData.accused_service_number || ""}</div>
-        </td>
-        <td className="px-4 py-3 text-gray-300 text-sm hidden sm:table-cell">
-          {caseData.offence_name || caseData.offence || "—"}
-        </td>
-        <td className="px-4 py-3">
-          <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${STATUS_COLORS[caseData.status] || "bg-gray-600 text-gray-300"}`}>
-            {caseData.status?.replace(/_/g, " ")}
-          </span>
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex flex-col gap-1">
-            <div className="flex flex-wrap gap-1">
-              <AttachBadge label="RFI" present={!!caseData.rfi_document} />
-              <AttachBadge label="TL" present={!!caseData.tasking_letter} />
-              <AttachBadge label="Brief" present={!!caseData.brief_document} />
-            </div>
-            {caseData.abstracts_count > 0 && (
-              <span className="text-[10px] text-teal-400 font-medium">
-                {caseData.abstracts_count} abstract{caseData.abstracts_count !== 1 ? "s" : ""}
-              </span>
+        {/* ── FILES TAB ── */}
+        {activeTab === "files" && (
+          <>
+            {/* Upload form — only when case status allows uploads */}
+            {canUpload ? (
+              <form onSubmit={handleUpload} className="px-5 py-4 border-b border-gray-700 shrink-0 space-y-3">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Upload New File</p>
+                <input
+                  type="text"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="Label / description (optional)"
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-500"
+                />
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 cursor-pointer">
+                    <div className="bg-gray-700 border border-dashed border-gray-500 hover:border-blue-500 rounded-lg px-3 py-2 text-sm text-center transition-colors">
+                      {file ? (
+                        <span className="text-blue-400 truncate block">{file.name}</span>
+                      ) : (
+                        <span className="text-gray-500">Click to select file…</span>
+                      )}
+                    </div>
+                    <input
+                      type="file"
+                      className="sr-only"
+                      onChange={(e) => { setFile(e.target.files[0] || null); setErr(""); }}
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={uploading || !file}
+                    className="shrink-0 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+                  >
+                    {uploading ? "Uploading…" : "Upload"}
+                  </button>
+                </div>
+                {err && <p className="text-red-400 text-xs">{err}</p>}
+              </form>
+            ) : (
+              <div className="px-5 py-3 border-b border-gray-700 shrink-0">
+                <div className="flex items-center gap-2 bg-gray-700/40 border border-gray-600/40 rounded-lg px-3 py-2.5">
+                  <svg className="w-4 h-4 text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                  <p className="text-xs text-gray-500">
+                    Uploads locked — case is <span className="capitalize font-medium text-gray-400">{caseObj.status?.replace(/_/g, " ")}</span>.
+                  </p>
+                </div>
+              </div>
             )}
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          {isUnderInv ? (
-            <div className="flex flex-col gap-1.5">
-              {/* Attach Brief */}
-              <button
-                onClick={() => setBriefModal(true)}
-                className="text-xs px-2 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded border border-indigo-600/30 whitespace-nowrap transition-colors"
-              >
-                {caseData.brief_document ? "Replace Brief" : "Attach Brief"}
-              </button>
 
-              {/* Forward buttons — only shown when brief is attached */}
-              {caseData.brief_document && (
-                <>
-                  <button
-                    onClick={() => !caseData.brief_forwarded_co && handleForward("co")}
-                    disabled={caseData.brief_forwarded_co || forwarding === "co"}
-                    className={`text-xs px-2 py-1 rounded border whitespace-nowrap transition-colors ${
-                      caseData.brief_forwarded_co
-                        ? "bg-green-500/10 text-green-500 border-green-500/30 cursor-default"
-                        : "bg-gray-700/50 hover:bg-gray-700 text-gray-300 border-gray-600 cursor-pointer"
-                    }`}
-                  >
-                    {caseData.brief_forwarded_co ? "✓ Sent to CO" : forwarding === "co" ? "Sending…" : "→ Forward to CO"}
-                  </button>
-                  <button
-                    onClick={() => !caseData.brief_forwarded_corps && handleForward("corps_cmd")}
-                    disabled={caseData.brief_forwarded_corps || forwarding === "corps_cmd"}
-                    className={`text-xs px-2 py-1 rounded border whitespace-nowrap transition-colors ${
-                      caseData.brief_forwarded_corps
-                        ? "bg-green-500/10 text-green-500 border-green-500/30 cursor-default"
-                        : "bg-gray-700/50 hover:bg-gray-700 text-gray-300 border-gray-600 cursor-pointer"
-                    }`}
-                  >
-                    {caseData.brief_forwarded_corps ? "✓ Sent to Corps" : forwarding === "corps_cmd" ? "Sending…" : "→ Forward to Corps"}
-                  </button>
-                </>
+            {/* Files list */}
+            <div className="overflow-y-auto flex-1 px-5 py-4 space-y-5">
+
+              {/* ── System files (read-only) ── */}
+              {systemFiles.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                    Official Documents
+                    <span className="ml-2 text-gray-600 normal-case font-normal">({systemFiles.length})</span>
+                  </p>
+                  <ul className="space-y-2">
+                    {systemFiles.map((sf) => (
+                      <li key={sf.key} className="flex items-center gap-3 bg-gray-700/40 border border-gray-700 rounded-lg px-3 py-2.5">
+                        <svg className="w-4 h-4 text-yellow-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-xs font-medium truncate">{sf.label}</p>
+                          <p className="text-gray-400 text-[11px] truncate">{sf.fileName}</p>
+                          {sf.meta && <p className="text-gray-500 text-[10px] truncate mt-0.5">{sf.meta}</p>}
+                        </div>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-500 font-medium shrink-0">official</span>
+                        {sf.url ? (
+                          <>
+                            <a
+                              href={sf.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-gray-500 hover:text-blue-400 transition-colors p-1 shrink-0"
+                              title="View / Open"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                            </a>
+                            <a
+                              href={sf.url}
+                              download
+                              className="text-gray-500 hover:text-green-400 transition-colors p-1 shrink-0"
+                              title="Download"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                            </a>
+                          </>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 shrink-0">reference</span>
+                        )}
+                        {/* No delete for official docs */}
+                        <span className="w-6 shrink-0" />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
-              {/* Compile Abstract */}
-              <button
-                onClick={() => setAbstractModal(true)}
-                className="text-xs px-2 py-1 bg-yellow-600/20 hover:bg-yellow-600/40 text-yellow-300 rounded border border-yellow-600/30 whitespace-nowrap transition-colors"
-              >
-                Abstract{caseData.abstracts_count > 0 ? ` (${caseData.abstracts_count})` : ""}
-              </button>
-
-              {/* Serve Case — blocked when no abstracts */}
-              <button
-                onClick={() => caseData.abstracts_count > 0 && setServeModal(true)}
-                disabled={!caseData.abstracts_count}
-                title={!caseData.abstracts_count ? "Add abstract attachments before serving" : "Mark case as served"}
-                className={`text-xs px-2 py-1 rounded border whitespace-nowrap transition-colors ${
-                  caseData.abstracts_count > 0
-                    ? "bg-teal-600/20 hover:bg-teal-600/40 text-teal-300 border-teal-600/30 cursor-pointer"
-                    : "bg-gray-700/20 text-gray-600 border-gray-700 cursor-not-allowed"
-                }`}
-              >
-                Serve Case
-              </button>
+              {/* ── Investigator uploads (deletable) ── */}
+              <div>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Investigator Uploads
+                  {!loadingList && (
+                    <span className="ml-2 text-gray-600 normal-case font-normal">({attachments.length})</span>
+                  )}
+                </p>
+                {loadingList ? (
+                  <div className="space-y-2">
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="h-10 bg-gray-700 rounded animate-pulse" />
+                    ))}
+                  </div>
+                ) : attachments.length === 0 ? (
+                  <p className="text-gray-500 text-sm py-2 text-center">No files uploaded yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {attachments.map((att) => (
+                      <li key={att.id} className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2.5">
+                        <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                        </svg>
+                        <div className="flex-1 min-w-0">
+                          {att.label && (
+                            <p className="text-white text-xs font-medium truncate">{att.label}</p>
+                          )}
+                          <p className="text-gray-400 text-[11px] truncate">{att.file_name || att.file}</p>
+                          {att.uploaded_by_name && (
+                            <p className="text-gray-600 text-[10px]">by {att.uploaded_by_name}</p>
+                          )}
+                        </div>
+                        <a
+                          href={att.file}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-500 hover:text-blue-400 transition-colors p-1 shrink-0"
+                          title="View / Open"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                        </a>
+                        <a
+                          href={att.file}
+                          download
+                          className="text-gray-500 hover:text-green-400 transition-colors p-1 shrink-0"
+                          title="Download"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        </a>
+                        {canUpload && (
+                          <button
+                            onClick={() => handleDelete(att)}
+                            disabled={deleting === att.id}
+                            className="text-gray-600 hover:text-red-400 transition-colors p-1 shrink-0 disabled:opacity-50"
+                            title="Remove"
+                          >
+                            {deleting === att.id ? (
+                              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                              </svg>
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            )}
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-          ) : (
-            <span className="text-gray-600 text-xs">—</span>
-          )}
-        </td>
-        <td className="px-4 py-3 text-gray-500 text-xs hidden md:table-cell whitespace-nowrap">
-          {caseData.created_at?.slice(0, 10)}
-        </td>
-      </tr>
+          </>
+        )}
 
-      {briefModal && (
-        <BriefModal
-          caseObj={caseData}
-          onClose={() => setBriefModal(false)}
-          onSuccess={(updated) => setCaseData(updated)}
-        />
-      )}
-      {abstractModal && (
-        <AbstractModal
-          caseObj={caseData}
-          onClose={() => setAbstractModal(false)}
-          onCountChange={(count) => setCaseData((prev) => ({ ...prev, abstracts_count: count }))}
-        />
-      )}
-      {serveModal && (
-        <ServeModal
-          caseObj={caseData}
-          abstractCount={caseData.abstracts_count}
-          onClose={() => setServeModal(false)}
-          onSuccess={(updated) => { setCaseData(updated); onRefresh?.(); }}
-        />
-      )}
-    </>
+        {/* ── ACTIVITY TAB ── */}
+        {activeTab === "activity" && (
+          <div className="overflow-y-auto flex-1 px-5 py-4">
+            {loadingActivity ? (
+              <div className="space-y-3 pt-2">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex gap-3">
+                    <div className="w-7 h-7 rounded-full bg-gray-700 animate-pulse shrink-0" />
+                    <div className="flex-1 space-y-1.5 pt-1">
+                      <div className="h-3 bg-gray-700 rounded animate-pulse w-3/4" />
+                      <div className="h-2.5 bg-gray-700/60 rounded animate-pulse w-1/2" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : activityLog.length === 0 ? (
+              <p className="text-gray-500 text-sm py-8 text-center">No activity recorded yet.</p>
+            ) : (
+              <ol className="relative border-l border-gray-700 ml-3 space-y-0">
+                {activityLog.map((entry, idx) => {
+                  const meta = ACTION_META[entry.action] || ACTION_META.case_updated;
+                  return (
+                    <li key={entry.id} className={`ml-4 pb-5 ${idx === activityLog.length - 1 ? "" : ""}`}>
+                      {/* Timeline dot */}
+                      <span className={`absolute -left-3.5 flex items-center justify-center w-7 h-7 rounded-full ${meta.bg}`}>
+                        <ActionIcon action={entry.action} />
+                      </span>
+                      <div className="ml-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+                          <span className="text-gray-600 text-[10px]">·</span>
+                          <span className="text-gray-500 text-[10px]">{fmtTime(entry.created_at)}</span>
+                        </div>
+                        {entry.detail && (
+                          <p className="text-gray-300 text-xs mt-0.5">{entry.detail}</p>
+                        )}
+                        {entry.actor_name && (
+                          <p className="text-gray-600 text-[10px] mt-0.5">by {entry.actor_name}</p>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
-/* ─── Investigator Dashboard ─────────────────────────────── */
+// ── Abstract / attachment pill helper ────────────────────────────────────────
+function AbstractCell({ c, onAttach }) {
+  const baseCount = ((c.rfi_document || c.rfi_no || c.rfi_date) ? 1 : 0) + (c.tasking_letter ? 1 : 0);
+  const extraCount = c.extra_attachment_count || 0;
+  const totalCount = baseCount + extraCount;
+  const isLocked = c.status === "served" || c.status === "closed";
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={() => onAttach(c)}
+        title="View attachments"
+        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full cursor-pointer transition-colors ${
+          totalCount > 0
+            ? "bg-blue-500/20 text-blue-400 hover:bg-blue-500/30"
+            : "bg-gray-700 text-gray-500 hover:bg-gray-600"
+        }`}
+      >
+        {totalCount} {totalCount === 1 ? "doc" : "docs"}
+      </button>
+      {isLocked ? (
+        <button
+          onClick={() => onAttach(c)}
+          title="View documents (locked — case is served/closed)"
+          className="text-gray-500 hover:text-gray-400 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+        </button>
+      ) : (
+        <button
+          onClick={() => onAttach(c)}
+          title="Manage attachments"
+          className="text-gray-500 hover:text-blue-400 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DescriptionCell({ text }) {
+  const [expanded, setExpanded] = useState(false);
+  const value = text || "--";
+  const limit = 120;
+  const longDesc = value.length > limit;
+  const shown = expanded || !longDesc ? value : `${value.slice(0, limit)}...`;
+
+  return (
+    <div className="max-w-[260px]">
+      <p className="text-gray-400 text-xs whitespace-pre-wrap break-words">{shown}</p>
+      {longDesc && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-xs text-blue-400 hover:underline"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Resume Investigation Modal ────────────────────────────────────────────────
+function ResumeModal({ caseObj, onClose, onDone }) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleResume = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      await caseService.update(caseObj.id, { status: "under_investigation" });
+      onDone();
+      onClose();
+    } catch (ex) {
+      setErr(ex?.response?.data?.detail || "Failed to update status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Resume Investigation</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
+          <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-3 text-sm text-indigo-300">
+            Status will change from <strong>Pending</strong> → <strong>Under Investigation</strong>.
+          </div>
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handleResume} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-colors">
+            {saving ? "Saving…" : "Resume Investigation"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Close Case Modal (HQ Admin only) ─────────────────────────────────────────
+function CloseModal({ caseObj, onClose, onDone }) {
+  const [chargesheet, setChargesheet] = useState(null);
+  const [partOneOrders, setPartOneOrders] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const canClose = chargesheet && partOneOrders;
+
+  const handleClose = async () => {
+    if (!canClose) { setErr("Both Chargesheet and Part One Orders are required."); return; }
+    setSaving(true);
+    setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("status", "closed");
+      fd.append("chargesheet", chargesheet);
+      fd.append("part_one_orders", partOneOrders);
+      await caseService.close(caseObj.id, fd);
+      onDone();
+      onClose();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      setErr(data?.detail || data?.non_field_errors?.[0] || "Failed to close case.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <div>
+            <h3 className="text-white font-semibold">Close Case</h3>
+            <p className="text-gray-500 text-xs mt-0.5">Admin HQ — both documents required</p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Chargesheet <span className="text-red-400">*</span></label>
+            <label className="cursor-pointer block">
+              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${chargesheet ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
+                {chargesheet ? <span className="text-green-400 truncate block">{chargesheet.name}</span> : <span className="text-gray-500">Click to select chargesheet…</span>}
+              </div>
+              <input type="file" className="sr-only" onChange={(e) => { setChargesheet(e.target.files[0] || null); setErr(""); }} />
+            </label>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Part One Orders <span className="text-red-400">*</span></label>
+            <label className="cursor-pointer block">
+              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${partOneOrders ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
+                {partOneOrders ? <span className="text-green-400 truncate block">{partOneOrders.name}</span> : <span className="text-gray-500">Click to select Part One Orders…</span>}
+              </div>
+              <input type="file" className="sr-only" onChange={(e) => { setPartOneOrders(e.target.files[0] || null); setErr(""); }} />
+            </label>
+          </div>
+          {!canClose && <p className="text-yellow-500 text-xs">Upload both documents to enable closing.</p>}
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handleClose} disabled={saving || !canClose} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-green-700 hover:bg-green-600 disabled:opacity-50 transition-colors">
+            {saving ? "Closing…" : "Close Case"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Under-Investigation table (9 specific columns) ────────────────────────────
+// ── Case Action Modals ────────────────────────────────────────────
+function ServeModal({ caseObj, attachCount, onClose, onDone }) {
+  const canServe = attachCount > 3;
+  const isCourtMartial = caseObj?.criminal_offence_type === "court_martial";
+  const [remarks, setRemarks] = useState("");
+  const [mentioningDate, setMentioningDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
+  const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleServe = async () => {
+    if (!canServe) return;
+    setSaving(true);
+    setErr("");
+    try {
+      const payload = {
+        status: "served",
+        remarks: remarks.trim(),
+      };
+      if (isCourtMartial) {
+        const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
+        if (normalizedMentioningDate) {
+          payload.mentioning_date = normalizedMentioningDate;
+        }
+        payload.mentioning_remarks = mentioningRemarks.trim();
+      }
+      await caseService.update(caseObj.id, payload);
+      onDone();
+      onClose();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      if (data?.detail) {
+        setErr(data.detail);
+      } else if (data && typeof data === "object") {
+        const msg = Object.entries(data)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setErr(msg || "Failed to update status.");
+      } else {
+        setErr("Failed to update status.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Mark as Served</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          {!canServe ? (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
+              ⚠ Cannot serve — needs more than 3 abstract documents ({attachCount} currently). Upload additional investigation documents first.
+            </div>
+          ) : (
+            <>
+              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm text-green-400">
+                ✓ {attachCount} documents attached — case is eligible to be served.
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Remarks (optional)</label>
+                <textarea
+                  rows={3}
+                  value={remarks}
+                  onChange={(e) => { setRemarks(e.target.value); setErr(""); }}
+                  placeholder="Enter any remarks…"
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-gray-500 resize-none"
+                />
+              </div>
+
+              {isCourtMartial && (
+                <>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Mentioning Date (optional)</label>
+                    <input
+                      type="date"
+                      value={mentioningDate}
+                      onChange={(e) => { setMentioningDate(e.target.value); setErr(""); }}
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Mentioning Remarks (optional)</label>
+                    <textarea
+                      rows={3}
+                      value={mentioningRemarks}
+                      onChange={(e) => { setMentioningRemarks(e.target.value); setErr(""); }}
+                      placeholder="Enter mentioning remarks…"
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-gray-500 resize-none"
+                    />
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          {canServe && (
+            <button onClick={handleServe} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 transition-colors">
+              {saving ? "Saving…" : "Confirm Served"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MentioningPromptModal({ caseObj, onClose, onSaved }) {
+  const [mentioningDate, setMentioningDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
+  const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleSave = async () => {
+    const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
+    if (!normalizedMentioningDate) {
+      setErr("Please select the Mentioning Date to continue.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    try {
+      await caseService.update(caseObj.id, {
+        mentioning_date: normalizedMentioningDate,
+        mentioning_remarks: mentioningRemarks.trim(),
+      });
+      onSaved({
+        ...caseObj,
+        mentioning_date: normalizedMentioningDate,
+        mentioning_remarks: mentioningRemarks.trim(),
+      });
+    } catch (ex) {
+      const data = ex?.response?.data;
+      if (data?.detail) {
+        setErr(data.detail);
+      } else if (data && typeof data === "object") {
+        const msg = Object.entries(data)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setErr(msg || "Failed to save mentioning details.");
+      } else {
+        setErr("Failed to save mentioning details.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Court Martial Mentioning Date</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">
+            Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span>
+          </p>
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-300">
+            This served Court Martial case requires a Mentioning Date before proceeding.
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Mentioning Date <span className="text-red-400">*</span></label>
+            <input
+              type="date"
+              value={mentioningDate}
+              onChange={(e) => { setMentioningDate(e.target.value); setErr(""); }}
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-yellow-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Mentioning Remarks (optional)</label>
+            <textarea
+              rows={3}
+              value={mentioningRemarks}
+              onChange={(e) => { setMentioningRemarks(e.target.value); setErr(""); }}
+              placeholder="Add mentioning remarks if available..."
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-yellow-500 placeholder-gray-500 resize-none"
+            />
+          </div>
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-yellow-700 hover:bg-yellow-600 disabled:opacity-50 transition-colors">
+            {saving ? "Saving..." : "Save & Continue"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PendingModal({ caseObj, onClose, onDone }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handlePending = async () => {
+    if (!reason.trim()) { setErr("A reason is required."); return; }
+    setSaving(true);
+    setErr("");
+    try {
+      await caseService.update(caseObj.id, { status: "pending", action_taken: reason.trim() });
+      onDone();
+      onClose();
+    } catch (ex) {
+      setErr(ex?.response?.data?.detail || "Failed to update status.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Mark as Pending</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Reason for Pending <span className="text-red-400">*</span></label>
+            <textarea
+              rows={4}
+              value={reason}
+              onChange={(e) => { setReason(e.target.value); setErr(""); }}
+              placeholder="Enter reason why this case is being marked as pending…"
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-orange-500 placeholder-gray-500 resize-none"
+            />
+          </div>
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handlePending} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-orange-600 hover:bg-orange-500 disabled:opacity-50 transition-colors">
+            {saving ? "Saving…" : "Mark Pending"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GuardroomModal({ caseObj, onClose, onDone }) {
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handleRequest = async () => {
+    if (!reason.trim()) { setErr("Please provide a reason for the guardroom request."); return; }
+    setSaving(true);
+    setErr("");
+    try {
+      await caseService.update(caseObj.id, { action_taken: `[GUARDROOM REQUEST] ${reason.trim()}` });
+      setDone(true);
+      onDone();
+    } catch (ex) {
+      setErr(ex?.response?.data?.detail || "Failed to submit request.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && !done && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Request Guardroom</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          {done ? (
+            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
+              <p className="text-green-400 font-medium">Request Submitted</p>
+              <p className="text-gray-400 text-xs mt-1">Guardroom request for <span className="font-mono text-blue-400">{caseObj.case_number}</span> has been recorded.</p>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span> — <span className="text-gray-300">{caseObj.accused_name || ""}</span></p>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Reason / Justification <span className="text-red-400">*</span></label>
+                <textarea
+                  rows={4}
+                  value={reason}
+                  onChange={(e) => { setReason(e.target.value); setErr(""); }}
+                  placeholder="State the reason for requesting guardroom detention…"
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder-gray-500 resize-none"
+                />
+              </div>
+              {err && <p className="text-red-400 text-xs">{err}</p>}
+            </>
+          )}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">{done ? "Close" : "Cancel"}</button>
+          {!done && (
+            <button onClick={handleRequest} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 transition-colors">
+              {saving ? "Submitting…" : "Submit Request"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom }) {
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-3 py-3">
+        <div className="flex flex-col gap-1.5 items-start">
+          <span className={`text-xs px-2 py-0.5 rounded-full whitespace-nowrap ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
+            {c.status?.replace(/_/g, " ")}
+          </span>
+          {(c.status === "under_investigation" || c.status === "pending") && (
+            <div className="flex flex-wrap gap-1">
+              {c.status === "under_investigation" && (
+                <>
+                  <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Mark as Served">Serve</button>
+                  <button onClick={() => onMarkPending(c)} className="text-[10px] px-2 py-0.5 rounded bg-orange-700/80 hover:bg-orange-600 text-white transition-colors whitespace-nowrap" title="Mark as Pending">Pending</button>
+                </>
+              )}
+              <button onClick={() => onGuardroom(c)} className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap" title="Request Guardroom">Guardroom</button>
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom }) {
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1080px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
+            <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Offence</th>
+            <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Pending cases table (dedicated columns) ───────────────────────────────────
+function PendingRow({ c, onAttach, onResume }) {
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-3 py-3 text-orange-300 text-xs max-w-[160px]">
+        <span className="line-clamp-3 block">{c.reason_for_pending || c.action_taken || c.remarks || "--"}</span>
+      </td>
+      <td className="px-3 py-3">
+        <button
+          onClick={() => onResume(c)}
+          className="text-[10px] px-2.5 py-1 rounded bg-indigo-700/80 hover:bg-indigo-600 text-white transition-colors whitespace-nowrap"
+          title="Resume Investigation"
+        >
+          Resume Investigation
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1200px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
+            <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Offence</th>
+            <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Reason for Pending</th>
+            <th className="text-left px-3 py-3">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => <PendingRow key={c.id} c={c} onAttach={onAttach} onResume={onResume} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Served cases table (dedicated columns) ────────────────────────────────────
+function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
+  const dateServed = c.served_at?.slice(0, 10) || c.updated_at?.slice(0, 10) || "--";
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{dateServed}</td>
+      <td className="px-3 py-3 text-gray-400 text-xs max-w-[120px]">
+        <span className="line-clamp-2 block">{c.remarks || "--"}</span>
+      </td>
+      <td className="px-3 py-3">
+        {isHQAdmin ? (
+          <button
+            onClick={() => onCloseCase(c)}
+            className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
+            title="Close Case"
+          >
+            Close Case
+          </button>
+        ) : (
+          <span className="text-xs text-gray-600 italic">HQ Admin only</span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmin }) {
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1260px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
+            <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Offence</th>
+            <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Date Served</th>
+            <th className="text-left px-3 py-3">Remarks</th>
+            <th className="text-left px-3 py-3">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => <ServedRow key={c.id} c={c} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Generic table (all other filters) ────────────────────────────────────────
+function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, isHQAdmin }) {
+  const renderAction = () => {
+    if (c.status === "under_investigation") {
+      return (
+        <div className="flex flex-wrap gap-1">
+          <button
+            onClick={() => onServe(c)}
+            className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap"
+            title="Mark as Served"
+          >
+            Serve
+          </button>
+          <button
+            onClick={() => onMarkPending(c)}
+            className="text-[10px] px-2 py-0.5 rounded bg-orange-700/80 hover:bg-orange-600 text-white transition-colors whitespace-nowrap"
+            title="Mark as Pending"
+          >
+            Pending
+          </button>
+          <button
+            onClick={() => onGuardroom(c)}
+            className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap"
+            title="Request Guardroom"
+          >
+            Guardroom
+          </button>
+        </div>
+      );
+    }
+
+    if (c.status === "pending") {
+      return (
+        <button
+          onClick={() => onResume(c)}
+          className="text-[10px] px-2.5 py-1 rounded bg-indigo-700/80 hover:bg-indigo-600 text-white transition-colors whitespace-nowrap"
+          title="Resume Investigation"
+        >
+          Resume
+        </button>
+      );
+    }
+
+    if (c.status === "served") {
+      if (!isHQAdmin) return <span className="text-xs text-gray-600 italic">HQ Admin only</span>;
+      return (
+        <button
+          onClick={() => onCloseCase(c)}
+          className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
+          title="Close Case"
+        >
+          Close Case
+        </button>
+      );
+    }
+
+    if (c.status === "closed") {
+      return <span className="text-xs text-gray-500 italic">Closed</span>;
+    }
+
+    return <span className="text-xs text-gray-500">--</span>;
+  };
+
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-4 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-4 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-4 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-4 py-3">
+        <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
+          {c.status?.replace(/_/g, " ")}
+        </span>
+      </td>
+      <td className="px-4 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">{c.created_at?.slice(0, 10)}</td>
+      <td className="px-4 py-3 text-xs text-gray-500">{renderAction()}</td>
+    </tr>
+  );
+}
+
+function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, isHQAdmin }) {
+  if (isUnderInvestigation) {
+    return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} />;
+  }
+  if (isPending) {
+    return <PendingTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onResume={onResume} />;
+  }
+  if (isServed) {
+    return <ServedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />;
+  }
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1220px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-4 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-4 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-4 py-3">Rank</th>
+            <th className="text-left px-4 py-3">Accused</th>
+            <th className="text-left px-4 py-3">Offence</th>
+            <th className="text-left px-4 py-3">Description</th>
+            <th className="text-left px-4 py-3">Status</th>
+            <th className="text-left px-4 py-3">Abstract</th>
+            <th className="text-left px-4 py-3">Date</th>
+            <th className="text-left px-4 py-3">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => (
+              <GenericCaseRow
+                key={c.id}
+                c={c}
+                onAttach={onAttach}
+                onServe={onServe}
+                onMarkPending={onMarkPending}
+                onGuardroom={onGuardroom}
+                onResume={onResume}
+                onCloseCase={onCloseCase}
+                isHQAdmin={isHQAdmin}
+              />
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Footer ───────────────────────────────────────────────────────────────────
+function Footer() {
+  const [now, setNow] = React.useState(new Date());
+  React.useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  const yy = String(now.getFullYear()).slice(2);
+  const mm = pad(now.getMonth() + 1);
+  const dd = pad(now.getDate());
+  const hh = pad(now.getHours());
+  const min = pad(now.getMinutes());
+  const ss = pad(now.getSeconds());
+  return (
+    <footer className="mt-8 border-t border-gray-700/60 py-3 px-1 flex items-center justify-between text-[11px] text-gray-600 select-none">
+      <span className="font-semibold tracking-widest uppercase text-gray-500">MPIMS</span>
+      <span className="font-mono">
+        {yy}{mm}{dd}&nbsp;&nbsp;{hh}{min}{ss}
+      </span>
+    </footer>
+  );
+}
+
+// ── Pagination Bar ────────────────────────────────────────────────────────────
+const PAGE_SIZE = 25;
+
+function PaginationBar({ page, totalPages, totalCount, onChange }) {
+  if (totalPages <= 1) return null;
+  const start = (page - 1) * PAGE_SIZE + 1;
+  const end = Math.min(page * PAGE_SIZE, totalCount);
+
+  const pages = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (page > 3) pages.push("…");
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
+    if (page < totalPages - 2) pages.push("…");
+    pages.push(totalPages);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
+      <span>Showing {start}–{end} of {totalCount} cases</span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onChange(page - 1)}
+          disabled={page === 1}
+          className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          ← Prev
+        </button>
+        {pages.map((p, i) =>
+          p === "…" ? (
+            <span key={`ellipsis-${i}`} className="px-1">…</span>
+          ) : (
+            <button
+              key={p}
+              onClick={() => onChange(p)}
+              className={`w-7 h-7 rounded transition-colors ${
+                p === page
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-400"
+              }`}
+            >
+              {p}
+            </button>
+          )
+        )}
+        <button
+          onClick={() => onChange(page + 1)}
+          disabled={page === totalPages}
+          className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          Next →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
 export default function InvestigatorDashboard({ user }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [myTeams, setMyTeams] = useState([]);
   const [cases, setCases] = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingCases, setLoadingCases] = useState(true);
-  const [activeFilter, setActiveFilter] = useState("all");
+  const [activeFilter, setActiveFilter] = useState("under_investigation");
+  const [attachingCase, setAttachingCase] = useState(null);
+  const [mentioningPromptCase, setMentioningPromptCase] = useState(null);
+  const [servingCase, setServingCase] = useState(null);
+  const [pendingCase, setPendingCase] = useState(null);
+  const [guardroomCase, setGuardroomCase] = useState(null);
+  const [resumingCase, setResumingCase] = useState(null);
+  const [closingCase, setClosingCase] = useState(null);
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [statusCounts, setStatusCounts] = useState({ all: 0, under_investigation: 0, pending: 0, served: 0, closed: 0 });
+  const [loadingCounts, setLoadingCounts] = useState(true);
+
+  useEffect(() => {
+    const statusFromUrl = searchParams.get("status");
+    const allowedStatuses = new Set(FILTERS.map((f) => f.key));
+    if (statusFromUrl && allowedStatuses.has(statusFromUrl) && statusFromUrl !== activeFilter) {
+      setActiveFilter(statusFromUrl);
+      setPage(1);
+    }
+  }, [searchParams, activeFilter]);
 
   const loadTeams = useCallback(async () => {
     setLoadingTeams(true);
@@ -465,307 +1516,121 @@ export default function InvestigatorDashboard({ user }) {
     }
   }, [user?.id]);
 
-  const loadCases = useCallback(async () => {
-    setLoadingCases(true);
+  // Fetch per-status counts once (page_size=1 gives us just the count from DRF)
+  const loadCounts = useCallback(async () => {
+    setLoadingCounts(true);
     try {
-      const res = await caseService.list();
-      setCases(toArray(res.data));
+      const [allRes, uiRes, peRes, seRes, clRes] = await Promise.all([
+        caseService.list({ page_size: 1 }),
+        caseService.list({ page_size: 1, status: "under_investigation" }),
+        caseService.list({ page_size: 1, status: "pending" }),
+        caseService.list({ page_size: 1, status: "served" }),
+        caseService.list({ page_size: 1, status: "closed" }),
+      ]);
+      setStatusCounts({
+        all:                allRes.data.count || 0,
+        under_investigation: uiRes.data.count || 0,
+        pending:            peRes.data.count || 0,
+        served:             seRes.data.count || 0,
+        closed:             clRes.data.count || 0,
+      });
     } catch {
-      setCases([]);
+      // keep zeros
     } finally {
-      setLoadingCases(false);
+      setLoadingCounts(false);
     }
   }, []);
 
+  const loadCases = useCallback(async () => {
+    setLoadingCases(true);
+    try {
+      const params = { page, page_size: PAGE_SIZE };
+      if (activeFilter !== "all") params.status = activeFilter;
+      const res = await caseService.list(params);
+      setCases(toArray(res.data));
+      setTotalCount(res.data.count || 0);
+    } catch {
+      setCases([]);
+      setTotalCount(0);
+    } finally {
+      setLoadingCases(false);
+    }
+  }, [page, activeFilter]);
+
   useEffect(() => {
     loadTeams();
+    loadCounts();
+  }, [loadTeams, loadCounts]);
+
+  useEffect(() => {
     loadCases();
-  }, [loadTeams, loadCases]);
+  }, [loadCases]);
 
-  // My cases: directly assigned OR assigned to a team I belong to
-  const myTeamIds = myTeams.map((t) => t.id);
-  const myCases = cases.filter(
-    (c) =>
-      c.assigned_to === user?.id ||
-      (c.assigned_team && myTeamIds.includes(c.assigned_team))
-  );
+  // With server-side pagination `cases` is only one page, so team-case counts
+  // are shown without a per-team breakdown (team cards focus on team composition)
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+  const activeFilterCfg = FILTERS.find((f) => f.key === activeFilter);
+  const isHQAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
 
-  const counts = {
-    all: myCases.length,
-    under_investigation: myCases.filter((c) => c.status === "under_investigation").length,
-    pending: myCases.filter((c) => c.status === "pending").length,
-    served: myCases.filter((c) => c.status === "served").length,
+  const handleFilterChange = (key) => {
+    setActiveFilter(key);
+    setPage(1);
+    if (key === "all") {
+      setSearchParams({});
+    } else {
+      setSearchParams({ status: key });
+    }
   };
 
-  const filteredCases =
-    activeFilter === "all" ? myCases : myCases.filter((c) => c.status === activeFilter);
-
-  const filterLabel =
-    activeFilter === "all"
-      ? "All Cases"
-      : activeFilter.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-
-  return (
-    <div className="p-4 sm:p-6 space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-bold text-white">Investigator Dashboard</h2>
-        <p className="text-gray-400 text-sm mt-0.5">
-          {user?.rank ? `${user.rank} ` : ""}{user?.name}
-          {user?.battalion_name ? ` — ${user.battalion_name}` : ""}
-        </p>
-      </div>
-
-      {/* Clickable Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard
-          label="My Cases"
-          value={counts.all}
-          color="text-white"
-          active={activeFilter === "all"}
-          onClick={() => setActiveFilter("all")}
-          loading={loadingCases}
-        />
-        <StatCard
-          label="Under Investigation"
-          value={counts.under_investigation}
-          color="text-indigo-400"
-          active={activeFilter === "under_investigation"}
-          onClick={() => setActiveFilter("under_investigation")}
-          loading={loadingCases}
-        />
-        <StatCard
-          label="Pending"
-          value={counts.pending}
-          color="text-orange-400"
-          active={activeFilter === "pending"}
-          onClick={() => setActiveFilter("pending")}
-          loading={loadingCases}
-        />
-        <StatCard
-          label="Served"
-          value={counts.served}
-          color="text-teal-400"
-          active={activeFilter === "served"}
-          onClick={() => setActiveFilter("served")}
-          loading={loadingCases}
-        />
-      </div>
-
-      {/* My Teams (compact) */}
-      {!loadingTeams && myTeams.length > 0 && (
-        <section>
-          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
-            My Investigation Teams
-          </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {myTeams.map((team) => {
-              const isIC = team.team_ic === user?.id || team.team_ic_detail?.id === user?.id;
-              const teamCases = myCases.filter((c) => c.assigned_team === team.id);
-              return (
-                <div key={team.id} className="bg-gray-800 rounded-lg border border-gray-700 p-4">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <p className="text-white font-medium text-sm truncate">{team.name}</p>
-                    {isIC && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shrink-0">
-                        IC
-                      </span>
-                    )}
-                  </div>
-                  {team.team_ic_detail && (
-                    <p className="text-xs text-gray-500 mb-2">
-                      IC: {team.team_ic_detail.rank ? `${team.team_ic_detail.rank} ` : ""}{team.team_ic_detail.name}
-                    </p>
-                  )}
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>{team.members_detail?.length || 0} member{(team.members_detail?.length || 0) !== 1 ? "s" : ""}</span>
-                    <span className="text-indigo-400">{teamCases.length} case{teamCases.length !== 1 ? "s" : ""}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* Cases Table */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            {filterLabel}
-            {filteredCases.length > 0 && (
-              <span className="ml-2 text-xs font-normal bg-gray-700 text-gray-400 px-2 py-0.5 rounded-full normal-case">
-                {filteredCases.length}
-              </span>
-            )}
-          </h3>
-          {activeFilter !== "all" && (
-            <button
-              onClick={() => setActiveFilter("all")}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            >
-              ← All cases
-            </button>
-          )}
-        </div>
-
-        <div className="bg-gray-800 rounded-lg overflow-x-auto border border-gray-700">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
-              <tr>
-                <th className="text-left px-4 py-3 whitespace-nowrap">Case #</th>
-                <th className="text-left px-4 py-3">Accused</th>
-                <th className="text-left px-4 py-3 hidden sm:table-cell">Offence</th>
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-left px-4 py-3">Docs</th>
-                <th className="text-left px-4 py-3">Actions</th>
-                <th className="text-left px-4 py-3 hidden md:table-cell">Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingCases ? (
-                <tr><td colSpan={7} className="px-4 py-12 text-center text-gray-500">Loading cases…</td></tr>
-              ) : filteredCases.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-gray-500">
-                    {activeFilter === "all"
-                      ? "No cases assigned to you or your teams yet."
-                      : `No ${filterLabel.toLowerCase()} cases.`}
-                  </td>
-                </tr>
-              ) : (
-                filteredCases.map((c) => (
-                  <CaseRow key={c.id} c={c} onRefresh={loadCases} />
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-  );
-}
-      {present ? (
-        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-        </svg>
-      ) : (
-        <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
-          <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-        </svg>
-      )}
-      {label}
-    </span>
-  );
-}
-
-/* ─── Case Row ──────────────────────────────────────────── */
-function CaseRow({ c }) {
-  const hasRfi = Boolean(c.rfi_document);
-  const hasTl = Boolean(c.tasking_letter);
-  const attachCount = (hasRfi ? 1 : 0) + (hasTl ? 1 : 0);
-
-  return (
-    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
-      <td className="px-4 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
-      <td className="px-4 py-3">
-        <div className="text-white font-medium">{c.accused_name || "--"}</div>
-        <div className="text-gray-500 text-xs mt-0.5 md:hidden">{c.accused_service_number || ""}</div>
-      </td>
-      <td className="px-4 py-3 text-gray-300 hidden md:table-cell">{c.accused_service_number || "--"}</td>
-      <td className="px-4 py-3 text-gray-300 hidden sm:table-cell">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-4 py-3">
-        <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
-          {c.status?.replace(/_/g, " ")}
-        </span>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-1 flex-wrap">
-            <AttachBadge label="RFI" present={hasRfi} />
-            <AttachBadge label="TL" present={hasTl} />
-          </div>
-          <span className="text-[10px] text-gray-500">{attachCount}/2 docs</span>
-        </div>
-      </td>
-      <td className="px-4 py-3 text-gray-400 text-xs hidden sm:table-cell">{c.created_at?.slice(0, 10)}</td>
-    </tr>
-  );
-}
-
-/* ─── Investigator Dashboard ────────────────────────────── */
-export default function InvestigatorDashboard({ user }) {
-  const [myTeams, setMyTeams] = useState([]);
-  const [cases, setCases] = useState([]);
-  const [loadingTeams, setLoadingTeams] = useState(true);
-  const [loadingCases, setLoadingCases] = useState(true);
-
-  const loadTeams = useCallback(async () => {
-    setLoadingTeams(true);
-    try {
-      const res = await teamService.list();
-      const all = toArray(res.data);
-      // Only teams where this user is a member or the IC
-      const mine = all.filter(
-        (t) =>
-          t.team_ic === user?.id ||
-          (t.members || []).includes(user?.id)
-      );
-      setMyTeams(mine);
-    } catch {
-      setMyTeams([]);
-    } finally {
-      setLoadingTeams(false);
-    }
-  }, [user?.id]);
-
-  const loadCases = useCallback(async () => {
-    setLoadingCases(true);
-    try {
-      const res = await caseService.list();
-      setCases(toArray(res.data));
-    } catch {
-      setCases([]);
-    } finally {
-      setLoadingCases(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadTeams();
+  const handleAttachmentChanged = () => {
     loadCases();
-  }, [loadTeams, loadCases]);
+    loadCounts();
+  };
 
-  // Cases under investigation (assigned to any of my teams)
-  const myTeamIds = myTeams.map((t) => t.id);
-  const myCases = cases.filter((c) => c.assigned_team && myTeamIds.includes(c.assigned_team));
-  const openCount = myCases.filter((c) => c.status === "under_investigation").length;
-  const closedCount = myCases.filter((c) => c.status === "closed" || c.status === "dismissed").length;
-  const otherCases = cases.filter((c) => !c.assigned_team || !myTeamIds.includes(c.assigned_team));
+  const handleOpenCase = (c) => {
+    const needsMentioningDate =
+      c?.criminal_offence_type === "court_martial" &&
+      c?.status === "served" &&
+      !c?.mentioning_date;
+
+    if (needsMentioningDate) {
+      setMentioningPromptCase(c);
+      return;
+    }
+
+    setAttachingCase(c);
+  };
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-bold text-white">Investigator Dashboard</h2>
-        <p className="text-gray-400 text-sm mt-0.5">
-          Welcome, {user?.rank ? `${user.rank} ` : ""}{user?.name} — {user?.battalion_name}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-white">Investigator Dashboard</h2>
+          <p className="text-gray-400 text-sm mt-0.5">
+            Welcome, {user?.rank ? `${user.rank} ` : ""}{user?.name}
+            {user?.battalion_name ? ` -- ${user.battalion_name}` : ""}
+          </p>
+        </div>
+        <NotificationBell />
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="My Teams" value={loadingTeams ? "…" : myTeams.length} color="text-indigo-400" />
-        <StatCard label="My Cases" value={loadingCases ? "…" : myCases.length} color="text-white" />
-        <StatCard label="Under Investigation" value={loadingCases ? "…" : openCount} color="text-yellow-400" />
-        <StatCard label="Closed / Dismissed" value={loadingCases ? "…" : closedCount} color="text-green-400" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        {FILTERS.map((cfg) => (
+          <FilterCard
+            key={cfg.key}
+            cfg={cfg}
+            value={statusCounts[cfg.key] ?? 0}
+            isActive={activeFilter === cfg.key}
+            loading={loadingCounts}
+            onClick={() => handleFilterChange(cfg.key)}
+          />
+        ))}
       </div>
 
-      {/* My Teams */}
       <section>
         <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">My Investigation Teams</h3>
         {loadingTeams ? (
-          <div className="text-gray-500 text-sm py-6 text-center">Loading teams…</div>
+          <div className="text-gray-500 text-sm py-6 text-center">Loading teams...</div>
         ) : myTeams.length === 0 ? (
           <div className="bg-gray-800 rounded-lg p-6 text-center border border-gray-700">
             <p className="text-gray-500 text-sm">You are not assigned to any investigation team yet.</p>
@@ -774,7 +1639,6 @@ export default function InvestigatorDashboard({ user }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {myTeams.map((team) => {
               const isIC = team.team_ic === user?.id || team.team_ic_detail?.id === user?.id;
-              const teamCases = myCases.filter((c) => c.assigned_team === team.id);
               return (
                 <div key={team.id} className="bg-gray-800 rounded-lg border border-gray-700 p-4 space-y-3">
                   <div className="flex items-start justify-between gap-2">
@@ -786,12 +1650,7 @@ export default function InvestigatorDashboard({ user }) {
                         </span>
                       )}
                     </div>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-400 whitespace-nowrap">
-                      {teamCases.length} case{teamCases.length !== 1 ? "s" : ""}
-                    </span>
                   </div>
-
-                  {/* IC info */}
                   {team.team_ic_detail && (
                     <div className="text-xs text-gray-400">
                       <span className="text-gray-500">IC: </span>
@@ -799,8 +1658,6 @@ export default function InvestigatorDashboard({ user }) {
                       {team.team_ic_detail.name}
                     </div>
                   )}
-
-                  {/* Members */}
                   {team.members_detail && team.members_detail.length > 0 && (
                     <div>
                       <p className="text-xs text-gray-500 mb-1">Members ({team.members_detail.length})</p>
@@ -830,71 +1687,104 @@ export default function InvestigatorDashboard({ user }) {
         )}
       </section>
 
-      {/* Cases Assigned to My Teams */}
       <section>
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
-          Cases Assigned to My Teams
-          {myCases.length > 0 && (
-            <span className="ml-2 text-xs font-normal bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full">
-              {myCases.length}
-            </span>
-          )}
-        </h3>
-        <div className="bg-gray-800 rounded-lg overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
-              <tr>
-                <th className="text-left px-4 py-3 whitespace-nowrap">Case #</th>
-                <th className="text-left px-4 py-3">Accused</th>
-                <th className="text-left px-4 py-3 hidden md:table-cell">Svc No</th>
-                <th className="text-left px-4 py-3 hidden sm:table-cell">Offence</th>
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-left px-4 py-3">Attachments</th>
-                <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingCases ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-500">Loading…</td></tr>
-              ) : myCases.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-gray-500">No cases assigned to your teams yet.</td></tr>
-              ) : (
-                myCases.map((c) => <CaseRow key={c.id} c={c} />)
-              )}
-            </tbody>
-          </table>
+        <div className="flex items-center gap-3 mb-3">
+          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
+            {activeFilterCfg?.label}
+          </h3>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[activeFilter] || "bg-gray-700 text-gray-400"}`}>
+            {loadingCounts ? "…" : `${totalCount} total`}
+          </span>
         </div>
+        <CasesTable
+          cases={cases}
+          loading={loadingCases}
+          onAttach={handleOpenCase}
+          isUnderInvestigation={activeFilter === "under_investigation"}
+          isPending={activeFilter === "pending"}
+          isServed={activeFilter === "served"}
+          onServe={(c) => setServingCase(c)}
+          onMarkPending={(c) => setPendingCase(c)}
+          onGuardroom={(c) => setGuardroomCase(c)}
+          onResume={(c) => setResumingCase(c)}
+          onCloseCase={(c) => setClosingCase(c)}
+          isHQAdmin={isHQAdmin}
+          emptyMsg={
+            activeFilter === "all"
+              ? "No cases associated with your teams or assignments yet."
+              : `No ${activeFilterCfg?.label?.toLowerCase()} cases.`
+          }
+        />
+        <PaginationBar
+          page={page}
+          totalPages={totalPages}
+          totalCount={totalCount}
+          onChange={setPage}
+        />
       </section>
 
-      {/* Other Battalion Cases (awareness) */}
-      {otherCases.length > 0 && (
-        <section>
-          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
-            Other Battalion Cases
-            <span className="ml-2 text-xs font-normal bg-gray-700 text-gray-400 px-2 py-0.5 rounded-full">
-              {otherCases.length}
-            </span>
-          </h3>
-          <div className="bg-gray-800 rounded-lg overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
-                <tr>
-                  <th className="text-left px-4 py-3 whitespace-nowrap">Case #</th>
-                  <th className="text-left px-4 py-3">Accused</th>
-                  <th className="text-left px-4 py-3 hidden md:table-cell">Svc No</th>
-                  <th className="text-left px-4 py-3 hidden sm:table-cell">Offence</th>
-                  <th className="text-left px-4 py-3">Status</th>
-                  <th className="text-left px-4 py-3">Attachments</th>
-                  <th className="text-left px-4 py-3 hidden sm:table-cell">Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {otherCases.map((c) => <CaseRow key={c.id} c={c} />)}
-              </tbody>
-            </table>
-          </div>
-        </section>
+      {attachingCase && (
+        <AttachModal
+          caseObj={attachingCase}
+          onClose={() => setAttachingCase(null)}
+          onUploaded={handleAttachmentChanged}
+        />
       )}
+
+      {mentioningPromptCase && (
+        <MentioningPromptModal
+          caseObj={mentioningPromptCase}
+          onClose={() => setMentioningPromptCase(null)}
+          onSaved={(updatedCase) => {
+            setMentioningPromptCase(null);
+            setAttachingCase(updatedCase);
+            handleAttachmentChanged();
+          }}
+        />
+      )}
+
+      {servingCase && (
+        <ServeModal
+          caseObj={servingCase}
+          attachCount={((servingCase.rfi_document || servingCase.rfi_no || servingCase.rfi_date) ? 1 : 0) + (servingCase.tasking_letter ? 1 : 0) + (servingCase.extra_attachment_count || 0)}
+          onClose={() => setServingCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      {pendingCase && (
+        <PendingModal
+          caseObj={pendingCase}
+          onClose={() => setPendingCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      {guardroomCase && (
+        <GuardroomModal
+          caseObj={guardroomCase}
+          onClose={() => setGuardroomCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      {resumingCase && (
+        <ResumeModal
+          caseObj={resumingCase}
+          onClose={() => setResumingCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      {closingCase && (
+        <CloseModal
+          caseObj={closingCase}
+          onClose={() => setClosingCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      <Footer />
     </div>
   );
 }

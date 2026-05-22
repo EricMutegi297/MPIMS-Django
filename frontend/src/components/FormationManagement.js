@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { formationService } from "../services/api";
 
-const EMPTY_FORMATION = { name: "", location: "" };
-const EMPTY_UNIT = { name: "", service: "KA", mobile_no: "", email: "", location_county: "" };
+const EMPTY_FORMATION = { name: "", code: "" };
 
 function toArray(payload) {
   return Array.isArray(payload)
@@ -18,7 +17,7 @@ function getErrorMessage(err, fallback) {
   if (typeof data === "string") return data;
   if (data.detail) return data.detail;
   if (Array.isArray(data.name)) return `Name: ${data.name[0]}`;
-  if (Array.isArray(data.location)) return `Location: ${data.location[0]}`;
+  if (Array.isArray(data.code)) return `Code: ${data.code[0]}`;
   return fallback;
 }
 
@@ -64,8 +63,6 @@ export default function FormationManagement({ user }) {
   const [modal, setModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
-  const [unitModal, setUnitModal] = useState(null); // { formation: { id, name } }
-  const [unitSaving, setUnitSaving] = useState(false);
 
   const isSuperAdmin = Boolean(user?.is_superuser);
 
@@ -87,10 +84,12 @@ export default function FormationManagement({ user }) {
   }, [loadFormations]);
 
   const rows = formations.map((formation) => {
+    const battalionNames = (formation.battalions || []).map((battalion) => battalion.name).join(", ");
     return [
       formation.name,
-      formation.location || "-",
-      formation.units?.length || 0,
+      formation.code || "-",
+      formation.battalions?.length || 0,
+      battalionNames || "-",
     ];
   });
 
@@ -98,10 +97,7 @@ export default function FormationManagement({ user }) {
     setSaving(true);
     setError("");
     setMessage("");
-    const payload = {
-      name: form.name.trim(),
-      location: (form.location || "").trim(),
-    };
+    const payload = { name: form.name.trim(), code: (form.code || "").trim() };
 
     try {
       if (modal.mode === "add") {
@@ -120,30 +116,6 @@ export default function FormationManagement({ user }) {
     }
   };
 
-  const saveUnit = async (form) => {
-    setUnitSaving(true);
-    setError("");
-    setMessage("");
-    const payload = {
-      name: form.name.trim(),
-      service: form.service,
-      formation: unitModal.formation.id,
-      mobile_no: (form.mobile_no || "").trim(),
-      email: (form.email || "").trim(),
-      location_county: (form.location_county || "").trim(),
-    };
-    try {
-      await formationService.createUnit(payload);
-      setMessage(`Unit added to ${unitModal.formation.name}.`);
-      setUnitModal(null);
-      await loadFormations();
-    } catch (err) {
-      setError(getErrorMessage(err, "Failed to save unit."));
-    } finally {
-      setUnitSaving(false);
-    }
-  };
-
   const deleteFormation = async () => {
     setError("");
     setMessage("");
@@ -158,10 +130,10 @@ export default function FormationManagement({ user }) {
   };
 
   const printFormations = () =>
-    printTable("Formations", ["Name", "Location", "Units"], rows);
+    printTable("Formations", ["Name", "Code", "Battalions", "Battalion Names"], rows);
 
   const exportFormations = () =>
-    exportCsv("formations.csv", ["Name", "Location", "Units"], rows);
+    exportCsv("formations.csv", ["Name", "Code", "Battalions", "Battalion Names"], rows);
 
   if (!isSuperAdmin) {
     return (
@@ -203,8 +175,8 @@ export default function FormationManagement({ user }) {
           <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
             <tr>
               <th className="text-left px-4 py-2">Name</th>
-              <th className="text-left px-4 py-2">Location</th>
-              <th className="text-left px-4 py-2">Units</th>
+              <th className="text-left px-4 py-2">Code</th>
+              <th className="text-left px-4 py-2">Battalions</th>
               <th className="text-left px-4 py-2">Actions</th>
             </tr>
           </thead>
@@ -216,11 +188,17 @@ export default function FormationManagement({ user }) {
             ) : formations.map((formation) => (
               <tr key={formation.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                 <td className="px-4 py-2 text-white font-medium">{formation.name}</td>
-                <td className="px-4 py-2 text-gray-300">{formation.location || "-"}</td>
-                <td className="px-4 py-2 text-gray-300">{formation.units?.length || 0}</td>
+                <td className="px-4 py-2 text-gray-300">{formation.code || "-"}</td>
+                <td className="px-4 py-2 text-gray-300">
+                  {formation.battalions?.length || 0}
+                  {formation.battalions?.length ? (
+                    <span className="block text-xs text-gray-500 mt-0.5">
+                      {formation.battalions.map((battalion) => battalion.name).join(", ")}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="px-4 py-2">
                   <div className="flex gap-3">
-                    <ActionButton label="Add Unit" color="green" onClick={() => setUnitModal({ formation: { id: formation.id, name: formation.name } })} />
                     <ActionButton label="Edit" color="blue" onClick={() => setModal({ mode: "edit", data: { ...formation } })} />
                     <ActionButton label="Delete" color="red" onClick={() => setDeleteId(formation.id)} />
                   </div>
@@ -247,14 +225,6 @@ export default function FormationManagement({ user }) {
           onCancel={() => setDeleteId(null)}
         />
       )}
-      {unitModal && (
-        <AddUnitModal
-          formation={unitModal.formation}
-          saving={unitSaving}
-          onSave={saveUnit}
-          onClose={() => setUnitModal(null)}
-        />
-      )}
     </div>
   );
 }
@@ -269,13 +239,8 @@ function ToolbarButton({ icon, label, onClick }) {
 }
 
 function ActionButton({ label, color, onClick }) {
-  const colors = {
-    red: "text-red-400 hover:text-red-300",
-    blue: "text-blue-400 hover:text-blue-300",
-    green: "text-green-400 hover:text-green-300",
-  };
   return (
-    <button onClick={onClick} className={`text-xs font-medium transition-colors ${colors[color] || colors.blue}`}>
+    <button onClick={onClick} className={`text-xs font-medium transition-colors ${color === "red" ? "text-red-400 hover:text-red-300" : "text-blue-400 hover:text-blue-300"}`}>
       {label}
     </button>
   );
@@ -318,7 +283,7 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
     <ModalWrap title={mode === "add" ? "Add Formation" : "Edit Formation"} onClose={onClose}>
       <form onSubmit={(event) => { event.preventDefault(); onSave(form); }} className="space-y-3">
         <Field label="Formation Name *" value={form.name || ""} onChange={setValue("name")} required />
-        <Field label="Location" value={form.location || ""} onChange={setValue("location")} />
+        <Field label="Code" value={form.code || ""} onChange={setValue("code")} />
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
           <button
@@ -327,67 +292,6 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
             className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
           >
             {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
-          </button>
-        </div>
-      </form>
-    </ModalWrap>
-  );
-}
-
-function AddUnitModal({ formation, saving, onSave, onClose }) {
-  const [form, setForm] = useState({ ...EMPTY_UNIT });
-  const setValue = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
-
-  return (
-    <ModalWrap title={`Add Unit — ${formation.name}`} onClose={onClose}>
-      <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
-        <div>
-          <label className="text-xs text-gray-400">Unit Name *</label>
-          <input
-            type="text" value={form.name} onChange={setValue("name")} required
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <label className="text-xs text-gray-400">Service *</label>
-          <select
-            value={form.service} onChange={setValue("service")} required
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-          >
-            <option value="KA">Kenya Army (KA)</option>
-            <option value="KAF">Kenya Air Force (KAF)</option>
-            <option value="KN">Kenya Navy (KN)</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-xs text-gray-400">Mobile No</label>
-          <input
-            type="text" value={form.mobile_no} onChange={setValue("mobile_no")}
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <label className="text-xs text-gray-400">Email</label>
-          <input
-            type="email" value={form.email} onChange={setValue("email")}
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div>
-          <label className="text-xs text-gray-400">Location / County</label>
-          <input
-            type="text" value={form.location_county} onChange={setValue("location_county")}
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
-          <button
-            type="submit"
-            disabled={saving || !form.name?.trim()}
-            className="px-4 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded disabled:opacity-50"
-          >
-            {saving ? "Saving..." : "Add Unit"}
           </button>
         </div>
       </form>

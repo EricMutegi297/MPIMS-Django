@@ -1,638 +1,692 @@
-import React, { useEffect, useState, useCallback } from "react";
-import api from "../axiosConfig";
-import { formationService } from "../services/api";
+﻿import React, { useEffect, useState, useCallback } from "react";
+import { userService, formationService } from "../services/api";
 
 const ROLE_LABELS = {
-  admin: "Admin",
-  co: "Commanding Officer",
-  corps_cmd: "Corps Commander",
+  admin:        "Admin",
+  co:           "Commanding Officer",
+  corps_cmd:    "Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
   guardroom_ic: "Guardroom IC",
-  detachment: "Detachment IC",
-  personnel: "Personnel",
-  legal: "Legal Officer",
-  order_nco: "Order NCO",
-  mpc_hqs: "MPC HQS Admin",
-  bsm: "BSM",
-  cop: "COP",
+  detachment:   "IC Det",
+  personnel:    "Personnel",
+  legal:        "Legal",
+  order_nco:    "Order NCO",
+  mpc_hqs:      "MPC HQS",
+  bsm:          "BSM",
+  cop:          "COP",
+  adj:          "Adjutant",
+  "2ic":        "2nd in Command",
 };
 
-const RANKS = [
-  // Officers
-  "General",
-  "Lieutenant General",
-  "Major General",
-  "Brigadier",
-  "Colonel",
-  "Lieutenant Colonel",
-  "Major",
-  "Captain",
-  "Lieutenant",
-  "Second Lieutenant",
-  // Senior NCOs
-  "Warrant Officer Class 1",
-  "Warrant Officer Class 2",
-  "Senior Sergeant",
-  "Sergeant",
-  // Junior NCOs & Enlisted
-  "Corporal",
-  "Lance Corporal",
-  "Private",
-  "Recruit",
-];
+const ROLE_BADGE = {
+  admin:        "bg-blue-500/20 text-blue-400",
+  co:           "bg-purple-500/20 text-purple-400",
+  corps_cmd:    "bg-red-500/20 text-red-400",
+  investigator: "bg-indigo-500/20 text-indigo-400",
+  duty_officer: "bg-yellow-500/20 text-yellow-400",
+  guardroom_ic: "bg-orange-500/20 text-orange-400",
+  detachment:   "bg-teal-500/20 text-teal-400",
+  personnel:    "bg-gray-500/20 text-gray-400",
+  legal:        "bg-pink-500/20 text-pink-400",
+  order_nco:    "bg-cyan-500/20 text-cyan-400",
+  mpc_hqs:      "bg-green-500/20 text-green-400",
+  bsm:          "bg-amber-500/20 text-amber-400",
+  cop:          "bg-rose-500/20 text-rose-400",
+  adj:          "bg-violet-500/20 text-violet-400",
+  "2ic":        "bg-sky-500/20 text-sky-400",
+};
+
+function toArray(data) {
+  return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
 
 export default function Users({ user }) {
-  const [users, setUsers] = useState([]);
-  const [count, setCount] = useState(0);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editUser, setEditUser] = useState(null);
-  const [deleteUser, setDeleteUser] = useState(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [users, setUsers]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState("");
+  const [search, setSearch]     = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
 
-  const canCreate = user?.is_superuser || ["admin", "mpc_hqs"].includes(user?.role);
+  const isHqsAdmin      = user?.role === "admin" && user?.battalion_type === "hqs";
+  const isSuperuser     = Boolean(user?.is_superuser);
+  const isBattalionAdmin = user?.role === "admin" && !isHqsAdmin && !isSuperuser;
+  const isDetachmentIC  = user?.role === "detachment";
+  const canManage       = isSuperuser || isHqsAdmin || isBattalionAdmin || isDetachmentIC;
 
-  const handleDelete = async () => {
-    if (!deleteUser) return;
-    setDeleteLoading(true);
-    try {
-      await api.delete(`/api/auth/users/${deleteUser.id}/`);
-      setDeleteUser(null);
-      load();
-    } catch {}
-    finally { setDeleteLoading(false); }
+  // Roles each actor type can assign
+  const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
+    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
+    : isBattalionAdmin
+    ? ["co","detachment","personnel","investigator","adj","2ic"]
+    : isDetachmentIC
+    ? ["personnel","investigator"]
+    : [];
+
+  // Roles allowed to edit/delete (for row-level buttons)
+  const MANAGED_ROLES = new Set(
+    isSuperuser || isHqsAdmin
+      ? Object.keys(ROLE_LABELS)
+      : isBattalionAdmin
+      ? ["co","detachment","personnel","investigator","adj","2ic"]
+      : isDetachmentIC
+      ? ["personnel","investigator"]
+      : []
+  );
+
+  // Create user modal state
+  const BLANK_FORM = {
+    service_number: "", name: "", rank: "", email: "", role: "",
+    password: "", battalion: "", detachment: "",
+  };
+  const [showCreate, setShowCreate]     = useState(false);
+  const [form, setForm]                 = useState(BLANK_FORM);
+  const [battalions, setBattalions]     = useState([]);
+  const [detachments, setDetachments]   = useState([]);
+  const [creating, setCreating]         = useState(false);
+  const [createError, setCreateError]   = useState("");
+
+  // Roles that can optionally be scoped to a detachment
+  const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+
+  const loadDetachments = useCallback((battalionId) => {
+    if (!battalionId) { setDetachments([]); return; }
+    formationService.detachments({ battalion: battalionId, page_size: 200 })
+      .then((r) => setDetachments(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
+      .catch(() => setDetachments([]));
+  }, []);
+
+  // Edit modal state
+  const [showEdit, setShowEdit]         = useState(false);
+  const [editTarget, setEditTarget]     = useState(null);
+  const [editForm, setEditForm]         = useState({});
+  const [editing, setEditing]           = useState(false);
+  const [editError, setEditError]       = useState("");
+
+  // Delete confirm state
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deleting, setDeleting]               = useState(false);
+
+  const ALL_ROLES = [
+    "admin", "co", "corps_cmd", "investigator", "duty_officer",
+    "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
+    "mpc_hqs", "bsm", "cop", "adj", "2ic",
+  ];
+
+  const ALL_RANKS = [
+    "General",
+    "Lieutenant General",
+    "Major General",
+    "Brigadier",
+    "Colonel",
+    "Lieutenant Colonel",
+    "Major",
+    "Captain",
+    "Lieutenant",
+    "2nd Lieutenant",
+    "Warrant Officer Class 1",
+    "Warrant Officer Class 2",
+    "Senior Sergeant",
+    "Staff Sergeant",
+    "Sergeant",
+    "Corporal",
+    "Lance Corporal",
+    "Private",
+    "Recruit",
+  ];
+
+  const openCreate = () => {
+    const prefill = {
+      ...BLANK_FORM,
+      battalion: isBattalionAdmin || isDetachmentIC ? String(user.battalion ?? "") : "",
+      detachment: isDetachmentIC ? String(user.detachment ?? "") : "",
+    };
+    setForm(prefill);
+    setCreateError("");
+    setDetachments([]);
+    setShowCreate(true);
+    if (battalions.length === 0) {
+      formationService.battalions({ page_size: 200 })
+        .then((r) => setBattalions(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
+        .catch(() => {});
+    }
+    // Pre-load detachments when battalion is already known
+    if ((isBattalionAdmin || isDetachmentIC) && user.battalion) {
+      loadDetachments(String(user.battalion));
+    }
   };
 
-  const load = useCallback(() => {
+  const openEdit = (u) => {
+    setEditTarget(u);
+    setEditForm({
+      name: u.name || "",
+      rank: u.rank || "",
+      email: u.email || "",
+      role: u.role || "",
+      is_active: u.is_active,
+    });
+    setEditError("");
+    setShowEdit(true);
+  };
+
+  const handleEditUser = async (e) => {
+    e.preventDefault();
+    setEditing(true);
+    setEditError("");
+    try {
+      await userService.update(editTarget.id, editForm);
+      setShowEdit(false);
+      loadUsers();
+    } catch (err) {
+      const data = err?.response?.data;
+      if (data && typeof data === "object") {
+        setEditError(Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v[0] : v}`).join(" | "));
+      } else {
+        setEditError("Failed to update user.");
+      }
+    } finally {
+      setEditing(false);
+    }
+  };
+
+  const handleDeleteUser = async (id) => {
+    setDeleting(true);
+    try {
+      await userService.delete(id);
+      setConfirmDeleteId(null);
+      loadUsers();
+    } catch {
+      // silently ignore
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setCreating(true);
+    setCreateError("");
+    try {
+      const payload = { ...form };
+      if (!payload.detachment) delete payload.detachment;
+      // For battalion admin/IC Det the backend auto-assigns battalion; for superuser use form value
+      if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
+      await userService.create(payload);
+      setShowCreate(false);
+      loadUsers();
+    } catch (err) {
+      const data = err?.response?.data;
+      if (data && typeof data === "object") {
+        const msgs = Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v[0] : v}`).join(" | ");
+        setCreateError(msgs);
+      } else {
+        setCreateError("Failed to create user.");
+      }
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const loadUsers = useCallback(() => {
     setLoading(true);
-    api
-      .get("/api/auth/users/", { params: { page } })
-      .then((r) => {
-        const items = Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : [];
-        setUsers(items);
-        setCount(r.data?.count ?? items.length);
-      })
-      .catch(() => {})
+    setError("");
+    const params = { page_size: 200 };
+    // Non-HQS/non-superuser battalion restriction
+    if (!isHqsAdmin && !isSuperuser && !isDetachmentIC && user?.battalion) {
+      params.battalion = user.battalion;
+    }
+    if (isDetachmentIC && user?.detachment) {
+      params.detachment = user.detachment;
+    }
+    userService
+      .list(params)
+      .then((res) => setUsers(toArray(res.data)))
+      .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [isHqsAdmin, isSuperuser, user?.battalion]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    loadUsers();
+  }, [loadUsers]);
 
-  const totalPages = Math.ceil(count / 20);
+  const filtered = users.filter((u) => {
+    const matchSearch =
+      !search ||
+      u.name?.toLowerCase().includes(search.toLowerCase()) ||
+      u.service_number?.toLowerCase().includes(search.toLowerCase());
+    const matchRole = roleFilter === "all" || u.role === roleFilter;
+    return matchSearch && matchRole;
+  });
+
+  const allRoles = [...new Set(users.map((u) => u.role).filter(Boolean))].sort();
+
+  const title = isHqsAdmin || isSuperuser
+    ? "All Users"
+    : isDetachmentIC
+    ? `${user?.detachment_name ?? "Detachment"} — Personnel`
+    : user?.battalion_name
+    ? `${user.battalion_name} — Personnel`
+    : "Battalion Personnel";
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
+    <>
+    <div className="p-4 md:p-6 min-h-screen bg-gray-900">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-xl font-semibold text-white">Users</h2>
-          <p className="text-gray-400 text-sm mt-0.5">{count} total</p>
+          <h2 className="text-2xl font-bold text-white">{title}</h2>
+          {!loading && (
+            <p className="text-sm text-gray-500 mt-0.5">
+              {filtered.length} {filtered.length === 1 ? "user" : "users"} found
+            </p>
+          )}
         </div>
-        {canCreate && (
+        <button
+          onClick={loadUsers}
+          className="flex items-center gap-2 text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Refresh
+        </button>
+        {(isSuperuser || isHqsAdmin) && (
           <button
-            onClick={() => setShowForm(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
+            onClick={openCreate}
+            className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"
           >
-            + Add User
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Add User
+          </button>
+        )}
+        {(isBattalionAdmin || isDetachmentIC) && (
+          <button
+            onClick={openCreate}
+            className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Add User
           </button>
         )}
       </div>
 
-      <div className="bg-gray-800 rounded-lg overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
-            <tr>
-              <th className="text-left px-4 py-3 whitespace-nowrap">Service #</th>
-              <th className="text-left px-4 py-3">Name</th>
-              <th className="text-left px-4 py-3 hidden md:table-cell">Rank</th>
-              <th className="text-left px-4 py-3 hidden sm:table-cell">Role</th>
-              <th className="text-left px-4 py-3 hidden lg:table-cell">Email</th>
-              <th className="text-left px-4 py-3">Active</th>
-              {canCreate && <th className="text-left px-4 py-3">Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={canCreate ? 7 : 6} className="px-4 py-10 text-center text-gray-500">Loading…</td>
-              </tr>
-            ) : users.length === 0 ? (
-              <tr>
-                <td colSpan={canCreate ? 7 : 6} className="px-4 py-10 text-center text-gray-500">No users found.</td>
-              </tr>
-            ) : (
-              users.map((u) => (
-                <tr key={u.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
-                  <td className="px-4 py-3 text-blue-400 font-mono whitespace-nowrap">{u.service_number}</td>
-                  <td className="px-4 py-3">
-                    <div className="text-white font-medium">{u.name}</div>
-                    {u.rank && <div className="text-gray-500 text-xs mt-0.5 md:hidden">{u.rank}</div>}
-                    <div className="sm:hidden mt-0.5">
-                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400">
-                        {ROLE_LABELS[u.role] || u.role}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-300 hidden md:table-cell">{u.rank || "—"}</td>
-                  <td className="px-4 py-3 hidden sm:table-cell">
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400">
-                      {ROLE_LABELS[u.role] || u.role}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 hidden lg:table-cell">{u.email || "—"}</td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${u.is_active ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                      {u.is_active ? "Active" : "Inactive"}
-                    </span>
-                  </td>
-                  {canCreate && (
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setEditUser(u)}
-                          className="text-xs px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/40 transition-colors"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => setDeleteUser(u)}
-                          className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 transition-colors"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {totalPages > 1 && (
-        <div className="flex justify-between items-center mt-4 text-sm text-gray-400">
-          <span>Page {page} of {totalPages}</span>
-          <div className="flex gap-2">
-            <button
-              disabled={page === 1}
-              onClick={() => setPage(page - 1)}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              disabled={page >= totalPages}
-              onClick={() => setPage(page + 1)}
-              className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showForm && (
-        <UserForm
-          onClose={() => setShowForm(false)}
-          onSaved={() => { setShowForm(false); load(); }}
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 mb-5">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name or service #..."
+          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 w-64 focus:outline-none focus:ring-1 focus:ring-blue-500 placeholder-gray-500"
         />
-      )}
-
-      {editUser && (
-        <EditUserForm
-          target={editUser}
-          onClose={() => setEditUser(null)}
-          onSaved={() => { setEditUser(null); load(); }}
-        />
-      )}
-
-      {deleteUser && (
-        <ConfirmDelete
-          name={deleteUser.name || deleteUser.service_number}
-          loading={deleteLoading}
-          onConfirm={handleDelete}
-          onCancel={() => setDeleteUser(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-function UserForm({ onClose, onSaved }) {
-  const [saved, setSaved] = useState(false);
-  const [savedName, setSavedName] = useState("");
-  const EXEMPT_ROLES = ["corps_cmd", "cop"];
-
-  const [form, setForm] = useState({
-    service_number: "", name: "", rank: "", email: "",
-    role: "personnel", password: "", must_change_password: true,
-    battalion: "", detachment: "",
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [battalions, setBattalions] = useState([]);
-  const [detachments, setDetachments] = useState([]);
-
-  useEffect(() => {
-    formationService.battalions().then((r) => {
-      const items = Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : [];
-      setBattalions(items);
-    }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!form.battalion) { setDetachments([]); return; }
-    formationService.detachments({ battalion: form.battalion }).then((r) => {
-      const items = Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : [];
-      setDetachments(items);
-    }).catch(() => {});
-  }, [form.battalion]);
-
-  const needsBattalion = !EXEMPT_ROLES.includes(form.role);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    // Build payload — omit empty optional fields
-    const payload = { ...form };
-    if (!payload.battalion) delete payload.battalion;
-    if (!payload.detachment) delete payload.detachment;
-    if (!payload.rank) delete payload.rank;
-    if (!payload.email) delete payload.email;
-    try {
-      await api.post("/api/auth/users/", payload);
-      setSavedName(form.name || form.service_number);
-      setSaved(true);
-    } catch (err) {
-      const data = err.response?.data;
-      setError(
-        typeof data === "object"
-          ? Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" | ")
-          : String(data ?? "Failed to create user.")
-      );
-      setSaving(false);
-    }
-  };
-
-  const textFields = [
-    ["Service Number *", "service_number", true, "text"],
-    ["Full Name *", "name", true, "text"],
-    ["Email", "email", false, "email"],
-  ];
-
-  // ── Success confirmation screen ──────────────────────────
-  if (saved) {
-    return (
-      <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-        <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm border border-gray-700 p-8 text-center">
-          <div className="w-14 h-14 bg-green-600/20 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h3 className="text-white font-semibold text-lg mb-1">User Added</h3>
-          <p className="text-gray-400 text-sm mb-6">
-            <span className="text-white font-medium">{savedName}</span> was successfully created.
-          </p>
-          <div className="flex flex-col gap-3">
-            <button
-              onClick={() => {
-                setSaved(false);
-                setSavedName("");
-                setForm({ service_number: "", name: "", rank: "", email: "", role: "personnel", password: "", must_change_password: true, battalion: "", detachment: "" });
-                setError("");
-                setSaving(false);
-              }}
-              className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
-            >
-              + Add Another User
-            </button>
-            <button
-              onClick={() => { onSaved(); onClose(); }}
-              className="w-full px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
-            >
-              Back to List
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center sticky top-0 bg-gray-800">
-          <h3 className="text-white font-semibold">Add User</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
-        </div>
-        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-3">
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          {textFields.map(([label, key, req, type]) => (
-            <div key={key}>
-              <label className="text-xs text-gray-400">{label}</label>
-              <input
-                type={type}
-                value={form[key]}
-                onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-                required={req}
-                className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-              />
-            </div>
+        <select
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value)}
+          className="bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          <option value="all">All Roles</option>
+          {allRoles.map((r) => (
+            <option key={r} value={r}>
+              {ROLE_LABELS[r] || r}
+            </option>
           ))}
-          <div>
-            <label className="text-xs text-gray-400">Rank</label>
-            <select
-              value={form.rank}
-              onChange={(e) => setForm({ ...form, rank: e.target.value })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">— Select Rank —</option>
-              {RANKS.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
+        </select>
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="bg-red-900/30 border border-red-700 text-red-400 text-sm rounded-lg px-4 py-3 mb-5">
+          {error}
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="bg-gray-800 rounded-xl overflow-hidden">
+        {loading ? (
+          <div className="p-5 space-y-3">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="h-8 bg-gray-700 rounded animate-pulse" />
+            ))}
           </div>
-          <div>
-            <label className="text-xs text-gray-400">Role *</label>
-            <select
-              value={form.role}
-              onChange={(e) => setForm({ ...form, role: e.target.value, battalion: "", detachment: "" })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              {Object.entries(ROLE_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
-            </select>
+        ) : filtered.length === 0 ? (
+          <div className="p-10 text-center text-gray-500">
+            <svg className="w-12 h-12 mx-auto mb-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <p>No users found</p>
           </div>
-          <div>
-            <label className="text-xs text-gray-400">
-              Battalion {needsBattalion ? "*" : "(optional)"}
-            </label>
-            <select
-              value={form.battalion}
-              onChange={(e) => setForm({ ...form, battalion: e.target.value, detachment: "" })}
-              required={needsBattalion}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">— Select Battalion —</option>
-              {battalions.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </div>
-          {detachments.length > 0 && (
-            <div>
-              <label className="text-xs text-gray-400">Detachment (optional)</label>
-              <select
-                value={form.detachment}
-                onChange={(e) => setForm({ ...form, detachment: e.target.value })}
-                className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-              >
-                <option value="">— Select Detachment —</option>
-                {detachments.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
+                  <th className="text-left px-5 py-3 font-medium">Service #</th>
+                  <th className="text-left px-5 py-3 font-medium">Name</th>
+                  <th className="text-left px-5 py-3 font-medium hidden sm:table-cell">Rank</th>
+                  <th className="text-left px-5 py-3 font-medium">Role</th>
+                  <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Battalion</th>
+                  <th className="text-left px-5 py-3 font-medium">Status</th>
+                  {canManage && <th className="text-left px-5 py-3 font-medium">Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((u) => (
+                  <tr
+                    key={u.id}
+                    className="border-b border-gray-700/40 hover:bg-gray-700/20 transition-colors"
+                  >
+                    <td className="px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap">
+                      {u.service_number}
+                    </td>
+                    <td className="px-5 py-3">
+                      <p className="text-white font-medium">{u.name || "--"}</p>
+                    </td>
+                    <td className="px-5 py-3 text-gray-400 hidden sm:table-cell">
+                      {u.rank || "--"}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${
+                          ROLE_BADGE[u.role] || "bg-gray-600 text-gray-300"
+                        }`}
+                      >
+                        {ROLE_LABELS[u.role] || u.role || "--"}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-gray-400 text-xs hidden md:table-cell">
+                      {u.battalion_name || "--"}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
+                          u.is_active ? "text-green-400" : "text-gray-500"
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            u.is_active ? "bg-green-400" : "bg-gray-600"
+                          }`}
+                        />
+                        {u.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </td>
+                    {canManage && MANAGED_ROLES.has(u.role) && (
+                      <td className="px-5 py-3">
+                        {confirmDeleteId === u.id ? (
+                          <span className="flex items-center gap-2 text-xs">
+                            <span className="text-gray-400">Delete?</span>
+                            <button
+                              onClick={() => handleDeleteUser(u.id)}
+                              disabled={deleting}
+                              className="text-red-400 hover:text-red-300 font-medium disabled:opacity-60"
+                            >Yes</button>
+                            <button
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="text-gray-400 hover:text-white"
+                            >No</button>
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-2">
+                            <button
+                              onClick={() => openEdit(u)}
+                              className="text-blue-400 hover:text-blue-300 text-xs font-medium"
+                            >Edit</button>
+                            <button
+                              onClick={() => setConfirmDeleteId(u.id)}
+                              className="text-red-400 hover:text-red-300 text-xs font-medium"
+                            >Delete</button>
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    {canManage && !MANAGED_ROLES.has(u.role) && <td className="px-5 py-3" />}
+                  </tr>
                 ))}
-              </select>
-            </div>
-          )}
-          <div>
-            <label className="text-xs text-gray-400">Initial Password *</label>
-            <div className="relative mt-1">
-              <input
-                type={showPassword ? "text" : "password"}
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                required
-                className="w-full bg-gray-700 text-white text-sm px-3 py-2 pr-10 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-400 hover:text-white"
-                tabIndex={-1}
-              >
-                {showPassword ? (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                  </svg>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+
+    {/* Create User Modal */}
+    {showCreate && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+            <h2 className="text-white font-semibold text-base">Add New User</h2>
+            <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <form onSubmit={handleCreateUser} className="px-6 py-4 space-y-3">
+            {createError && (
+              <p className="text-red-400 text-xs bg-red-900/30 rounded px-3 py-2">{createError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Service Number *</label>
+                <input
+                  required value={form.service_number}
+                  onChange={(e) => setForm({ ...form, service_number: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Full Name *</label>
+                <input
+                  required value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Rank *</label>
+                <select
+                  required value={form.rank}
+                  onChange={(e) => setForm({ ...form, rank: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Select rank</option>
+                  {ALL_RANKS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Email *</label>
+                <input
+                  required type="email" value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Role *</label>
+                <select
+                  required value={form.role}
+                  onChange={(e) => {
+                    const newRole = e.target.value;
+                    const clearDet = !DETACHMENT_LEVEL_ROLES.includes(newRole);
+                    setForm({ ...form, role: newRole, detachment: clearDet ? "" : form.detachment });
+                    // Load detachments when switching to a detachment-level role and battalion is known
+                    if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion) {
+                      loadDetachments(form.battalion);
+                    }
+                  }}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Select role</option>
+                  {ASSIGNABLE_ROLES.map((r) => (
+                    <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Battalion *</label>
+                {isSuperuser || isHqsAdmin ? (
+                  <select
+                    required value={form.battalion}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setForm({ ...form, battalion: val, detachment: "" });
+                      loadDetachments(val);
+                    }}
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">Select battalion</option>
+                    {battalions.map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
                 ) : (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
+                  <input
+                    readOnly value={user?.battalion_name ?? user?.battalion ?? ""}
+                    className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                  />
                 )}
+              </div>
+              {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
+                <div className="col-span-2">
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Detachment <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
+                  </label>
+                  <select
+                    value={form.detachment}
+                    onChange={(e) => setForm({ ...form, detachment: e.target.value })}
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">— Battalion level (no detachment) —</option>
+                    {detachments.map((d) => (
+                      <option key={d.id} value={d.id}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="col-span-2">
+                <label className="block text-xs text-gray-400 mb-1">Password *</label>
+                <input
+                  required type="password" value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button" onClick={() => setShowCreate(false)}
+                className="px-4 py-2 text-sm text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit" disabled={creating}
+                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 rounded-lg transition-colors"
+              >
+                {creating ? "Creating..." : "Create User"}
               </button>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="mcp"
-              checked={form.must_change_password}
-              onChange={(e) => setForm({ ...form, must_change_password: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="mcp" className="text-xs text-gray-400">
-              Require password change on first login
-            </label>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
-            >
-              {saving ? "Saving…" : "Create User"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Edit User Form ─────────────────────────────────────── */
-function EditUserForm({ target, onClose, onSaved }) {
-  const EXEMPT_ROLES = ["corps_cmd", "cop"];
-  const [form, setForm] = useState({
-    name: target.name || "",
-    rank: target.rank || "",
-    email: target.email || "",
-    role: target.role || "personnel",
-    battalion: target.battalion || "",
-    detachment: target.detachment || "",
-    is_active: target.is_active ?? true,
-    must_change_password: target.must_change_password ?? false,
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [battalions, setBattalions] = useState([]);
-  const [detachments, setDetachments] = useState([]);
-
-  useEffect(() => {
-    formationService.battalions().then((r) => {
-      const items = Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : [];
-      setBattalions(items);
-    }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!form.battalion) { setDetachments([]); return; }
-    formationService.detachments({ battalion: form.battalion }).then((r) => {
-      const items = Array.isArray(r.data) ? r.data : Array.isArray(r.data?.results) ? r.data.results : [];
-      setDetachments(items);
-    }).catch(() => {});
-  }, [form.battalion]);
-
-  const needsBattalion = !EXEMPT_ROLES.includes(form.role);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    const payload = { ...form };
-    if (!payload.battalion) delete payload.battalion;
-    if (!payload.detachment) delete payload.detachment;
-    if (!payload.rank) delete payload.rank;
-    if (!payload.email) delete payload.email;
-    try {
-      await api.patch(`/api/auth/users/${target.id}/`, payload);
-      onSaved();
-    } catch (err) {
-      const data = err.response?.data;
-      setError(
-        typeof data === "object"
-          ? Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" | ")
-          : String(data ?? "Failed to update user.")
-      );
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center sticky top-0 bg-gray-800">
-          <h3 className="text-white font-semibold">Edit User — {target.service_number}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg leading-none">✕</button>
+          </form>
         </div>
-        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-3">
-          {error && <p className="text-red-400 text-sm">{error}</p>}
-          {/* Name */}
-          <div>
-            <label className="text-xs text-gray-400">Full Name *</label>
-            <input type="text" value={form.name} required
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500" />
+      </div>
+    )}
+
+    {/* Edit User Modal */}
+    {showEdit && editTarget && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+            <h2 className="text-white font-semibold text-base">Edit User — {editTarget.name}</h2>
+            <button onClick={() => setShowEdit(false)} className="text-gray-400 hover:text-white">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          {/* Email */}
-          <div>
-            <label className="text-xs text-gray-400">Email</label>
-            <input type="email" value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500" />
-          </div>
-          {/* Rank */}
-          <div>
-            <label className="text-xs text-gray-400">Rank</label>
-            <select value={form.rank} onChange={(e) => setForm({ ...form, rank: e.target.value })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-              <option value="">— Select Rank —</option>
-              {RANKS.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </div>
-          {/* Role */}
-          <div>
-            <label className="text-xs text-gray-400">Role *</label>
-            <select value={form.role}
-              onChange={(e) => setForm({ ...form, role: e.target.value, battalion: "", detachment: "" })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-              {Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </div>
-          {/* Battalion */}
-          <div>
-            <label className="text-xs text-gray-400">Battalion {needsBattalion ? "*" : "(optional)"}</label>
-            <select value={form.battalion} required={needsBattalion}
-              onChange={(e) => setForm({ ...form, battalion: e.target.value, detachment: "" })}
-              className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-              <option value="">— Select Battalion —</option>
-              {battalions.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          </div>
-          {/* Detachment */}
-          {detachments.length > 0 && (
-            <div>
-              <label className="text-xs text-gray-400">Detachment (optional)</label>
-              <select value={form.detachment}
-                onChange={(e) => setForm({ ...form, detachment: e.target.value })}
-                className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-                <option value="">— Select Detachment —</option>
-                {detachments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-              </select>
+          <form onSubmit={handleEditUser} className="px-6 py-4 space-y-3">
+            {editError && (
+              <p className="text-red-400 text-xs bg-red-900/30 rounded px-3 py-2">{editError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Full Name *</label>
+                <input
+                  required value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Rank *</label>
+                <select
+                  required value={editForm.rank}
+                  onChange={(e) => setEditForm({ ...editForm, rank: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">Select rank</option>
+                  {ALL_RANKS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Email *</label>
+                <input
+                  required type="email" value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Role *</label>
+                <select
+                  required value={editForm.role}
+                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {ASSIGNABLE_ROLES.map((r) => (
+                    <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="col-span-2 flex items-center gap-3">
+                <label className="text-xs text-gray-400">Account Status</label>
+                <button
+                  type="button"
+                  onClick={() => setEditForm({ ...editForm, is_active: !editForm.is_active })}
+                  className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                    editForm.is_active
+                      ? "bg-green-600/30 text-green-400 hover:bg-red-600/30 hover:text-red-400"
+                      : "bg-gray-600/30 text-gray-400 hover:bg-green-600/30 hover:text-green-400"
+                  }`}
+                >
+                  {editForm.is_active ? "Active (click to deactivate)" : "Inactive (click to activate)"}
+                </button>
+              </div>
             </div>
-          )}
-          {/* Active toggle */}
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="edit-active" checked={form.is_active}
-              onChange={(e) => setForm({ ...form, is_active: e.target.checked })} className="rounded" />
-            <label htmlFor="edit-active" className="text-xs text-gray-400">Active</label>
-          </div>
-          {/* Must change password */}
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="edit-mcp" checked={form.must_change_password}
-              onChange={(e) => setForm({ ...form, must_change_password: e.target.checked })} className="rounded" />
-            <label htmlFor="edit-mcp" className="text-xs text-gray-400">Require password change on next login</label>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">
-              Cancel
-            </button>
-            <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
-              {saving ? "Saving…" : "Save Changes"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Confirm Delete ─────────────────────────────────────── */
-function ConfirmDelete({ name, loading, onConfirm, onCancel }) {
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-sm border border-gray-700 p-6 text-center">
-        <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-          <svg className="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </div>
-        <h3 className="text-white font-semibold mb-1">Delete User</h3>
-        <p className="text-gray-400 text-sm mb-6">
-          Are you sure you want to delete <span className="text-white font-medium">{name}</span>? This cannot be undone.
-        </p>
-        <div className="flex gap-3">
-          <button onClick={onCancel} disabled={loading}
-            className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50">
-            Cancel
-          </button>
-          <button onClick={onConfirm} disabled={loading}
-            className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-lg transition-colors disabled:opacity-50">
-            {loading ? "Deleting…" : "Delete"}
-          </button>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button" onClick={() => setShowEdit(false)}
+                className="px-4 py-2 text-sm text-gray-300 hover:text-white bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit" disabled={editing}
+                className="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 rounded-lg transition-colors"
+              >
+                {editing ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
-    </div>
+    )}
+    </>
   );
 }

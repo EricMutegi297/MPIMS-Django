@@ -86,8 +86,7 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 # ── REST Framework ────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",  # kept for Django admin
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -101,27 +100,15 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 20,
 }
 
-# ── JWT ───────────────────────────────────────────────────────────────────────
-from datetime import timedelta
-SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=8),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
-    "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
-    "AUTH_HEADER_TYPES": ("Bearer",),
-    "USER_ID_FIELD": "id",
-    "USER_ID_CLAIM": "user_id",
-}
-
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = DEBUG  # allow any origin in dev
 CORS_ALLOWED_ORIGINS = config(
-    "CORS_ALLOWED_ORIGINS", default="http://localhost:3000"
+    "CORS_ALLOWED_ORIGINS", default="http://localhost:3000,https://localhost:3000"
 ).split(",")
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = config(
     "CSRF_TRUSTED_ORIGINS",
-    default="http://localhost:3000,http://192.168.88.13:3000",
+    default="http://localhost:3000,https://localhost:3000,http://192.168.88.13:3000,https://192.168.88.13:3000",
 ).split(",")
 
 # ── Internationalisation ──────────────────────────────────────────────────────
@@ -139,6 +126,15 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ── Email ─────────────────────────────────────────────────────────────────────
+EMAIL_BACKEND      = config("EMAIL_BACKEND",      default="django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST         = config("EMAIL_HOST",         default="")
+EMAIL_PORT         = config("EMAIL_PORT",         default=587, cast=int)
+EMAIL_USE_TLS      = config("EMAIL_USE_TLS",      default=True, cast=bool)
+EMAIL_HOST_USER    = config("EMAIL_HOST_USER",    default="")
+EMAIL_HOST_PASSWORD= config("EMAIL_HOST_PASSWORD",default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="MPIMS <noreply@mpims.ke>")
 
 # ── Channels (WebSocket) ──────────────────────────────────────────────────────
 CHANNEL_LAYERS = {

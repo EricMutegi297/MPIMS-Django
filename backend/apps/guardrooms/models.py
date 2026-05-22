@@ -7,9 +7,6 @@ class Guardroom(models.Model):
     unit = models.OneToOneField(
         "formations.Unit", null=True, blank=True, on_delete=models.SET_NULL, related_name="guardroom"
     )
-    capacity = models.PositiveIntegerField(default=0)
-    location = models.CharField(max_length=150, blank=True)
-    phone_no = models.CharField(max_length=30, blank=True)
     ic = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True, blank=True,

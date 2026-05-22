@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions
+from django.db.models import Count
 from .models import Formation, Battalion, Unit, Detachment
 from .serializers import FormationSerializer, BattalionSerializer, UnitSerializer, DetachmentSerializer
 
@@ -13,21 +14,23 @@ class IsSuperAdminOrReadOnly(permissions.BasePermission):
 
 
 class FormationViewSet(viewsets.ModelViewSet):
-    queryset = Formation.objects.prefetch_related("battalions__units", "battalions__detachments", "units").all()
+    queryset = Formation.objects.prefetch_related("units", "battalions__detachments").all()
     serializer_class = FormationSerializer
     permission_classes = [IsSuperAdminOrReadOnly]
 
 
 class BattalionViewSet(viewsets.ModelViewSet):
-    queryset = Battalion.objects.select_related("formation").prefetch_related("units", "detachments").all()
+    queryset = Battalion.objects.select_related("formation").prefetch_related("detachments").annotate(
+        case_count=Count("tasked_cases", distinct=True)
+    )
     serializer_class = BattalionSerializer
     permission_classes = [IsSuperAdminOrReadOnly]
 
 
 class UnitViewSet(viewsets.ModelViewSet):
-    queryset = Unit.objects.select_related("formation", "battalion", "battalion__formation").all()
+    queryset = Unit.objects.select_related("formation").all()
     serializer_class = UnitSerializer
-    filterset_fields = ["formation", "battalion", "service"]
+    filterset_fields = ["formation"]
     permission_classes = [IsSuperAdminOrReadOnly]
 
 

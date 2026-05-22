@@ -7,12 +7,9 @@ def case_attachment_path(instance, filename):
     return f"cases/{case_ref}/{filename}"
 
 
-def case_abstract_path(instance, filename):
-    try:
-        case_ref = instance.case.case_number
-    except Exception:
-        case_ref = "draft"
-    return f"cases/{case_ref}/abstract/{filename}"
+def case_extra_attachment_path(instance, filename):
+    case_ref = instance.case.case_number or "draft"
+    return f"cases/{case_ref}/extra/{filename}"
 
 
 class Case(models.Model):
@@ -21,10 +18,10 @@ class Case(models.Model):
         OPEN = "open", "Open"
         TASKED = "tasked", "Tasked"
         UNDER_INVESTIGATION = "under_investigation", "Under Investigation"
-        CLOSED = "closed", "Closed"
-        REFERRED = "referred", "Referred"
         PENDING = "pending", "Pending"
         SERVED = "served", "Served"
+        CLOSED = "closed", "Closed"
+        REFERRED = "referred", "Referred"
 
     class Service(models.TextChoices):
         KA = "KA", "KA"
@@ -92,16 +89,16 @@ class Case(models.Model):
     rfi_document = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     tasking_letter = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     tasking_date = models.DateTimeField(null=True, blank=True)
-    brief_document = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
-    brief_forwarded_co = models.BooleanField(default=False)
-    brief_forwarded_corps = models.BooleanField(default=False)
-    served_at = models.DateTimeField(null=True, blank=True)
     assigned_team = models.ForeignKey(
         "InvestigationTeam",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="assigned_cases",
+    )
+    team_assigned_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Timestamp when an investigation team was last assigned to this case.",
     )
     tasked_detachment = models.ForeignKey(
         "formations.Detachment",
@@ -112,7 +109,14 @@ class Case(models.Model):
     )
     action_taken = models.TextField(blank=True)
     remarks = models.TextField(blank=True)
+    chargesheet = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    mentioning_date = models.DateField(null=True, blank=True)
+    mentioning_remarks = models.TextField(blank=True)
+    served_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
     date_of_offence = models.DateField(null=True, blank=True)
+    investigation_deadline = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -132,30 +136,133 @@ class Case(models.Model):
         return f"{self.case_number} — {self.title}"
 
 
-class CaseAbstractAttachment(models.Model):
-    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="abstracts")
-    file = models.FileField(upload_to=case_abstract_path)
-    description = models.CharField(max_length=200, blank=True)
+class CaseAttachment(models.Model):
+    class DocumentType(models.TextChoices):
+        GENERAL = "general", "General"
+        JUDGMENT = "judgment", "Judgment"
+
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="extra_attachments")
+    document_type = models.CharField(
+        max_length=20,
+        choices=DocumentType.choices,
+        default=DocumentType.GENERAL,
+    )
+    label = models.CharField(max_length=100, blank=True)
+    file = models.FileField(upload_to=case_extra_attachment_path)
     uploaded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name="uploaded_abstracts",
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "case_abstract_attachments"
-        ordering = ["uploaded_at"]
+        db_table = "case_attachments"
+        ordering = ["-uploaded_at"]
 
     def __str__(self):
-        return f"Abstract for {self.case.case_number} — {self.file.name}"
+        return f"{self.case.case_number} – {self.label or self.file.name}"
+
+
+class CaseCourtMartialHearing(models.Model):
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_hearings")
+    hearing_date = models.DateField()
+    remarks = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "case_court_martial_hearings"
+        ordering = ["hearing_date", "created_at"]
+
+    def __str__(self):
+        return f"{self.case.case_number} hearing on {self.hearing_date}"
+
+
+class CaseCourtMartialMilestone(models.Model):
+    class MilestoneType(models.TextChoices):
+        MENTIONING = "mentioning", "Mentioning"
+        HEARING = "hearing", "Hearing"
+        DEFENCE = "defence", "Defence"
+        RULING = "ruling", "Ruling"
+        JUDGMENT = "judgment", "Judgment"
+
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_milestones")
+    milestone_type = models.CharField(max_length=20, choices=MilestoneType.choices)
+    scheduled_date = models.DateField()
+    planning_comment = models.TextField(blank=True)
+    action_remarks = models.TextField(blank=True)
+    action_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="court_martial_actions_recorded",
+    )
+    action_recorded_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="court_martial_milestones_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "case_court_martial_milestones"
+        ordering = ["scheduled_date", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["case", "milestone_type", "scheduled_date"],
+                name="uniq_case_milestone_type_date",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.case.case_number} {self.milestone_type} on {self.scheduled_date}"
+
+
+class CaseActivityLog(models.Model):
+    class Action(models.TextChoices):
+        CASE_CREATED = "case_created", "Case Created"
+        STATUS_CHANGED = "status_changed", "Status Changed"
+        ATTACHMENT_UPLOADED = "attachment_uploaded", "Attachment Uploaded"
+        ATTACHMENT_DELETED = "attachment_deleted", "Attachment Deleted"
+        TEAM_ASSIGNED = "team_assigned", "Team Assigned"
+        BATTALION_TASKED = "battalion_tasked", "Battalion Tasked"
+        DETACHMENT_TASKED = "detachment_tasked", "Detachment Tasked"
+        CASE_UPDATED = "case_updated", "Case Updated"
+
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="activity_logs")
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    action = models.CharField(max_length=30, choices=Action.choices)
+    detail = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "case_activity_logs"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.case.case_number} [{self.action}] by {self.actor}"
 
 
 class InvestigationTeam(models.Model):
     battalion = models.ForeignKey(
         "formations.Battalion",
         on_delete=models.CASCADE,
+        related_name="investigation_teams",
+    )
+    detachment = models.ForeignKey(
+        "formations.Detachment",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
         related_name="investigation_teams",
     )
     name = models.CharField(max_length=100)

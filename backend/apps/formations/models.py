@@ -44,31 +44,19 @@ class Battalion(models.Model):
 
 class Unit(models.Model):
     class Service(models.TextChoices):
-        KA = "KA", "Kenya Army"
+        KA  = "KA",  "Kenya Army"
         KAF = "KAF", "Kenya Air Force"
-        KN = "KN", "Kenya Navy"
+        KN  = "KN",  "Kenya Navy"
 
-    name = models.CharField(max_length=100)
-    code = models.CharField(max_length=20, blank=True)
-    formation = models.ForeignKey(
-        Formation,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="units",
-    )
-    battalion = models.ForeignKey(
-        Battalion,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="units",
-    )
-    service = models.CharField(max_length=3, choices=Service.choices, default=Service.KA)
-    mobile_no = models.CharField(max_length=30, blank=True)
-    email = models.EmailField(blank=True)
+    name           = models.CharField(max_length=100)
+    code           = models.CharField(max_length=20, blank=True)
+    formation      = models.ForeignKey(Formation, null=True, blank=True, on_delete=models.SET_NULL, related_name="units")
+    battalion      = models.ForeignKey(Battalion, null=True, blank=True, on_delete=models.SET_NULL, related_name="battalion_units")
+    service        = models.CharField(max_length=3, choices=Service.choices, default=Service.KA)
+    email          = models.EmailField(blank=True)
+    mobile_no      = models.CharField(max_length=30, blank=True)
     location_county = models.CharField(max_length=150, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at     = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "units"
