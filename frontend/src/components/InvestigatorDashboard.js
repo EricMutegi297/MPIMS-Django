@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { caseService, teamService, attachmentService } from "../services/api";
 import NotificationBell from "./NotificationBell";

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { caseService, formationService, offenceService, teamService, attachmentService } from "../services/api";
 
@@ -390,6 +390,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [actionDrafts, setActionDrafts] = useState({});
   const [actionSavingId, setActionSavingId] = useState(null);
   const [editingActionMilestoneId, setEditingActionMilestoneId] = useState(null);
+  const [courtCloseCase, setCourtCloseCase] = useState(null);
   const [showCourtCloseModal, setShowCourtCloseModal] = useState(false);
   const [judgmentFileRows, setJudgmentFileRows] = useState([]);
   const [courtCloseSaving, setCourtCloseSaving] = useState(false);
@@ -500,13 +501,18 @@ export default function Cases({ user, criminalTypeFilter }) {
     setCaseActivityErr("");
     setActionDrafts({});
     setEditingActionMilestoneId(null);
-    setShowCourtCloseModal(false);
-    setJudgmentFileRows([]);
-    setCourtCloseErr("");
+    if (!showCourtCloseModal) {
+      setCourtCloseCase(null);
+      setJudgmentFileRows([]);
+      setCourtCloseErr("");
+    }
   }
 
   const selectedIsCourtMartial = selected?.criminal_offence_type === "court_martial";
   const selectedIsDci = selected?.criminal_offence_type === "dci_civ_police";
+  const activeCloseCase = courtCloseCase || selected;
+  const activeCloseCaseIsCourtMartial = activeCloseCase?.criminal_offence_type === "court_martial";
+  const activeCloseCaseIsDci = activeCloseCase?.criminal_offence_type === "dci_civ_police";
 
   useEffect(() => {
     if (!selectedId || !selectedIsCourtMartial) {
@@ -667,8 +673,36 @@ export default function Cases({ user, criminalTypeFilter }) {
     };
   }
 
+  function judgmentLabelFromFilename(fileName) {
+    const base = String(fileName || "").replace(/\.[^/.]+$/, "").trim();
+    return base || "Judgment";
+  }
+
+  function handleJudgmentFileChange(rowId, file) {
+    setJudgmentFileRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== rowId) return row;
+        const label = String(row.label || "").trim()
+          ? row.label
+          : judgmentLabelFromFilename(file?.name);
+        return { ...row, file, label };
+      })
+    );
+    if (courtCloseErr) setCourtCloseErr("");
+  }
+
+  function closeCourtCloseModal() {
+    if (courtCloseSaving) return;
+    setShowCourtCloseModal(false);
+    setCourtCloseCase(null);
+    setJudgmentFileRows([]);
+    setCourtCloseErr("");
+  }
+
   function openCourtCloseModal(caseObj = selected) {
-    if (caseObj?.id) {
+    if (!caseObj?.id) return;
+    setCourtCloseCase(caseObj);
+    if (selected?.id !== caseObj.id) {
       setSelected(caseObj);
     }
     setCourtCloseErr("");
@@ -694,7 +728,8 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   async function submitCourtCloseWithJudgmentFiles() {
-    if (!selected) return;
+    const closeCase = courtCloseCase || selected;
+    if (!closeCase) return;
     const rowsWithFiles = judgmentFileRows.filter((r) => r.file);
     if (!rowsWithFiles.length) {
       setCourtCloseErr("Attach at least one Judgment PDF file.");
@@ -713,6 +748,22 @@ export default function Cases({ user, criminalTypeFilter }) {
       }
     }
 
+    if (closeCase.criminal_offence_type === "court_martial") {
+      if (!(isHqsAdmin || isSuperuser)) {
+        setCourtCloseErr("Only HQ battalion admin can close a Court Martial case.");
+        return;
+      }
+      const judgment = courtMilestones.find((m) => m.milestone_type === "judgment");
+      if (!judgment?.scheduled_date) {
+        setCourtCloseErr("Judgment date is required before closing a Court Martial case.");
+        return;
+      }
+      if (!String(judgment.action_remarks || judgment.planning_comment || "").trim()) {
+        setCourtCloseErr("Judgment remarks/comment are required before closing a Court Martial case.");
+        return;
+      }
+    }
+
     setCourtCloseSaving(true);
     setCourtCloseErr("");
     try {
@@ -721,18 +772,20 @@ export default function Cases({ user, criminalTypeFilter }) {
         fd.append("document_type", "judgment");
         fd.append("label", row.label.trim());
         fd.append("file", row.file);
-        await attachmentService.upload(selected.id, fd);
+        await attachmentService.upload(closeCase.id, fd);
       }
 
-      const closed = await handleStatus("closed");
-      if (!closed) {
-        setCourtCloseErr("Failed to close case after attaching judgment files.");
-        return;
-      }
+      const res = await caseService.update(closeCase.id, { status: "closed" });
+      refreshSelected(res.data);
+      setFilter("closed");
+      loadCases();
 
       setShowCourtCloseModal(false);
+      setCourtCloseCase(null);
       setJudgmentFileRows([]);
       setCourtCloseErr("");
+      setStatusErr("");
+      setRowActionErr("");
     } catch (err) {
       const d = err?.response?.data;
       if (d?.detail) {
@@ -741,9 +794,9 @@ export default function Cases({ user, criminalTypeFilter }) {
         const msgs = Object.entries(d)
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
           .join(" | ");
-        setCourtCloseErr(msgs || "Failed to upload judgment files.");
+        setCourtCloseErr(msgs || "Failed to attach judgment files and close case.");
       } else {
-        setCourtCloseErr("Failed to upload judgment files.");
+        setCourtCloseErr("Failed to attach judgment files and close case.");
       }
     } finally {
       setCourtCloseSaving(false);
@@ -1956,17 +2009,18 @@ export default function Cases({ user, criminalTypeFilter }) {
       </div>
 
       {/* ══════════════ CLOSE COURT MARTIAL MODAL ══════════════ */}
-      {showCourtCloseModal && selected && (
+      {showCourtCloseModal && activeCloseCase && (
         <div
           className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4"
-          onClick={() => { if (!courtCloseSaving) setShowCourtCloseModal(false); }}
+          role="dialog"
+          aria-modal="true"
         >
           <div
             className="w-full max-w-2xl bg-gray-800 rounded-2xl p-6 space-y-4 relative"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => { if (!courtCloseSaving) setShowCourtCloseModal(false); }}
+              onClick={closeCourtCloseModal}
               disabled={courtCloseSaving}
               className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors disabled:opacity-40"
             >
@@ -1976,7 +2030,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             </button>
 
             <h3 className="text-lg font-semibold text-white">
-              {selectedIsCourtMartial ? "Close Court Martial Case" : selectedIsDci ? "Close DCI / Civ Police Case" : "Close Case"}
+              {activeCloseCaseIsCourtMartial ? "Close Court Martial Case" : activeCloseCaseIsDci ? "Close DCI / Civ Police Case" : "Close Case"}
             </h3>
             <p className="text-xs text-gray-400">
               Attach one or more <span className="font-semibold text-gray-300">Judgment PDF</span> files with labels before closing this case.
@@ -2001,10 +2055,30 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <input
                       type="file"
                       accept="application/pdf,.pdf"
-                      onChange={(e) => updateJudgmentFileRow(row.id, { file: e.target.files?.[0] || null })}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => handleJudgmentFileChange(row.id, e.target.files?.[0] || null)}
                       disabled={courtCloseSaving}
-                      className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
+                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
                     />
+                    <div
+                      className={`mt-2 truncate rounded border px-3 py-2 text-xs ${
+                        row.file
+                          ? "border-green-500/40 bg-green-500/10 text-green-300"
+                          : "border-gray-600 bg-gray-700/60 text-gray-400"
+                      }`}
+                    >
+                      {row.file?.name || "No PDF selected"}
+                    </div>
+                    {row.file && (
+                      <button
+                        type="button"
+                        onClick={() => handleJudgmentFileChange(row.id, null)}
+                        disabled={courtCloseSaving}
+                        className="mt-2 text-xs text-red-300 hover:text-red-200 disabled:opacity-50"
+                      >
+                        Clear selected PDF
+                      </button>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -2030,7 +2104,7 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowCourtCloseModal(false)}
+                  onClick={closeCourtCloseModal}
                   disabled={courtCloseSaving}
                   className="px-4 py-2 bg-gray-600 hover:bg-gray-500 disabled:opacity-50 text-white rounded text-xs font-medium"
                 >

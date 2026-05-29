@@ -7,16 +7,6 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
-const STATUS_STYLE = {
-  new:                 "bg-gray-500/20 text-gray-300",
-  open:                "bg-blue-500/20 text-blue-400",
-  tasked:              "bg-yellow-500/20 text-yellow-400",
-  under_investigation: "bg-indigo-500/20 text-indigo-400",
-  pending:             "bg-orange-500/20 text-orange-400",
-  served:              "bg-purple-500/20 text-purple-400",
-  closed:              "bg-green-500/20 text-green-400",
-};
-
 function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <div
@@ -33,14 +23,6 @@ function StatCard({ icon, label, value, accent, loading, onClick }) {
         )}
       </div>
     </div>
-  );
-}
-
-function Badge({ label, style }) {
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${style}`}>
-      {label?.replace(/_/g, " ")}
-    </span>
   );
 }
 

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, incidentService, formationService, guardroomService, teamService } from "../services/api";
 import NotificationBell from "./NotificationBell";
@@ -144,8 +144,6 @@ export default function BattalionDashboard({ user }) {
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
 
   const [cases, setCases]           = useState([]);
-  const [incidents, setIncidents]   = useState([]);
-  const [loading, setLoading]       = useState(true);
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [loadingCases, setLoadingCases]   = useState(true);
   const [page, setPage]             = useState(1);
@@ -232,7 +230,6 @@ export default function BattalionDashboard({ user }) {
       // keep zeros
     } finally {
       setLoadingCounts(false);
-      setLoading(false);
     }
   }, []);
 
@@ -253,13 +250,6 @@ export default function BattalionDashboard({ user }) {
 
   useEffect(() => { loadCounts(); }, [loadCounts]);
   useEffect(() => { loadCases(); },  [loadCases]);
-
-  // Keep incidents in one go (typically far fewer than cases)
-  useEffect(() => {
-    incidentService.list({ page_size: 200 })
-      .then((r) => setIncidents(toArray(r.data)))
-      .catch(() => {});
-  }, []);
 
   // Load detachments under this battalion (for normal admin modal)
   useEffect(() => {
