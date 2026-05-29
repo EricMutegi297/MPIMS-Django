@@ -49,7 +49,7 @@ BEGIN
           AND table_name = 'cases'
           AND column_name = 'brief_forwarded_corps'
     ) THEN
-        ALTER TABLE cases ALTER COLUMN brief_forwarded_corps DROP DEFAULT;
+ -        ALTER TABLE cases ALTER COLUMN brief_forwarded_corps DROP DEFAULT;
     END IF;
 END $$;
 """

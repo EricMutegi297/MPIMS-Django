@@ -42,6 +42,7 @@ function getNavItems(user) {
   const isSuperuser = !!user?.is_superuser;
   const isHqsBnAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
   const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
+  const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
@@ -116,6 +117,17 @@ function getNavItems(user) {
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 01-8 0M12 3v4m0 0a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h1a4 4 0 014 4z" />
+        </svg>
+      ),
+    },
+    {
+      key: "teams",
+      label: "Teams",
+      path: "/dashboard/teams",
+      show: isSpecialBattalionAdmin || (user?.role === "detachment"),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
         </svg>
       ),
     },
@@ -251,6 +263,10 @@ export default function Dashboard() {
   }, [navigate]);
 
   const refreshUnreadCount = React.useCallback(() => {
+    const access = sessionStorage.getItem("access_token");
+    const refresh = sessionStorage.getItem("refresh_token");
+    if (!access && !refresh) return;
+
     notificationService
       .list({ page_size: 100 })
       .then((res) => {
@@ -312,6 +328,7 @@ export default function Dashboard() {
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
   const hasDetachment = !!user?.detachment;
+  const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
 
   // Sidebar navigation items
   const visibleNav = getNavItems(user);
@@ -505,6 +522,7 @@ export default function Dashboard() {
           <Route path="/morning-briefs/*" element={<MorningBriefs user={user} />} />
           <Route path="/guardrooms/*" element={<Guardrooms user={user} />} />
           <Route path="/users/*" element={<Users user={user} />} />
+          <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
           <Route path="/Battalions" element={<Formations user={user} />} />
           <Route path="/formations" element={<Formations user={user} />} />
           <Route path="/formations-btn" element={<Offences user={user} />} />

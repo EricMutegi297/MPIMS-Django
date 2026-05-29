@@ -25,6 +25,7 @@ from .serializers import (
     CaseSerializer,
     InvestigationTeamSerializer,
 )
+from apps.formations.models import Battalion
 from apps.notifications.models import Notification
 from apps.users.models import User
 
@@ -114,7 +115,14 @@ class CaseViewSet(viewsets.ModelViewSet):
     serializer_class = CaseSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filterset_fields = ["status", "assigned_to", "accused_unit", "tasked_detachment", "tasked_battalion"]
+    filterset_fields = [
+        "status",
+        "assigned_to",
+        "accused_unit",
+        "tasked_detachment",
+        "tasked_battalion",
+        "criminal_offence_type",
+    ]
     search_fields = ["case_number", "title", "accused_name", "accused_service_number"]
 
     def _can_view_case_progress(self, user, case_obj):
@@ -276,6 +284,14 @@ class CaseViewSet(viewsets.ModelViewSet):
             return True
         return False
 
+    def _can_request_close(self, user, case_obj):
+        if not user or not user.is_authenticated:
+            return False
+        team = getattr(case_obj, "assigned_team", None)
+        if not team:
+            return False
+        return team.team_ic_id == user.id or team.members.filter(id=user.id).exists()
+
     def _latest_court_milestone(self, case_obj):
         return case_obj.court_martial_milestones.order_by("-scheduled_date", "-created_at", "-id").first()
 
@@ -315,17 +331,42 @@ class CaseViewSet(viewsets.ModelViewSet):
             save_kwargs["status"] = Case.Status.UNDER_INVESTIGATION
 
         proposed_status = save_kwargs.get("status") or serializer.validated_data.get("status")
-        if proposed_status == Case.Status.CLOSED and prev_instance.status != Case.Status.SERVED:
-            raise ValidationError({"status": "A case can only be closed after it is served."})
+        is_prev_dci_case = prev_instance.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
+        if proposed_status == Case.Status.CLOSED:
+            if is_prev_dci_case:
+                if prev_instance.status not in {Case.Status.UNDER_INVESTIGATION, Case.Status.SERVED}:
+                    raise ValidationError({"status": "A DCI/Civ Police case can only be closed from Under Investigation (after request) or Served."})
+                close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
+                if not close_requested_now:
+                    raise ValidationError({"status": "Close request must be submitted by the investigation team before closing this DCI/Civ Police case."})
+            elif prev_instance.status != Case.Status.SERVED:
+                raise ValidationError({"status": "A case can only be closed after it is served."})
 
-        if (
-            proposed_status == Case.Status.CLOSED
-            and prev_instance.criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
-            and not self._is_hq_admin_or_superuser(self.request.user)
-        ):
-            raise ValidationError({"status": "Only HQ battalion admin (or superuser) can close a Court Martial case."})
+        if proposed_status == Case.Status.CLOSED and not self._is_hq_admin_or_superuser(self.request.user):
+            raise ValidationError({"status": "Only HQ battalion admin (or superuser) can close a case."})
+
+        close_request_in_payload = "close_requested" in serializer.validated_data
+        close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
+        is_new_close_request = close_request_in_payload and close_requested_now and not prev_instance.close_requested
+        if is_prev_dci_case and is_new_close_request and not self._can_request_close(self.request.user, prev_instance):
+            raise ValidationError({"close_requested": "Only team IO or assigned team members can request close for this case."})
+
+        reference_pdf = self.request.FILES.get("reference_pdf")
+        if reference_pdf and not str(reference_pdf.name).lower().endswith(".pdf"):
+            raise ValidationError({"reference_pdf": "Reference files must be uploaded as PDF."})
 
         instance = serializer.save(**save_kwargs)
+
+        if not prev_instance.close_requested and instance.close_requested:
+            Case.objects.filter(pk=instance.pk).update(close_requested_at=timezone.now())
+            instance.refresh_from_db(fields=["close_requested_at"])
+            self._log_action(
+                instance,
+                self.request.user,
+                CaseActivityLog.Action.CASE_UPDATED,
+                "Close requested by investigation team.",
+            )
+            self._send_close_request_notification(instance, actor=self.request.user)
         # Only notify if tasking is new or changed
         if instance.tasked_battalion_id and instance.tasked_battalion_id != prev_tasked_battalion_id:
             self._send_tasking_notification(instance, created=False)
@@ -386,6 +427,28 @@ class CaseViewSet(viewsets.ModelViewSet):
                 ),
             )
 
+        new_action_taken = (instance.action_taken or "").strip()
+        new_mentioning_date = instance.mentioning_date
+        is_dci_case = instance.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
+        has_update_payload = ("action_taken" in self.request.data) or ("mentioning_date" in self.request.data)
+
+        # Treat each explicit DCI update submission as a new timeline event so history is append-only.
+        if is_dci_case and has_update_payload:
+            update_date = new_mentioning_date or timezone.localdate()
+            CaseActivityLog.objects.create(
+                case=instance,
+                actor=self.request.user,
+                action=CaseActivityLog.Action.CASE_UPDATED,
+                detail=f"On {update_date}: {new_action_taken or 'No details provided.'}",
+                reference_pdf=reference_pdf,
+            )
+            self._send_case_update_notification(
+                instance,
+                actor=self.request.user,
+                update_date=update_date,
+                update_text=new_action_taken,
+            )
+
     def _send_tasking_notification(self, case, created):
         if not case.tasked_battalion_id:
             return
@@ -437,7 +500,6 @@ class CaseViewSet(viewsets.ModelViewSet):
 
     def _send_served_notification(self, case, actor=None):
         """Notify all admin users in HQS battalions that a case has been served."""
-        from apps.formations.models import Battalion
         hqs_admins = User.objects.filter(
             role="admin",
             battalion__battalion_type=Battalion.BattalionType.HQS,
@@ -515,6 +577,129 @@ class CaseViewSet(viewsets.ModelViewSet):
                 related_id=case.id,
             ) for u in recipients
         ])
+
+    def _send_case_update_notification(self, case, actor=None, update_date=None, update_text=""):
+        """Notify HQ, tasked battalion/detachment, IO, and team members on case updates."""
+        recipients = set()
+
+        # HQ admins
+        recipients.update(
+            User.objects.filter(
+                role="admin",
+                battalion__battalion_type=Battalion.BattalionType.HQS,
+                is_active=True,
+            )
+        )
+
+        # Tasked battalion admins
+        if case.tasked_battalion_id:
+            recipients.update(
+                User.objects.filter(
+                    role="admin",
+                    battalion_id=case.tasked_battalion_id,
+                    is_active=True,
+                )
+            )
+
+        # Tasked detachment IC users
+        if case.tasked_detachment_id:
+            recipients.update(
+                User.objects.filter(
+                    role="detachment",
+                    detachment_id=case.tasked_detachment_id,
+                    is_active=True,
+                )
+            )
+
+        # IO directly assigned to the case
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
+
+        # Team IO and members
+        if case.assigned_team_id:
+            team = case.assigned_team
+            if team.team_ic and team.team_ic.is_active:
+                recipients.add(team.team_ic)
+            for member in team.members.filter(is_active=True):
+                recipients.add(member)
+
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+
+        actor_label = self._actor_label(actor)
+        date_label = str(update_date) if update_date else "Not provided"
+        trimmed_update = (update_text or "").strip()
+        if len(trimmed_update) > 160:
+            trimmed_update = f"{trimmed_update[:157]}..."
+
+        offence_label = (
+            case.offence_ref.name.strip()
+            if case.offence_ref and case.offence_ref.name
+            else (case.offence or "Not provided").strip() or "Not provided"
+        )
+        case_type_label = "DCI/Civ police" if case.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV else case.get_criminal_offence_type_display()
+
+        msg = (
+            f"{actor_label} updated {case_type_label} Case No {case.case_number} "
+            f"Offence {offence_label} On {date_label}. "
+            f"Update: {trimmed_update or 'No details provided.'}"
+        )
+
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=u,
+                message=msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for u in recipients
+        ])
+
+    def _send_close_request_notification(self, case, actor=None):
+        """Notify HQ admins via dashboard notification and email when close is requested by team."""
+        hq_admins = User.objects.filter(
+            role="admin",
+            battalion__battalion_type=Battalion.BattalionType.HQS,
+            is_active=True,
+        )
+        if not hq_admins.exists():
+            return
+
+        actor_label = self._actor_label(actor)
+        offence_label = (
+            case.offence_ref.name.strip()
+            if case.offence_ref and case.offence_ref.name
+            else (case.offence or "Not provided").strip() or "Not provided"
+        )
+        msg = (
+            f"{actor_label} requested close for DCI/Civ Police Case No {case.case_number}. "
+            f"Offence: {offence_label}. Please review and close on HQ dashboard."
+        )
+
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=u,
+                message=msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for u in hq_admins
+        ])
+
+        email_list = [u.email for u in hq_admins if u.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Close Request — Case {case.case_number}",
+                    message=msg,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
 
     @action(detail=False, methods=["get"], url_path="detachment-summary")
     def detachment_summary(self, request):
@@ -927,5 +1112,5 @@ class CaseViewSet(viewsets.ModelViewSet):
         if not self._can_view_case_progress(request.user, case):
             raise ValidationError({"detail": "You may not view progress updates for this case."})
         qs = case.activity_logs.select_related("actor").all()
-        serializer = CaseActivityLogSerializer(qs, many=True)
+        serializer = CaseActivityLogSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)

@@ -1,10 +1,19 @@
 ﻿import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { caseService, incidentService, formationService, guardroomService } from "../services/api";
+import { caseService, incidentService, formationService, guardroomService, teamService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function normalizeDateForInput(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const isoPrefix = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]/);
+  return isoPrefix ? isoPrefix[1] : "";
 }
 
 const PAGE_SIZE = 25;
@@ -132,6 +141,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 export default function BattalionDashboard({ user }) {
   const navigate = useNavigate();
   const isNormalAdmin = user?.role === "admin" && user?.battalion_type === "normal";
+  const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
 
   const [cases, setCases]           = useState([]);
   const [incidents, setIncidents]   = useState([]);
@@ -146,6 +156,8 @@ export default function BattalionDashboard({ user }) {
   });
   const [totalInc, setTotalInc]   = useState(0);
   const [openInc, setOpenInc]     = useState(0);
+  const [courtMartialCount, setCourtMartialCount] = useState(0);
+  const [dciCivPoliceCount, setDciCivPoliceCount] = useState(0);
   const [totalGuardrooms, setTotalGuardrooms] = useState(0);
   const [expandedDesc, setExpandedDesc] = useState({});
 
@@ -156,6 +168,14 @@ export default function BattalionDashboard({ user }) {
   const [taskingCase, setTaskingCase]   = useState(false);
   const [taskError, setTaskError]       = useState("");
 
+  const [teamTaskModal, setTeamTaskModal] = useState(null);
+  const [teams, setTeams] = useState([]);
+  const [selTeam, setSelTeam] = useState("");
+  const [selTeamDeadline, setSelTeamDeadline] = useState("");
+  const [assigningTeam, setAssigningTeam] = useState(false);
+  const [teamTaskError, setTeamTaskError] = useState("");
+  const [teamDetails, setTeamDetails] = useState(null);
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const descLimit = 120;
 
@@ -163,7 +183,21 @@ export default function BattalionDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, newRes, openRes, taskedRes, uiRes, peRes, seRes, clRes, incRes, incOpenRes, guardroomRes] =
+      const [
+        allRes,
+        newRes,
+        openRes,
+        taskedRes,
+        uiRes,
+        peRes,
+        seRes,
+        clRes,
+        incRes,
+        incOpenRes,
+        courtMartialRes,
+        dciCivPoliceRes,
+        guardroomRes,
+      ] =
         await Promise.all([
           caseService.list({ page_size: 1 }),
           caseService.list({ page_size: 1, status: "new" }),
@@ -175,6 +209,8 @@ export default function BattalionDashboard({ user }) {
           caseService.list({ page_size: 1, status: "closed" }),
           incidentService.list({ page_size: 1 }),
           incidentService.list({ page_size: 1, status: "reported" }),
+          caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
+          caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
           guardroomService.list(),
         ]);
       setStatusCounts({
@@ -189,6 +225,8 @@ export default function BattalionDashboard({ user }) {
       });
       setTotalInc(incRes.data.count || 0);
       setOpenInc(incOpenRes.data.count || 0);
+      setCourtMartialCount(courtMartialRes.data.count || 0);
+      setDciCivPoliceCount(dciCivPoliceRes.data.count || 0);
       setTotalGuardrooms(toArray(guardroomRes.data).length);
     } catch {
       // keep zeros
@@ -232,10 +270,41 @@ export default function BattalionDashboard({ user }) {
     }
   }, [isNormalAdmin, user?.battalion_id, user?.battalion]);
 
+  useEffect(() => {
+    if (isSpecialBattalionAdmin && (user?.battalion_id ?? user?.battalion)) {
+      teamService.list({ battalion: user.battalion_id ?? user.battalion, page_size: 200 })
+        .then((r) => setTeams(toArray(r.data)))
+        .catch(() => setTeams([]));
+    }
+  }, [isSpecialBattalionAdmin, user?.battalion_id, user?.battalion]);
+
   const openTaskModal = (caseObj) => {
     setTaskModal(caseObj);
     setSelDetachment("");
     setTaskError("");
+  };
+
+  const openTeamTaskModal = (caseObj) => {
+    setTeamTaskModal(caseObj);
+    setSelTeam("");
+    setSelTeamDeadline(normalizeDateForInput(caseObj?.investigation_deadline));
+    setTeamTaskError("");
+  };
+
+  const getCaseTeam = (caseObj) => {
+    const teamId = caseObj?.assigned_team;
+    const teamName = caseObj?.assigned_team_name;
+    return teams.find((t) => String(t.id) === String(teamId)) || teams.find((t) => t.name === teamName) || null;
+  };
+
+  const openTeamDetails = (caseObj) => {
+    const team = getCaseTeam(caseObj) || {
+      id: caseObj?.assigned_team,
+      name: caseObj?.assigned_team_name || "Assigned Team",
+      team_ic_detail: null,
+      members_detail: [],
+    };
+    setTeamDetails(team);
   };
 
   const handleTaskToDetachment = async () => {
@@ -251,6 +320,32 @@ export default function BattalionDashboard({ user }) {
       setTaskError(e?.response?.data?.detail || "Failed to task case to detachment.");
     } finally {
       setTaskingCase(false);
+    }
+  };
+
+  const handleAssignTeam = async () => {
+    if (!selTeam) { setTeamTaskError("Please select a team."); return; }
+    if (!selTeamDeadline) { setTeamTaskError("Investigation deadline is required."); return; }
+    setAssigningTeam(true);
+    setTeamTaskError("");
+    try {
+      await caseService.update(teamTaskModal.id, {
+        assigned_team: selTeam,
+        investigation_deadline: selTeamDeadline,
+      });
+      setTeamTaskModal(null);
+      loadCases();
+      loadCounts();
+    } catch (e) {
+      const data = e?.response?.data;
+      setTeamTaskError(
+        data?.detail ||
+        data?.non_field_errors?.[0] ||
+        data?.investigation_deadline?.[0] ||
+        "Failed to assign case to team."
+      );
+    } finally {
+      setAssigningTeam(false);
     }
   };
 
@@ -277,7 +372,7 @@ export default function BattalionDashboard({ user }) {
       </div>
 
       {/* ── Row 1: Total Cases + Incidents ─────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard
           loading={loadingCounts}
           label="Total Cases"
@@ -287,6 +382,30 @@ export default function BattalionDashboard({ user }) {
           icon={
             <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Court Martial"
+          value={courtMartialCount}
+          accent="bg-violet-500/10"
+          onClick={() => navigate("/dashboard/court-martial")}
+          icon={
+            <svg className="w-5 h-5 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="DCI / Civ Police"
+          value={dciCivPoliceCount}
+          accent="bg-cyan-500/10"
+          onClick={() => navigate("/dashboard/dci-civ-police")}
+          icon={
+            <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           }
         />
@@ -429,8 +548,8 @@ export default function BattalionDashboard({ user }) {
           ) : cases.length === 0 ? (
             <p className="p-5 text-gray-500 text-sm">No cases assigned to this battalion.</p>
           ) : (
-            <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="w-full min-w-[1100px] text-sm">
+            <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+              <table className="sticky-head w-full min-w-[1100px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
@@ -440,7 +559,7 @@ export default function BattalionDashboard({ user }) {
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
-                  {isNormalAdmin && (
+                  {(isNormalAdmin || isSpecialBattalionAdmin) && (
                     <th className="text-left px-3 md:px-5 py-3 font-medium">Actions</th>
                   )}
                 </tr>
@@ -506,6 +625,26 @@ export default function BattalionDashboard({ user }) {
                           <span className="text-xs text-gray-500 italic">
                             Detachment tasked
                           </span>
+                        )}
+                      </td>
+                    )}
+                    {isSpecialBattalionAdmin && (
+                      <td className="px-3 md:px-5 py-3">
+                        {c.status === "tasked" && !c.assigned_team && (
+                          <button
+                            onClick={() => openTeamTaskModal(c)}
+                            className="px-3 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 text-white transition-colors"
+                          >
+                            Assign Team
+                          </button>
+                        )}
+                        {c.assigned_team && (
+                          <button
+                            onClick={() => openTeamDetails(c)}
+                            className="text-xs font-semibold text-cyan-300 hover:text-cyan-200 hover:underline"
+                          >
+                            {c.assigned_team_name || getCaseTeam(c)?.name || "View Team"}
+                          </button>
                         )}
                       </td>
                     )}
@@ -577,6 +716,148 @@ export default function BattalionDashboard({ user }) {
                 className="px-4 py-2 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
                 {taskingCase ? "Tasking..." : "Task to Detachment"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Assign to Team Modal */}
+      {teamTaskModal && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setTeamTaskModal(null)}
+        >
+          <div
+            className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white mb-1">Assign Case to Team</h2>
+            <p className="text-sm text-gray-400 mb-5">
+              Case <span className="font-mono text-gray-300">{teamTaskModal.case_number}</span>: {teamTaskModal.title || teamTaskModal.offence}
+            </p>
+
+            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+              Select Team
+            </label>
+            <select
+              value={selTeam}
+              onChange={(e) => setSelTeam(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
+            >
+              <option value="">-- Choose Team --</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+
+            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+              Investigation Deadline
+            </label>
+            <input
+              type="date"
+              value={selTeamDeadline}
+              onChange={(e) => setSelTeamDeadline(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
+            />
+
+            {teams.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No teams found under this battalion.</p>
+            )}
+
+            {teamTaskError && (
+              <p className="text-xs text-red-400 mb-4">{teamTaskError}</p>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setTeamTaskModal(null)}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAssignTeam}
+                disabled={assigningTeam || !selTeam || !selTeamDeadline}
+                className="px-4 py-2 text-sm rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {assigningTeam ? "Assigning..." : "Assign to Team"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Team Details Modal */}
+      {teamDetails && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setTeamDetails(null)}
+        >
+          <div
+            className="bg-gray-800 rounded-xl p-6 w-full max-w-lg shadow-2xl max-h-[85vh] overflow-y-auto border border-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <h2 className="text-lg font-bold text-white">{teamDetails.name}</h2>
+                <p className="text-sm text-gray-400 mt-1">Team details</p>
+              </div>
+              <button
+                onClick={() => setTeamDetails(null)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+              <div className="rounded-lg bg-gray-700/50 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Team IC</p>
+                <p className="text-sm text-gray-200">
+                  {teamDetails.team_ic_detail
+                    ? `${teamDetails.team_ic_detail.rank ? `${teamDetails.team_ic_detail.rank} ` : ""}${teamDetails.team_ic_detail.name}`
+                    : "—"}
+                </p>
+                {teamDetails.team_ic_detail?.service_number && (
+                  <p className="text-xs text-gray-500 mt-1">{teamDetails.team_ic_detail.service_number}</p>
+                )}
+              </div>
+              <div className="rounded-lg bg-gray-700/50 p-3">
+                <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Members</p>
+                <p className="text-sm text-gray-200">{Array.isArray(teamDetails.members_detail) ? teamDetails.members_detail.length : 0} total</p>
+              </div>
+            </div>
+
+            <div className="border border-gray-700 rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-700 bg-gray-800/80">
+                <h3 className="text-sm font-semibold text-gray-300">Team Members</h3>
+              </div>
+              <div className="max-h-72 overflow-y-auto divide-y divide-gray-700/60">
+                {(Array.isArray(teamDetails.members_detail) ? teamDetails.members_detail : []).length === 0 ? (
+                  <p className="px-4 py-4 text-sm text-gray-500">No members found.</p>
+                ) : (
+                  teamDetails.members_detail.map((member) => (
+                    <div key={member.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm text-gray-200">{member.rank ? `${member.rank} ` : ""}{member.name}</p>
+                        <p className="text-xs text-gray-500">{member.service_number}</p>
+                      </div>
+                      <span className="text-xs text-indigo-400">{member.role}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end mt-5">
+              <button
+                onClick={() => setTeamDetails(null)}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>

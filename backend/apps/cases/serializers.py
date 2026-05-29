@@ -92,10 +92,27 @@ class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
 
 class CaseActivityLogSerializer(serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
+    actor_rank = serializers.SerializerMethodField()
+    actor_service_number = serializers.SerializerMethodField()
+    actor_display_name = serializers.SerializerMethodField()
+    reference_pdf_url = serializers.SerializerMethodField()
+    reference_pdf_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CaseActivityLog
-        fields = ["id", "action", "detail", "actor", "actor_name", "created_at"]
+        fields = [
+            "id",
+            "action",
+            "detail",
+            "actor",
+            "actor_name",
+            "actor_rank",
+            "actor_service_number",
+            "actor_display_name",
+            "reference_pdf_url",
+            "reference_pdf_name",
+            "created_at",
+        ]
         read_only_fields = fields
 
     def get_actor_name(self, obj):
@@ -104,6 +121,35 @@ class CaseActivityLogSerializer(serializers.ModelSerializer):
         rank = getattr(obj.actor, "rank", "") or ""
         name = str(obj.actor)
         return f"{rank} {name}".strip() if rank else name
+
+    def get_actor_rank(self, obj):
+        if not obj.actor:
+            return ""
+        return getattr(obj.actor, "rank", "") or ""
+
+    def get_actor_service_number(self, obj):
+        if not obj.actor:
+            return ""
+        return getattr(obj.actor, "service_number", "") or ""
+
+    def get_actor_display_name(self, obj):
+        if not obj.actor:
+            return "System"
+        return getattr(obj.actor, "name", "") or str(obj.actor)
+
+    def get_reference_pdf_url(self, obj):
+        request = self.context.get("request")
+        if not obj.reference_pdf:
+            return None
+        url = obj.reference_pdf.url
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_reference_pdf_name(self, obj):
+        if not obj.reference_pdf:
+            return None
+        return obj.reference_pdf.name.split("/")[-1]
 
 
 class InvestigationTeamSerializer(serializers.ModelSerializer):
@@ -258,32 +304,35 @@ class CaseSerializer(serializers.ModelSerializer):
 
         is_court_martial = criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
 
-        if is_court_martial and target_status == Case.Status.CLOSED:
+        if target_status == Case.Status.CLOSED:
             if not instance:
                 raise serializers.ValidationError(
-                    {"status": "Court Martial cases can only be closed after creation and service workflow."}
+                    {"status": "Cases can only be closed after creation and service workflow."}
                 )
-            judgment_qs = instance.court_martial_milestones.filter(
-                milestone_type=CaseCourtMartialMilestone.MilestoneType.JUDGMENT
-            )
-            if not judgment_qs.exists():
-                raise serializers.ValidationError(
-                    {"status": "Add a Judgment milestone date before closing a Court Martial case."}
-                )
-            has_judgment_comment = judgment_qs.filter(
-                Q(action_remarks__gt="") | Q(planning_comment__gt="")
-            ).exists()
-            if not has_judgment_comment:
-                raise serializers.ValidationError(
-                    {"status": "Judgment remarks/comment are required before closing a Court Martial case."}
-                )
+
             has_judgment_file = instance.extra_attachments.filter(
                 document_type=CaseAttachment.DocumentType.JUDGMENT
             ).exists()
             if not has_judgment_file:
                 raise serializers.ValidationError(
-                    {"status": "Attach at least one Judgment PDF file before closing a Court Martial case."}
+                    {"status": "Attach at least one Judgment PDF file before closing this case."}
                 )
+
+            if is_court_martial:
+                judgment_qs = instance.court_martial_milestones.filter(
+                    milestone_type=CaseCourtMartialMilestone.MilestoneType.JUDGMENT
+                )
+                if not judgment_qs.exists():
+                    raise serializers.ValidationError(
+                        {"status": "Add a Judgment milestone date before closing a Court Martial case."}
+                    )
+                has_judgment_comment = judgment_qs.filter(
+                    Q(action_remarks__gt="") | Q(planning_comment__gt="")
+                ).exists()
+                if not has_judgment_comment:
+                    raise serializers.ValidationError(
+                        {"status": "Judgment remarks/comment are required before closing a Court Martial case."}
+                    )
 
         # Keep offence text populated from offence reference when free text is not provided.
         resolved_offence = self._resolved_offence_text(offence_text, offence_ref)

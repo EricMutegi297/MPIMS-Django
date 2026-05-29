@@ -12,6 +12,11 @@ def case_extra_attachment_path(instance, filename):
     return f"cases/{case_ref}/extra/{filename}"
 
 
+def case_activity_reference_path(instance, filename):
+    case_ref = instance.case.case_number or "draft"
+    return f"cases/{case_ref}/activity/{filename}"
+
+
 class Case(models.Model):
     class Status(models.TextChoices):
         NEW = "new", "New"
@@ -113,6 +118,8 @@ class Case(models.Model):
     part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
     mentioning_remarks = models.TextField(blank=True)
+    close_requested = models.BooleanField(default=False)
+    close_requested_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
     date_of_offence = models.DateField(null=True, blank=True)
@@ -242,6 +249,7 @@ class CaseActivityLog(models.Model):
     )
     action = models.CharField(max_length=30, choices=Action.choices)
     detail = models.CharField(max_length=255, blank=True)
+    reference_pdf = models.FileField(upload_to=case_activity_reference_path, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

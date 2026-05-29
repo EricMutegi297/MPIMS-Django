@@ -10,11 +10,27 @@ export const offenceService = {
 };
 
 export const authService = {
-  login: (service_number, password) =>
-    api.post("/api/auth/login/", { service_number, password }),
-  logout: () => api.post("/api/auth/logout/"),
+  login: async (service_number, password) => {
+    const res = await api.post("/api/auth/login/", { service_number, password });
+    sessionStorage.setItem("access_token", res.data.access);
+    sessionStorage.setItem("refresh_token", res.data.refresh);
+    return res;
+  },
+  logout: async () => {
+    const res = await api.post("/api/auth/logout/");
+    sessionStorage.removeItem("access_token");
+    sessionStorage.removeItem("refresh_token");
+    return res;
+  },
   me: () => api.get("/api/auth/me/"),
-  changePassword: (data) => api.post("/api/auth/change-password/", data),
+  changePassword: async (data) => {
+    const res = await api.post("/api/auth/change-password/", data);
+    if (res.data.access) {
+      sessionStorage.setItem("access_token", res.data.access);
+      sessionStorage.setItem("refresh_token", res.data.refresh);
+    }
+    return res;
+  },
 };
 
 export const caseService = {
@@ -25,7 +41,10 @@ export const caseService = {
     api.post("/api/cases/", formData, {
       headers: { "Content-Type": "multipart/form-data" },
     }),
-  update: (id, data) => api.patch(`/api/cases/${id}/`, data),
+  update: (id, data) =>
+    api.patch(`/api/cases/${id}/`, data, data instanceof FormData ? {
+      headers: { "Content-Type": "multipart/form-data" },
+    } : undefined),
   taskCase: (id, formData) =>
     api.patch(`/api/cases/${id}/`, formData, {
       headers: { "Content-Type": "multipart/form-data" },

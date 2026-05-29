@@ -1,8 +1,8 @@
-from django.contrib.auth import login, logout
 from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
 from .serializers import UserSerializer, UserCreateSerializer, LoginSerializer, ChangePasswordSerializer
 
@@ -34,18 +34,20 @@ def login_view(request):
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     user = serializer.validated_data["user"]
-    login(request, user)
+    refresh = RefreshToken.for_user(user)
     return Response(
         {
             "user": UserSerializer(user).data,
             "mustChangePassword": user.must_change_password,
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
         }
     )
 
 
 @api_view(["POST"])
 def logout_view(request):
-    logout(request)
+    # JWT is stateless — client discards the tokens
     return Response({"detail": "Logged out successfully."})
 
 
@@ -61,8 +63,13 @@ def change_password(request):
     request.user.set_password(serializer.validated_data["new_password"])
     request.user.must_change_password = False
     request.user.save(update_fields=["password", "must_change_password"])
-    login(request, request.user)
-    return Response({"detail": "Password changed successfully."})
+    # Issue fresh tokens (old refresh token is effectively invalidated by the password change)
+    refresh = RefreshToken.for_user(request.user)
+    return Response({
+        "detail": "Password changed successfully.",
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+    })
 
 
 class UserListCreateView(generics.ListCreateAPIView):

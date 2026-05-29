@@ -154,9 +154,11 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
   );
 }
 
-export default function Teams({ user }) {
+export default function Teams({ user, scope = "detachment" }) {
   const isDetachmentIC = user?.role === "detachment";
-  const detachmentId   = user?.detachment ?? user?.detachment_id;
+  const isBattalionScope = scope === "battalion";
+  const canManageTeams = isDetachmentIC || isBattalionScope;
+  const scopeId = isBattalionScope ? (user?.battalion ?? user?.battalion_id) : (user?.detachment ?? user?.detachment_id);
 
   const [teams, setTeams]               = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
@@ -202,23 +204,35 @@ export default function Teams({ user }) {
 
   const loadTeams = useCallback(() => {
     setLoadingTeams(true);
-    teamService.list({ page_size: 200 })
+    const params = { page_size: 200 };
+    if (scopeId) {
+      if (isBattalionScope) params.battalion = scopeId;
+      else params.detachment = scopeId;
+    }
+    teamService.list(params)
       .then((r) => setTeams(toArray(r.data)))
       .catch(() => setTeams([]))
       .finally(() => setLoadingTeams(false));
-  }, []);
+  }, [isBattalionScope, scopeId]);
 
   useEffect(() => { loadTeams(); loadWorkload(); }, [loadTeams, loadWorkload]);
 
   useEffect(() => {
-    if (!detachmentId) return;
-    userService.list({ detachment: detachmentId, page_size: 200 })
+    if (!scopeId) return;
+    const params = { page_size: 200 };
+    if (isBattalionScope) params.battalion = scopeId;
+    else params.detachment = scopeId;
+    userService.list(params)
       .then((r) => {
         const all = toArray(r.data);
-        setDetUsers(all.filter((u) => ["investigator", "personnel", "detachment"].includes(u.role)));
+        if (isBattalionScope) {
+          setDetUsers(all.filter((u) => ["investigator", "personnel", "detachment", "admin"].includes(u.role)));
+        } else {
+          setDetUsers(all.filter((u) => ["investigator", "personnel", "detachment"].includes(u.role)));
+        }
       })
       .catch(() => setDetUsers([]));
-  }, [detachmentId]);
+  }, [isBattalionScope, scopeId]);
 
   // â”€â”€ Create helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sort least-engaged first using workload data
@@ -321,9 +335,13 @@ export default function Teams({ user }) {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-bold text-white">Investigation Teams</h2>
+          <h2 className="text-2xl font-bold text-white">
+            {isBattalionScope ? "Battalion Teams" : "Investigation Teams"}
+          </h2>
           <p className="text-sm text-gray-500 mt-0.5">
-            {user?.detachment_name ? `${user.detachment_name} Detachment` : "Detachment Teams"}
+            {isBattalionScope
+              ? (user?.battalion_name ? `${user.battalion_name} Teams` : "Battalion Teams")
+              : (user?.detachment_name ? `${user.detachment_name} Detachment` : "Detachment Teams")}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -336,7 +354,7 @@ export default function Teams({ user }) {
             </svg>
             Refresh
           </button>
-          {isDetachmentIC && (
+          {canManageTeams && (
             <button
               onClick={(e) => { e.stopPropagation(); openCreate(); }}
               className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"
@@ -425,13 +443,13 @@ export default function Teams({ user }) {
         <div className="space-y-2">
           {[1, 2, 3].map((i) => <div key={i} className="h-12 bg-gray-800 rounded animate-pulse" />)}
         </div>
-      ) : teams.length === 0 ? (
+          ) : teams.length === 0 ? (
         <div className="bg-gray-800 rounded-xl p-10 text-center">
           <svg className="w-12 h-12 mx-auto mb-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
           <p className="text-gray-500">No investigation teams yet.</p>
-          {isDetachmentIC && (
+          {canManageTeams && (
             <button onClick={openCreate} className="mt-4 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
               Create First Team
             </button>
@@ -446,7 +464,7 @@ export default function Teams({ user }) {
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Team Name</th>
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Team IC</th>
                 <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Members</th>
-                {isDetachmentIC && (
+                {canManageTeams && (
                   <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-right">Action</th>
                 )}
               </tr>
@@ -477,7 +495,7 @@ export default function Teams({ user }) {
                         {count} member{count !== 1 ? "s" : ""}
                       </button>
                     </td>
-                    {isDetachmentIC && (
+                    {canManageTeams && (
                       <td className="px-4 py-3 text-right">
                         {confirmDeleteId === t.id ? (
                           <span className="inline-flex items-center gap-2">

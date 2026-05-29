@@ -16,6 +16,79 @@ function normalizeDateForApi(value) {
   return text;
 }
 
+function normalizeDateForDisplay(value) {
+  const normalized = normalizeDateForApi(value);
+  if (normalized) return normalized;
+  if (!value) return "";
+  return String(value);
+}
+
+function formatActorLine(item) {
+  const serviceNumber = item?.actor_service_number || "--";
+  const rank = item?.actor_rank || "--";
+  const name = item?.actor_display_name || item?.actor_name || "System";
+  return `${serviceNumber} | ${rank} | ${name}`;
+}
+
+function formatUpdateFlowDetail(detail) {
+  if (!detail) return "";
+  return String(detail).replace(/^Case update posted for\s+/i, "On ");
+}
+
+function openReferencePdf(url) {
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function printReferencePdf(url) {
+  if (!url) return;
+  const printWindow = window.open(url, "_blank", "noopener,noreferrer");
+  if (!printWindow) return;
+  const triggerPrint = () => {
+    try {
+      printWindow.focus();
+      printWindow.print();
+    } catch {
+      // ignore print blockers
+    }
+  };
+  if (printWindow.document?.readyState === "complete") {
+    triggerPrint();
+  } else {
+    printWindow.onload = triggerPrint;
+  }
+}
+
+function ReferenceActions({ url, name }) {
+  if (!url) return null;
+  const filename = name || "reference.pdf";
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      <button
+        type="button"
+        onClick={() => openReferencePdf(url)}
+        className="px-3 py-1.5 rounded-lg text-[11px] font-medium bg-sky-600/20 text-sky-300 border border-sky-500/40 hover:bg-sky-600/30 transition-colors"
+      >
+        View Reference
+      </button>
+      <button
+        type="button"
+        onClick={() => printReferencePdf(url)}
+        className="px-3 py-1.5 rounded-lg text-[11px] font-medium bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30 transition-colors"
+      >
+        Print Reference
+      </button>
+      <a
+        href={url}
+        download={filename}
+        className="px-3 py-1.5 rounded-lg text-[11px] font-medium bg-violet-600/20 text-violet-300 border border-violet-500/40 hover:bg-violet-600/30 transition-colors"
+      >
+        Export Reference
+      </a>
+    </div>
+  );
+}
+
 const STATUS_STYLE = {
   new:                 "bg-gray-500/20 text-gray-300",
   open:                "bg-blue-500/20 text-blue-400",
@@ -33,6 +106,18 @@ const ALL_STATUSES = [
 ];
 
 const PRIMARY_STATUS_CHIPS = ["new", "under_investigation", "pending", "served", "closed"];
+
+const STATUS_CHIP_META = {
+  all: { label: "All", dot: "bg-blue-400" },
+  new: { label: "New", dot: "bg-gray-400" },
+  under_investigation: { label: "Under Investigation", dot: "bg-indigo-400" },
+  pending: { label: "Pending", dot: "bg-orange-400" },
+  served: { label: "Served", dot: "bg-purple-400" },
+  closed: { label: "Close", dot: "bg-green-400" },
+  open: { label: "Open", dot: "bg-blue-400" },
+  tasked: { label: "Tasked", dot: "bg-yellow-400" },
+  referred: { label: "Referred", dot: "bg-cyan-400" },
+};
 
 const COURT_MILESTONE_TYPES = [
   { value: "mentioning", label: "Mentioning" },
@@ -283,12 +368,15 @@ export default function Cases({ user, criminalTypeFilter }) {
   // Assign team form
   const [showTeam, setShowTeam]       = useState(false);
   const [teamId, setTeamId]           = useState("");
+  const [teamDeadline, setTeamDeadline] = useState("");
   const [teamSaving, setTeamSaving]   = useState(false);
   const [teamErr, setTeamErr]         = useState("");
 
   // Status update
   const [statusSaving, setStatusSaving] = useState(false);
   const [statusErr, setStatusErr]     = useState("");
+  const [rowActionSavingId, setRowActionSavingId] = useState(null);
+  const [rowActionErr, setRowActionErr] = useState("");
 
   // Court Martial workflow
   const [courtMilestones, setCourtMilestones] = useState([]);
@@ -310,6 +398,10 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [caseActivity, setCaseActivity] = useState([]);
   const [caseActivityLoading, setCaseActivityLoading] = useState(false);
   const [caseActivityErr, setCaseActivityErr] = useState("");
+  const [updateFlowCase, setUpdateFlowCase] = useState(null);
+  const [updateFlow, setUpdateFlow] = useState([]);
+  const [updateFlowLoading, setUpdateFlowLoading] = useState(false);
+  const [updateFlowErr, setUpdateFlowErr] = useState("");
 
   // Remote data for forms
   const [battalions, setBattalions]   = useState([]);
@@ -414,6 +506,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   const selectedIsCourtMartial = selected?.criminal_offence_type === "court_martial";
+  const selectedIsDci = selected?.criminal_offence_type === "dci_civ_police";
 
   useEffect(() => {
     if (!selectedId || !selectedIsCourtMartial) {
@@ -449,6 +542,29 @@ export default function Cases({ user, criminalTypeFilter }) {
       .catch(() => setCaseActivityErr("Failed to load case progress updates."))
       .finally(() => setCaseActivityLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!updateFlowCase?.id) {
+      setUpdateFlow([]);
+      return;
+    }
+    setUpdateFlowLoading(true);
+    setUpdateFlowErr("");
+    caseService.activity(updateFlowCase.id)
+      .then((res) => {
+        const rows = toArray(res.data);
+        const updateRows = rows
+          .filter((item) => item.action === "case_updated")
+          .sort((a, b) => {
+            const aTs = a?.created_at ? new Date(a.created_at).getTime() : 0;
+            const bTs = b?.created_at ? new Date(b.created_at).getTime() : 0;
+            return aTs - bTs;
+          });
+        setUpdateFlow(updateRows);
+      })
+      .catch(() => setUpdateFlowErr("Failed to load update flow."))
+      .finally(() => setUpdateFlowLoading(false));
+  }, [updateFlowCase?.id]);
 
   async function addCourtMilestone() {
     if (!selected) return;
@@ -551,7 +667,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     };
   }
 
-  function openCourtCloseModal() {
+  function openCourtCloseModal(caseObj = selected) {
+    if (caseObj?.id) {
+      setSelected(caseObj);
+    }
     setCourtCloseErr("");
     setJudgmentFileRows([newJudgmentFileRow()]);
     setShowCourtCloseModal(true);
@@ -734,15 +853,26 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function handleAssignTeam(e) {
     e.preventDefault();
     if (!teamId) { setTeamErr("Select a team."); return; }
+    if (!teamDeadline) { setTeamErr("Investigation deadline is required."); return; }
     setTeamSaving(true);
     setTeamErr("");
     try {
-      const res = await caseService.update(selected.id, { assigned_team: parseInt(teamId) });
+      const res = await caseService.update(selected.id, {
+        assigned_team: parseInt(teamId),
+        investigation_deadline: teamDeadline,
+      });
       refreshSelected(res.data);
       setShowTeam(false);
       setTeamId("");
+      setTeamDeadline("");
     } catch (err) {
-      setTeamErr("Failed to assign team.");
+      const d = err?.response?.data;
+      setTeamErr(
+        d?.detail ||
+        d?.non_field_errors?.[0] ||
+        d?.investigation_deadline?.[0] ||
+        "Failed to assign team."
+      );
     } finally {
       setTeamSaving(false);
     }
@@ -794,6 +924,39 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
   }
 
+  async function handleRequestClose(caseObj) {
+    if (!caseObj?.id || caseObj.close_requested) return;
+    setRowActionSavingId(caseObj.id);
+    setRowActionErr("");
+    try {
+      const res = await caseService.update(caseObj.id, { close_requested: true });
+      setCases((prev) => prev.map((row) => (row.id === caseObj.id ? res.data : row)));
+      if (selected?.id === caseObj.id) {
+        refreshSelected(res.data);
+      }
+    } catch (err) {
+      const d = err?.response?.data;
+      if (d?.detail) {
+        setRowActionErr(String(d.detail));
+      } else if (d && typeof d === "object") {
+        const msgs = Object.entries(d)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setRowActionErr(msgs || "Failed to request close.");
+      } else {
+        setRowActionErr("Failed to request close.");
+      }
+    } finally {
+      setRowActionSavingId(null);
+    }
+  }
+
+  function handleCloseFromRow(caseObj) {
+    if (!caseObj?.id || !caseObj.close_requested) return;
+    setRowActionErr("");
+    openCourtCloseModal(caseObj);
+  }
+
   // ── Filter / search ───────────────────────────────────────────────
   const filtered = cases.filter((c) => {
     const matchStatus = filter === "all" || c.status === filter;
@@ -831,13 +994,24 @@ export default function Cases({ user, criminalTypeFilter }) {
   }, null);
 
   const descLimit = 120;
+  const isDciFilter = criminalTypeFilter === "dci_civ_police";
   const isAllFilter = filter === "all";
   const isNewFilter = filter === "new" || filter === "open";
   const isTaskedFilter = filter === "tasked";
   const isUnderInvestigationFilter = filter === "under_investigation";
+  const showDciUpdateColumns = isDciFilter && isUnderInvestigationFilter;
+  const primaryStatusChips = isDciFilter
+    ? PRIMARY_STATUS_CHIPS.filter((s) => s !== "pending" && s !== "served")
+    : PRIMARY_STATUS_CHIPS;
   const isPendingFilter = filter === "pending";
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
+
+  useEffect(() => {
+    if (isDciFilter && (filter === "pending" || filter === "served")) {
+      setFilter("under_investigation");
+    }
+  }, [isDciFilter, filter]);
 
   function toggleDescription(caseId, e) {
     e.stopPropagation();
@@ -859,6 +1033,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskErr("");
     setCreateErr("");
     setShowCreate(false);
+    const willShow = !showTeam;
+    if (willShow) {
+      setTeamDeadline(normalizeDateForApi(selected?.investigation_deadline));
+    }
     setShowTeam((prev) => !prev);
     setTeamErr("");
   }
@@ -951,43 +1129,70 @@ export default function Cases({ user, criminalTypeFilter }) {
       </div>
 
       {/* Status filter chips */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => setFilter("all")}
-          className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-            filter === "all" ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-          }`}
-        >
-          All ({cases.length})
-        </button>
-
-        {/* Primary flow chips: New -> Under Investigation -> Pending -> Close */}
-        {PRIMARY_STATUS_CHIPS.map((s) => (
+      <div className="rounded-xl border border-gray-700/70 bg-gray-800/40 p-2.5">
+        <div className="flex flex-wrap gap-2">
           <button
-            key={s}
-            onClick={() => setFilter(s)}
-            className={`px-3 py-1 rounded-full text-xs font-medium capitalize transition-colors ${
-              filter === s ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+            onClick={() => setFilter("all")}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+              filter === "all"
+                ? "border-blue-500/70 bg-blue-600/20 text-blue-200 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]"
+                : "border-gray-600/70 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700/80"
             }`}
           >
-            {(s === "closed" ? "close" : s.replace(/_/g, " "))} ({counts[s] || 0})
+            <span className={`h-1.5 w-1.5 rounded-full ${STATUS_CHIP_META.all.dot}`} />
+            <span>{STATUS_CHIP_META.all.label}</span>
+            <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] leading-none text-gray-200">
+              {cases.length}
+            </span>
           </button>
-        ))}
 
-        {/* Secondary chips only when present */}
-        {ALL_STATUSES
-          .filter((s) => !PRIMARY_STATUS_CHIPS.includes(s) && counts[s] > 0)
-          .map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilter(s)}
-              className={`px-3 py-1 rounded-full text-xs font-medium capitalize transition-colors ${
-                filter === s ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-              }`}
-            >
-              {s.replace(/_/g, " ")} ({counts[s]})
-            </button>
-          ))}
+          {/* Primary flow chips: New -> Under Investigation -> Pending -> Close */}
+          {primaryStatusChips.map((s) => {
+            const meta = STATUS_CHIP_META[s] || { label: s.replace(/_/g, " "), dot: "bg-gray-400" };
+            return (
+              <button
+                key={s}
+                onClick={() => setFilter(s)}
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                  filter === s
+                    ? "border-blue-500/70 bg-blue-600/20 text-blue-200 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]"
+                    : "border-gray-600/70 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700/80"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+                <span>{meta.label}</span>
+                <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] leading-none text-gray-200">
+                  {counts[s] || 0}
+                </span>
+              </button>
+            );
+          })}
+
+          {/* Secondary chips only when present */}
+          {ALL_STATUSES
+            .filter((s) => !primaryStatusChips.includes(s) && counts[s] > 0)
+            .filter((s) => !(isDciFilter && (s === "pending" || s === "served")))
+            .map((s) => {
+              const meta = STATUS_CHIP_META[s] || { label: s.replace(/_/g, " "), dot: "bg-gray-400" };
+              return (
+                <button
+                  key={s}
+                  onClick={() => setFilter(s)}
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                    filter === s
+                      ? "border-blue-500/70 bg-blue-600/20 text-blue-200 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.25)]"
+                      : "border-gray-600/70 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700/80"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+                  <span>{meta.label}</span>
+                  <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] leading-none text-gray-200">
+                    {counts[s]}
+                  </span>
+                </button>
+              );
+            })}
+        </div>
       </div>
 
       {/* Search */}
@@ -1002,6 +1207,12 @@ export default function Cases({ user, criminalTypeFilter }) {
       {/* Main content: list + optional detail panel */}
       <div className="space-y-4">
 
+        {rowActionErr && (
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-300">
+            {rowActionErr}
+          </div>
+        )}
+
         {/* ── Case list ──────────────────────────────────────────── */}
         <div className="w-full bg-gray-800 rounded-xl overflow-hidden">
           {loading ? (
@@ -1013,8 +1224,8 @@ export default function Cases({ user, criminalTypeFilter }) {
           ) : filtered.length === 0 ? (
             <p className="p-6 text-gray-500 text-sm">No cases found.</p>
           ) : (
-            <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-            <table className="w-full min-w-[1180px] text-sm">
+            <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+            <table className="sticky-head w-full min-w-[1180px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-4 py-3 font-medium">Case #</th>
@@ -1037,6 +1248,15 @@ export default function Cases({ user, criminalTypeFilter }) {
                   )}
                   {isUnderInvestigationFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
+                  )}
+                  {showDciUpdateColumns && (
+                    <th className="text-left px-4 py-3 font-medium">Date Updated</th>
+                  )}
+                  {showDciUpdateColumns && (
+                    <th className="text-left px-4 py-3 font-medium">Case Updates</th>
+                  )}
+                  {showDciUpdateColumns && (
+                    <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
                   {isPendingFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
@@ -1146,6 +1366,62 @@ export default function Cases({ user, criminalTypeFilter }) {
                     )}
                     {isUnderInvestigationFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
+                    )}
+                    {showDciUpdateColumns && (
+                      <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
+                        {normalizeDateForDisplay(c.mentioning_date) || (c.updated_at ? new Date(c.updated_at).toLocaleDateString("en-GB") : "--")}
+                      </td>
+                    )}
+                    {showDciUpdateColumns && (
+                      <td className="px-4 py-2.5 text-gray-300 max-w-[280px]">
+                        <div className="space-y-1">
+                          <p className="line-clamp-2 break-words">{c.action_taken || "--"}</p>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setUpdateFlowCase(c);
+                            }}
+                            className="text-xs text-blue-400 hover:underline"
+                          >
+                            View update flow
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                    {showDciUpdateColumns && (
+                      <td className="px-4 py-2.5 whitespace-nowrap">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isInvestigator && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRequestClose(c);
+                              }}
+                              disabled={rowActionSavingId === c.id || c.close_requested}
+                              className="px-2.5 py-1 rounded text-xs font-medium bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+                            >
+                              {c.close_requested ? "Requested" : rowActionSavingId === c.id ? "Requesting..." : "Request Close"}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCloseFromRow(c);
+                            }}
+                            disabled={rowActionSavingId === c.id || !(c.close_requested && (isHqsAdmin || isSuperuser))}
+                            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                              c.close_requested && (isHqsAdmin || isSuperuser)
+                                ? "bg-green-700/80 hover:bg-green-600 text-white"
+                                : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                            }`}
+                          >
+                            {rowActionSavingId === c.id ? "Closing..." : "Close"}
+                          </button>
+                        </div>
+                      </td>
                     )}
                     {isPendingFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
@@ -1325,7 +1601,8 @@ export default function Cases({ user, criminalTypeFilter }) {
                         </p>
                       </div>
                       <p className="text-xs text-gray-400 mt-1">{item.actor_name || "System"}</p>
-                      {item.detail && <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap break-words">{item.detail}</p>}
+                      {item.detail && <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap break-words">{formatUpdateFlowDetail(item.detail)}</p>}
+                      <ReferenceActions url={item.reference_pdf_url} name={item.reference_pdf_name} />
                     </div>
                   ))}
                 </div>
@@ -1576,10 +1853,19 @@ export default function Cases({ user, criminalTypeFilter }) {
                         ))}
                       </select>
                     </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Investigation Deadline *</label>
+                      <input
+                        type="date"
+                        value={teamDeadline}
+                        onChange={(e) => setTeamDeadline(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      />
+                    </div>
                     <ErrMsg msg={teamErr} />
                     <button
                       type="submit"
-                      disabled={teamSaving}
+                      disabled={teamSaving || !teamDeadline}
                       className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-sm font-medium"
                     >
                       {teamSaving ? "Assigning…" : "Assign Team"}
@@ -1596,7 +1882,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <SectionLabel>Update Status</SectionLabel>
                 <ErrMsg msg={statusErr} />
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {selected.status === "under_investigation" && (
+                  {selected.status === "under_investigation" && !selectedIsDci && (
                     <button
                       onClick={() => handleStatus("pending")}
                       disabled={statusSaving}
@@ -1605,7 +1891,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                       Mark Pending
                     </button>
                   )}
-                  {selected.status === "pending" && (
+                  {selected.status === "pending" && !selectedIsDci && (
                     <button
                       onClick={() => handleStatus("under_investigation")}
                       disabled={statusSaving}
@@ -1614,7 +1900,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                       Resume Investigation
                     </button>
                   )}
-                  {["under_investigation", "pending"].includes(selected.status) && (
+                  {["under_investigation", "pending"].includes(selected.status) && !selectedIsDci && (
                     <button
                       onClick={() => handleStatus("served")}
                       disabled={statusSaving}
@@ -1623,15 +1909,31 @@ export default function Cases({ user, criminalTypeFilter }) {
                       Mark Served
                     </button>
                   )}
+                  {selected.status === "under_investigation" && selectedIsDci && isInvestigator && (
+                    <button
+                      onClick={() => handleRequestClose(selected)}
+                      disabled={statusSaving || rowActionSavingId === selected.id || selected.close_requested}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                    >
+                      {selected.close_requested ? "Close Requested" : "Request Close"}
+                    </button>
+                  )}
+                  {selected.status === "under_investigation" && selectedIsDci && (isHqsAdmin || isSuperuser) && (
+                    <button
+                      onClick={() => openCourtCloseModal(selected)}
+                      disabled={statusSaving || !selected.close_requested}
+                      className={`px-3 py-1.5 rounded text-xs font-medium ${
+                        selected.close_requested
+                          ? "bg-green-700 hover:bg-green-800 text-white"
+                          : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                      }`}
+                    >
+                      Close Case
+                    </button>
+                  )}
                   {selected.status === "served" && (!selectedIsCourtMartial || isHqsAdmin || isSuperuser) && (
                     <button
-                      onClick={() => {
-                        if (selectedIsCourtMartial) {
-                          openCourtCloseModal();
-                        } else {
-                          handleStatus("closed");
-                        }
-                      }}
+                      onClick={() => openCourtCloseModal(selected)}
                       disabled={statusSaving}
                       className="px-3 py-1.5 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded text-xs font-medium"
                     >
@@ -1673,7 +1975,9 @@ export default function Cases({ user, criminalTypeFilter }) {
               </svg>
             </button>
 
-            <h3 className="text-lg font-semibold text-white">Close Court Martial Case</h3>
+            <h3 className="text-lg font-semibold text-white">
+              {selectedIsCourtMartial ? "Close Court Martial Case" : selectedIsDci ? "Close DCI / Civ Police Case" : "Close Case"}
+            </h3>
             <p className="text-xs text-gray-400">
               Attach one or more <span className="font-semibold text-gray-300">Judgment PDF</span> files with labels before closing this case.
             </p>
@@ -2037,6 +2341,80 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {updateFlowCase && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+          onClick={() => setUpdateFlowCase(null)}
+        >
+          <div
+            className="w-full max-w-2xl bg-gray-800 rounded-2xl p-6 space-y-4 max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-semibold text-white">Case Update Flow</h3>
+                <p className="text-xs text-gray-400 mt-1">
+                  Case: <span className="font-mono text-gray-300">{updateFlowCase.case_number || "--"}</span>
+                </p>
+              </div>
+              <button
+                onClick={() => setUpdateFlowCase(null)}
+                className="text-gray-500 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-gray-700 bg-gray-700/20 p-3">
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Most Recent Update</p>
+              <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{updateFlowCase.action_taken || "No updates yet."}</p>
+              <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-[11px] text-gray-500">Date updated: {normalizeDateForDisplay(updateFlowCase.mentioning_date) || "--"}</p>
+                {updateFlow[updateFlow.length - 1]?.actor_name && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-medium">
+                      Updated by: {formatActorLine(updateFlow[updateFlow.length - 1])}
+                    </span>
+                )}
+              </div>
+              <ReferenceActions url={updateFlow[updateFlow.length - 1]?.reference_pdf_url} name={updateFlow[updateFlow.length - 1]?.reference_pdf_name} />
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Flow of Updates</p>
+              {updateFlowLoading ? (
+                <p className="text-sm text-gray-500">Loading update flow...</p>
+              ) : updateFlowErr ? (
+                <ErrMsg msg={updateFlowErr} />
+              ) : updateFlow.length === 0 ? (
+                <p className="text-sm text-gray-500 bg-gray-700/30 rounded-lg p-3">No update history recorded yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {updateFlow.map((item) => (
+                    <div key={item.id} className="rounded-lg border border-gray-700 bg-gray-700/25 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold text-blue-400">{ActionLabel({ action: item.action })}</p>
+                        <p className="text-[11px] text-gray-500 whitespace-nowrap">
+                          {item.created_at ? new Date(item.created_at).toLocaleString("en-GB") : "--"}
+                        </p>
+                      </div>
+                      <div className="mt-1">
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-medium">
+                          Updated by: {formatActorLine(item)}
+                        </span>
+                      </div>
+                      {item.detail && <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap break-words">{formatUpdateFlowDetail(item.detail)}</p>}
+                      <ReferenceActions url={item.reference_pdf_url} name={item.reference_pdf_name} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

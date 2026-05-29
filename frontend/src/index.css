@@ -1,3 +1,11 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Keep table headers visible while scrolling within table containers. */
+.sticky-head thead th {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	background: rgb(31 41 55);
+}

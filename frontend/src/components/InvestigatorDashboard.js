@@ -664,27 +664,145 @@ function ResumeModal({ caseObj, onClose, onDone }) {
   );
 }
 
-// ── Close Case Modal (HQ Admin only) ─────────────────────────────────────────
-function CloseModal({ caseObj, onClose, onDone }) {
-  const [chargesheet, setChargesheet] = useState(null);
-  const [partOneOrders, setPartOneOrders] = useState(null);
+function CaseUpdateModal({ caseObj, onClose, onDone }) {
+  const [updateText, setUpdateText] = useState("");
+  const [updateDate, setUpdateDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
+  const [referencePdf, setReferencePdf] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-  const canClose = chargesheet && partOneOrders;
 
-  const handleClose = async () => {
-    if (!canClose) { setErr("Both Chargesheet and Part One Orders are required."); return; }
+  const handleSave = async () => {
+    if (!updateText.trim()) {
+      setErr("Case update is required.");
+      return;
+    }
+    if (!updateDate) {
+      setErr("Update date is required.");
+      return;
+    }
+    if (referencePdf && referencePdf.name && !referencePdf.name.toLowerCase().endsWith(".pdf")) {
+      setErr("Reference file must be a PDF.");
+      return;
+    }
     setSaving(true);
     setErr("");
     try {
       const fd = new FormData();
+      fd.append("action_taken", updateText.trim());
+      fd.append("mentioning_date", updateDate);
+      if (referencePdf) {
+        fd.append("reference_pdf", referencePdf);
+      }
+      await caseService.update(caseObj.id, fd);
+      onDone();
+      onClose();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      if (data?.detail) {
+        setErr(data.detail);
+      } else if (data && typeof data === "object") {
+        const msg = Object.entries(data)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setErr(msg || "Failed to save case update.");
+      } else {
+        setErr("Failed to save case update.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Case Update</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          {caseObj?.action_taken && (
+            <div className="bg-gray-700/40 border border-gray-600/50 rounded-lg p-3">
+              <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Most Recent Saved Update</p>
+              <p className="text-sm text-gray-300 whitespace-pre-wrap break-words">{caseObj.action_taken}</p>
+              <p className="text-[11px] text-gray-500 mt-2">Older updates remain available in update flow.</p>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Date of Update <span className="text-red-400">*</span></label>
+            <input
+              type="date"
+              value={updateDate}
+              onChange={(e) => { setUpdateDate(e.target.value); setErr(""); }}
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Case Update <span className="text-red-400">*</span></label>
+            <textarea
+              rows={4}
+              value={updateText}
+              onChange={(e) => { setUpdateText(e.target.value); setErr(""); }}
+              placeholder="Enter a new update entry..."
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-cyan-500 placeholder-gray-500 resize-none"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Reference PDF <span className="text-gray-500">(optional)</span></label>
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={(e) => {
+                setReferencePdf(e.target.files?.[0] || null);
+                setErr("");
+              }}
+              className="block w-full text-sm text-gray-300 file:mr-4 file:rounded-lg file:border-0 file:bg-cyan-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-cyan-500"
+            />
+            {referencePdf && <p className="text-[11px] text-gray-500 mt-1">Selected: {referencePdf.name}</p>}
+          </div>
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 transition-colors">
+            {saving ? "Saving..." : "Save Update"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Close Case Modal (HQ Admin only) ─────────────────────────────────────────
+function CloseModal({ caseObj, onClose, onDone }) {
+  const [judgmentFiles, setJudgmentFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const canClose = judgmentFiles.length > 0;
+
+  const handleClose = async () => {
+    if (!canClose) { setErr("Attach at least one judgment file before closing."); return; }
+    setSaving(true);
+    setErr("");
+    try {
+      setUploading(true);
+      for (const file of judgmentFiles) {
+        const fdUpload = new FormData();
+        fdUpload.append("document_type", "judgment");
+        fdUpload.append("label", `Judgment - ${file.name}`);
+        fdUpload.append("file", file);
+        await attachmentService.upload(caseObj.id, fdUpload);
+      }
+      setUploading(false);
+      const fd = new FormData();
       fd.append("status", "closed");
-      fd.append("chargesheet", chargesheet);
-      fd.append("part_one_orders", partOneOrders);
       await caseService.close(caseObj.id, fd);
       onDone();
       onClose();
     } catch (ex) {
+      setUploading(false);
       const data = ex?.response?.data;
       setErr(data?.detail || data?.non_field_errors?.[0] || "Failed to close case.");
     } finally {
@@ -706,24 +824,20 @@ function CloseModal({ caseObj, onClose, onDone }) {
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Chargesheet <span className="text-red-400">*</span></label>
+            <label className="block text-xs text-gray-400 mb-1.5">Judgment Files <span className="text-red-400">*</span></label>
             <label className="cursor-pointer block">
-              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${chargesheet ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
-                {chargesheet ? <span className="text-green-400 truncate block">{chargesheet.name}</span> : <span className="text-gray-500">Click to select chargesheet…</span>}
+              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
+                {judgmentFiles.length > 0 ? (
+                  <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
+                ) : (
+                  <span className="text-gray-500">Click to select judgment files...</span>
+                )}
               </div>
-              <input type="file" className="sr-only" onChange={(e) => { setChargesheet(e.target.files[0] || null); setErr(""); }} />
+              <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
             </label>
           </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Part One Orders <span className="text-red-400">*</span></label>
-            <label className="cursor-pointer block">
-              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${partOneOrders ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
-                {partOneOrders ? <span className="text-green-400 truncate block">{partOneOrders.name}</span> : <span className="text-gray-500">Click to select Part One Orders…</span>}
-              </div>
-              <input type="file" className="sr-only" onChange={(e) => { setPartOneOrders(e.target.files[0] || null); setErr(""); }} />
-            </label>
-          </div>
-          {!canClose && <p className="text-yellow-500 text-xs">Upload both documents to enable closing.</p>}
+          {!canClose && <p className="text-yellow-500 text-xs">Attach at least one judgment PDF to enable closing.</p>}
+          {uploading && <p className="text-cyan-400 text-xs">Uploading judgment files...</p>}
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
         <div className="px-5 pb-4 flex justify-end gap-3">
@@ -740,8 +854,9 @@ function CloseModal({ caseObj, onClose, onDone }) {
 // ── Under-Investigation table (9 specific columns) ────────────────────────────
 // ── Case Action Modals ────────────────────────────────────────────
 function ServeModal({ caseObj, attachCount, onClose, onDone }) {
-  const canServe = attachCount > 3;
   const isCourtMartial = caseObj?.criminal_offence_type === "court_martial";
+  const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
+  const canServe = isDciCiv ? true : attachCount > 3;
   const [remarks, setRemarks] = useState("");
   const [mentioningDate, setMentioningDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
   const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
@@ -753,10 +868,15 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
     setSaving(true);
     setErr("");
     try {
-      const payload = {
-        status: "served",
-        remarks: remarks.trim(),
-      };
+      const payload = isDciCiv
+        ? {
+            close_requested: true,
+            remarks: remarks.trim(),
+          }
+        : {
+            status: "served",
+            remarks: remarks.trim(),
+          };
       if (isCourtMartial) {
         const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
         if (normalizedMentioningDate) {
@@ -788,7 +908,7 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="text-white font-semibold">Mark as Served</h3>
+          <h3 className="text-white font-semibold">{isDciCiv ? "Request Close" : "Mark as Served"}</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
@@ -800,15 +920,15 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
           ) : (
             <>
               <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm text-green-400">
-                ✓ {attachCount} documents attached — case is eligible to be served.
+                ✓ {attachCount} documents attached — {isDciCiv ? "you can now request HQ closure" : "case is eligible to be served"}.
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Remarks (optional)</label>
+                <label className="block text-xs text-gray-400 mb-1.5">{isDciCiv ? "Close Request Remarks (optional)" : "Remarks (optional)"}</label>
                 <textarea
                   rows={3}
                   value={remarks}
                   onChange={(e) => { setRemarks(e.target.value); setErr(""); }}
-                  placeholder="Enter any remarks…"
+                  placeholder={isDciCiv ? "Enter close request remarks..." : "Enter any remarks..."}
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-gray-500 resize-none"
                 />
               </div>
@@ -844,7 +964,7 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
           {canServe && (
             <button onClick={handleServe} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 transition-colors">
-              {saving ? "Saving…" : "Confirm Served"}
+              {saving ? "Saving..." : isDciCiv ? "Confirm Close Request" : "Confirm Served"}
             </button>
           )}
         </div>
@@ -1056,7 +1176,10 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
   );
 }
 
-function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom }) {
+function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
+  const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
       <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
@@ -1065,6 +1188,10 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
       <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
+        <span className="line-clamp-3 block">{latestUpdateText}</span>
+      </td>
       <td className="px-3 py-3">
         <AbstractCell c={c} onAttach={onAttach} />
       </td>
@@ -1076,12 +1203,21 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
           {(c.status === "under_investigation" || c.status === "pending") && (
             <div className="flex flex-wrap gap-1">
               {c.status === "under_investigation" && (
-                <>
-                  <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Mark as Served">Serve</button>
-                  <button onClick={() => onMarkPending(c)} className="text-[10px] px-2 py-0.5 rounded bg-orange-700/80 hover:bg-orange-600 text-white transition-colors whitespace-nowrap" title="Mark as Pending">Pending</button>
-                </>
+                isDciCiv ? (
+                  <>
+                    <button onClick={() => onCaseUpdate(c)} className="text-[10px] px-2 py-0.5 rounded bg-cyan-700/80 hover:bg-cyan-600 text-white transition-colors whitespace-nowrap" title="Case Update">Case Update</button>
+                    <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Request Close">Request Close</button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Mark as Served">Serve</button>
+                    <button onClick={() => onMarkPending(c)} className="text-[10px] px-2 py-0.5 rounded bg-orange-700/80 hover:bg-orange-600 text-white transition-colors whitespace-nowrap" title="Mark as Pending">Pending</button>
+                  </>
+                )
               )}
-              <button onClick={() => onGuardroom(c)} className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap" title="Request Guardroom">Guardroom</button>
+              {!isDciCiv && (
+                <button onClick={() => onGuardroom(c)} className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap" title="Request Guardroom">Guardroom</button>
+              )}
             </div>
           )}
         </div>
@@ -1090,7 +1226,7 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
   );
 }
 
-function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom }) {
+function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
       <table className="min-w-[1080px] text-sm">
@@ -1102,17 +1238,19 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
             <th className="text-left px-3 py-3">Accused</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
+            <th className="text-left px-3 py-3">Latest Update</th>
             <th className="text-left px-3 py-3">Abstract</th>
             <th className="text-left px-3 py-3">Action</th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={8} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
-            cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} />)
+            cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />)
           )}
         </tbody>
       </table>
@@ -1122,6 +1260,8 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
 
 // ── Pending cases table (dedicated columns) ───────────────────────────────────
 function PendingRow({ c, onAttach, onResume }) {
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
       <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
@@ -1130,6 +1270,10 @@ function PendingRow({ c, onAttach, onResume }) {
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
       <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
+        <span className="line-clamp-3 block">{latestUpdateText}</span>
+      </td>
       <td className="px-3 py-3">
         <AbstractCell c={c} onAttach={onAttach} />
       </td>
@@ -1161,6 +1305,8 @@ function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
             <th className="text-left px-3 py-3">Accused</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
+            <th className="text-left px-3 py-3">Latest Update</th>
             <th className="text-left px-3 py-3">Abstract</th>
             <th className="text-left px-3 py-3">Reason for Pending</th>
             <th className="text-left px-3 py-3">Action</th>
@@ -1183,6 +1329,8 @@ function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
 // ── Served cases table (dedicated columns) ────────────────────────────────────
 function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
   const dateServed = c.served_at?.slice(0, 10) || c.updated_at?.slice(0, 10) || "--";
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
       <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
@@ -1191,6 +1339,10 @@ function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
       <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
+        <span className="line-clamp-3 block">{latestUpdateText}</span>
+      </td>
       <td className="px-3 py-3">
         <AbstractCell c={c} onAttach={onAttach} />
       </td>
@@ -1227,6 +1379,8 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
             <th className="text-left px-3 py-3">Accused</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
+            <th className="text-left px-3 py-3">Latest Update</th>
             <th className="text-left px-3 py-3">Abstract</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Date Served</th>
             <th className="text-left px-3 py-3">Remarks</th>
@@ -1248,9 +1402,30 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
 }
 
 // ── Generic table (all other filters) ────────────────────────────────────────
-function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, isHQAdmin }) {
+function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   const renderAction = () => {
+    const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
     if (c.status === "under_investigation") {
+      if (isDciCiv) {
+        return (
+          <div className="flex flex-wrap gap-1">
+            <button
+              onClick={() => onCaseUpdate(c)}
+              className="text-[10px] px-2 py-0.5 rounded bg-cyan-700/80 hover:bg-cyan-600 text-white transition-colors whitespace-nowrap"
+              title="Case Update"
+            >
+              Case Update
+            </button>
+            <button
+              onClick={() => onServe(c)}
+              className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap"
+              title="Request Close"
+            >
+              Request Close
+            </button>
+          </div>
+        );
+      }
       return (
         <div className="flex flex-wrap gap-1">
           <button
@@ -1332,9 +1507,9 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
   );
 }
 
-function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, isHQAdmin }) {
+function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   if (isUnderInvestigation) {
-    return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} />;
+    return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />;
   }
   if (isPending) {
     return <PendingTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onResume={onResume} />;
@@ -1375,6 +1550,7 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
                 onGuardroom={onGuardroom}
                 onResume={onResume}
                 onCloseCase={onCloseCase}
+                onCaseUpdate={onCaseUpdate}
                 isHQAdmin={isHQAdmin}
               />
             ))
@@ -1481,6 +1657,7 @@ export default function InvestigatorDashboard({ user }) {
   const [servingCase, setServingCase] = useState(null);
   const [pendingCase, setPendingCase] = useState(null);
   const [guardroomCase, setGuardroomCase] = useState(null);
+  const [updatingCase, setUpdatingCase] = useState(null);
   const [resumingCase, setResumingCase] = useState(null);
   const [closingCase, setClosingCase] = useState(null);
   const [page, setPage] = useState(1);
@@ -1706,6 +1883,7 @@ export default function InvestigatorDashboard({ user }) {
           onServe={(c) => setServingCase(c)}
           onMarkPending={(c) => setPendingCase(c)}
           onGuardroom={(c) => setGuardroomCase(c)}
+          onCaseUpdate={(c) => setUpdatingCase(c)}
           onResume={(c) => setResumingCase(c)}
           onCloseCase={(c) => setClosingCase(c)}
           isHQAdmin={isHQAdmin}
@@ -1764,6 +1942,14 @@ export default function InvestigatorDashboard({ user }) {
         <GuardroomModal
           caseObj={guardroomCase}
           onClose={() => setGuardroomCase(null)}
+          onDone={handleAttachmentChanged}
+        />
+      )}
+
+      {updatingCase && (
+        <CaseUpdateModal
+          caseObj={updatingCase}
+          onClose={() => setUpdatingCase(null)}
           onDone={handleAttachmentChanged}
         />
       )}

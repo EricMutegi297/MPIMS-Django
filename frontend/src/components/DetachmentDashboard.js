@@ -317,8 +317,8 @@ export default function DetachmentDashboard({ user }) {
           ) : cases.filter((c) => c.status === "tasked").length === 0 ? (
             <p className="p-5 text-gray-500 text-sm">No cases awaiting team assignment.</p>
           ) : (
-            <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="w-full min-w-[1380px] text-sm">
+            <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+              <table className="sticky-head w-full min-w-[1380px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>

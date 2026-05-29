@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { caseService, guardroomService, incidentService } from "../services/api";
+import { attachmentService, caseService, guardroomService, incidentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,6 +75,88 @@ function Footer() {
   );
 }
 
+function CloseCaseModal({ caseObj, onClose, onClosed }) {
+  const [judgmentFiles, setJudgmentFiles] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState("");
+  const canClose = judgmentFiles.length > 0;
+
+  const handleCloseCase = async () => {
+    if (!canClose) {
+      setErr("Attach at least one judgment PDF before closing.");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    try {
+      setUploading(true);
+      for (const file of judgmentFiles) {
+        const fdUpload = new FormData();
+        fdUpload.append("document_type", "judgment");
+        fdUpload.append("label", `Judgment - ${file.name}`);
+        fdUpload.append("file", file);
+        await attachmentService.upload(caseObj.id, fdUpload);
+      }
+      setUploading(false);
+
+      const fd = new FormData();
+      fd.append("status", "closed");
+      await caseService.close(caseObj.id, fd);
+      onClosed();
+      onClose();
+    } catch (ex) {
+      setUploading(false);
+      const data = ex?.response?.data;
+      const validationMsg = data && typeof data === "object"
+        ? Object.entries(data)
+            .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+            .join(" | ")
+        : "";
+      setErr(validationMsg || data?.detail || "Failed to close case.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
+          <h3 className="text-white font-semibold">Close Case</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
+          <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Judgment Files <span className="text-red-400">*</span></label>
+            <label className="cursor-pointer block">
+              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
+                {judgmentFiles.length > 0 ? (
+                  <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
+                ) : (
+                  <span className="text-gray-500">Click to select judgment files...</span>
+                )}
+              </div>
+              <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
+            </label>
+          </div>
+          {!canClose && <p className="text-yellow-500 text-xs">Attach at least one judgment PDF to enable closing.</p>}
+          {uploading && <p className="text-cyan-400 text-xs">Uploading judgment files...</p>}
+          {err && <p className="text-red-400 text-xs">{err}</p>}
+        </div>
+        <div className="px-5 pb-4 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          <button onClick={handleCloseCase} disabled={saving || !canClose} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-green-700 hover:bg-green-600 disabled:opacity-50 transition-colors">
+            {saving ? "Closing..." : "Close Case"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PaginationBar({ page, totalPages, totalCount, onChange }) {
   if (totalPages <= 1) return null;
   const start = (page - 1) * PAGE_SIZE + 1;
@@ -146,9 +228,12 @@ export default function HQDashboard({ user }) {
   });
   const [totalInc, setTotalInc] = useState(0);
   const [openInc, setOpenInc]   = useState(0);
+  const [courtMartialCount, setCourtMartialCount] = useState(0);
+  const [dciCivPoliceCount, setDciCivPoliceCount] = useState(0);
   const [totalGuardrooms, setTotalGuardrooms] = useState(0);
   const [activeFilter, setActiveFilter] = useState("all");
   const [expandedDesc, setExpandedDesc] = useState({});
+  const [closingCase, setClosingCase] = useState(null);
 
   // ── fetch per-status counts (once, tiny requests) ──────────────────────────
   const loadCounts = useCallback(async () => {
@@ -157,7 +242,7 @@ export default function HQDashboard({ user }) {
       const [
         allRes, newRes, openRes, taskedRes,
         uiRes, peRes, seRes, clRes, rfRes,
-        incRes, incOpenRes, guardroomRes,
+        incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, guardroomRes,
       ] = await Promise.all([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
@@ -170,6 +255,8 @@ export default function HQDashboard({ user }) {
         caseService.list({ page_size: 1, status: "referred" }),
         incidentService.list({ page_size: 1 }),
         incidentService.list({ page_size: 1, status: "reported" }),
+        caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
+        caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
         guardroomService.list(),
       ]);
       setStatusCounts({
@@ -185,6 +272,8 @@ export default function HQDashboard({ user }) {
       });
       setTotalInc(incRes.data.count    || 0);
       setOpenInc(incOpenRes.data.count || 0);
+      setCourtMartialCount(courtMartialRes.data.count || 0);
+      setDciCivPoliceCount(dciCivPoliceRes.data.count || 0);
       setTotalGuardrooms(toArray(guardroomRes.data).length);
     } catch (_) {}
     finally { setLoadingCounts(false); }
@@ -225,6 +314,11 @@ export default function HQDashboard({ user }) {
   const handleFilter = (key) => { setActiveFilter(key); setPage(1); };
   const descLimit = 120;
   const isTaskedFilter = activeFilter === "tasked";
+  const isServedFilter = activeFilter === "served";
+  const handleClosedCase = () => {
+    loadCases();
+    loadCounts();
+  };
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -241,7 +335,7 @@ export default function HQDashboard({ user }) {
       </div>
 
       {/* ── Row 1: Summary Cards ────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard
           loading={loadingCounts}
           label="Total Cases"
@@ -251,6 +345,30 @@ export default function HQDashboard({ user }) {
           icon={
             <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Court Martial"
+          value={courtMartialCount}
+          accent="bg-violet-500/10"
+          onClick={() => navigate("/dashboard/court-martial")}
+          icon={
+            <svg className="w-5 h-5 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="DCI / Civ Police"
+          value={dciCivPoliceCount}
+          accent="bg-cyan-500/10"
+          onClick={() => navigate("/dashboard/dci-civ-police")}
+          icon={
+            <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           }
         />
@@ -351,8 +469,8 @@ export default function HQDashboard({ user }) {
           ) : cases.length === 0 ? (
             <p className="p-5 text-gray-500 text-sm">No cases found.</p>
           ) : (
-            <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="w-full min-w-[1180px] text-sm">
+            <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+              <table className="sticky-head w-full min-w-[1180px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
@@ -367,7 +485,10 @@ export default function HQDashboard({ user }) {
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Detachment</th>
                     </>
                   ) : (
-                    <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
+                    <>
+                      <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
+                      {isServedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
+                    </>
                   )}
                 </tr>
               </thead>
@@ -432,12 +553,24 @@ export default function HQDashboard({ user }) {
                         </td>
                       </>
                     ) : (
-                      <td className="px-3 md:px-5 py-3">
-                        <Badge
-                          label={c.status}
-                          style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
-                        />
-                      </td>
+                      <>
+                        <td className="px-3 md:px-5 py-3">
+                          <Badge
+                            label={c.status}
+                            style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
+                          />
+                        </td>
+                        {isServedFilter && (
+                          <td className="px-3 md:px-5 py-3">
+                            <button
+                              onClick={() => setClosingCase(c)}
+                              className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
+                            >
+                              Close Case
+                            </button>
+                          </td>
+                        )}
+                      </>
                     )}
                   </tr>
                 ))}
@@ -456,6 +589,14 @@ export default function HQDashboard({ user }) {
       </div>
 
       <Footer />
+
+      {closingCase && (
+        <CloseCaseModal
+          caseObj={closingCase}
+          onClose={() => setClosingCase(null)}
+          onClosed={handleClosedCase}
+        />
+      )}
     </div>
   );
 }

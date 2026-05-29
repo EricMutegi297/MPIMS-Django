@@ -8,6 +8,10 @@ export default function NotificationBell() {
   const panelRef = useRef(null);
 
   const fetchNotifications = useCallback(async () => {
+    const access = sessionStorage.getItem("access_token");
+    const refresh = sessionStorage.getItem("refresh_token");
+    if (!access && !refresh) return;
+
     try {
       const res = await notificationService.list({ page_size: 100 });
       const data = res.data;
