@@ -1,8 +1,9 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Login from "./components/Login";
 import LandingPage from "./components/LandingPage";
-import Dashboard from "./components/Dashboard";
+
+const Dashboard = lazy(() => import("./components/Dashboard"));
 
 function App() {
   return (
@@ -10,7 +11,18 @@ function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/dashboard/*" element={<Dashboard />} />
+        <Route
+          path="/dashboard/*"
+          element={
+            <Suspense fallback={
+              <div className="min-h-screen bg-gray-900 flex items-center justify-center text-white text-sm">
+                Loading...
+              </div>
+            }>
+              <Dashboard />
+            </Suspense>
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

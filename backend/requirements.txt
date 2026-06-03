@@ -9,3 +9,4 @@ django-filter>=24.2
 channels>=4.1.0
 channels-redis>=4.2.0
 whitenoise>=6.6.0
+django-apscheduler>=0.6.2django-apscheduler>=0.6.2

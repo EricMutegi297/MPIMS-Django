@@ -114,7 +114,7 @@ export default function Notifications({ onRead }) {
       </div>
 
       {loading ? (
-        <p className="text-gray-500 text-sm">Loading…</p>
+        <p className="text-gray-500 text-sm">Loading...</p>
       ) : notifications.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-gray-600">
           <svg className="w-12 h-12 mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -129,7 +129,7 @@ export default function Notifications({ onRead }) {
             <>
               <div className="px-4 py-2 bg-gray-750 border-b border-gray-700">
                 <span className="text-[11px] font-semibold text-blue-400 uppercase tracking-wide">
-                  New · {unread.length}
+                  New . {unread.length}
                 </span>
               </div>
               <ul>
@@ -145,7 +145,7 @@ export default function Notifications({ onRead }) {
             <>
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800">
                 <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
-                  Earlier · {read.length}
+                  Earlier . {read.length}
                 </span>
               </div>
               <ul>

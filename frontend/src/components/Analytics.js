@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import api from "../axiosConfig";
 
 function MetricCard({ label, value, unit = "", color = "text-white", sub }) {
-  const display = value === null || value === undefined ? "—" : `${value}${unit}`;
+  const display = value === null || value === undefined ? " - " : `${value}${unit}`;
   return (
     <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
       <p className="text-xs uppercase tracking-wide text-gray-400">{label}</p>
@@ -34,7 +34,7 @@ export default function Analytics() {
 
   if (loading)
     return (
-      <div className="p-8 text-gray-400 text-center animate-pulse">Loading analytics…</div>
+      <div className="p-8 text-gray-400 text-center animate-pulse">Loading analytics...</div>
     );
   if (error)
     return <div className="p-8 text-red-400 text-center">{error}</div>;
@@ -58,7 +58,7 @@ export default function Analytics() {
       <div>
         <h2 className="text-2xl font-bold text-white">Case Resolution Analytics</h2>
         <p className="text-sm text-gray-400 mt-1">
-          Deadline-based performance metrics — scoped to your visibility level
+          Deadline-based performance metrics  -  scoped to your visibility level
         </p>
       </div>
 
@@ -148,7 +148,7 @@ export default function Analytics() {
             value={data.avg_team_window_days}
             unit=" days"
             color="text-blue-400"
-            sub="deadline − team assigned date"
+            sub="deadline - team assigned date"
           />
           <MetricCard
             label="Avg Time Taken"
@@ -161,19 +161,19 @@ export default function Analytics() {
                   : "text-red-400"
                 : "text-white"
             }
-            sub="served_at − team assigned date"
+            sub="served_at - team assigned date"
           />
           <MetricCard
             label="Avg Slippage"
             value={slippage}
             unit=" days"
             color={slippage === null ? "text-gray-400" : slippage <= 0 ? "text-green-400" : "text-red-400"}
-            sub="time taken − window (neg = early)"
+            sub="time taken - window (neg = early)"
           />
         </div>
       </div>
 
-      {/* Battalion breakdown — HQ admin only */}
+      {/* Battalion breakdown  -  HQ admin only */}
       {data.by_battalion && data.by_battalion.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">
@@ -203,7 +203,7 @@ export default function Analytics() {
                     <td className="px-4 py-3 text-right text-green-400">{row.resolved_on_time}</td>
                     <td className="px-4 py-3 text-right">
                       <span className={rateColor(row.on_time_rate_pct)}>
-                        {row.on_time_rate_pct !== null ? `${row.on_time_rate_pct}%` : "—"}
+                        {row.on_time_rate_pct !== null ? `${row.on_time_rate_pct}%` : " - "}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">

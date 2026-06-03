@@ -13,6 +13,7 @@ from .models import (
     Case,
     CaseActivityLog,
     CaseAttachment,
+    CaseCourtMartialAttachment,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
     InvestigationTeam,
@@ -20,6 +21,7 @@ from .models import (
 from .serializers import (
     CaseActivityLogSerializer,
     CaseAttachmentSerializer,
+    CaseCourtMartialAttachmentSerializer,
     CaseCourtMartialHearingSerializer,
     CaseCourtMartialMilestoneSerializer,
     CaseSerializer,
@@ -183,6 +185,14 @@ class CaseViewSet(viewsets.ModelViewSet):
         if user.role == "detachment" and user.detachment_id:
             return base_qs.filter(tasked_detachment_id=user.detachment_id)
 
+        # Investigators only see cases explicitly assigned to them or their team
+        if user.role == "investigator":
+            return base_qs.filter(
+                Q(assigned_to=user)
+                | Q(assigned_team__team_ic=user)
+                | Q(assigned_team__members=user)
+            ).distinct()
+
         if user.battalion_id:
             return base_qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
@@ -332,6 +342,7 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         proposed_status = save_kwargs.get("status") or serializer.validated_data.get("status")
         is_prev_dci_case = prev_instance.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
+        is_prev_court_martial = prev_instance.criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
         if proposed_status == Case.Status.CLOSED:
             if is_prev_dci_case:
                 if prev_instance.status not in {Case.Status.UNDER_INVESTIGATION, Case.Status.SERVED}:
@@ -339,6 +350,12 @@ class CaseViewSet(viewsets.ModelViewSet):
                 close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
                 if not close_requested_now:
                     raise ValidationError({"status": "Close request must be submitted by the investigation team before closing this DCI/Civ Police case."})
+            elif is_prev_court_martial:
+                if prev_instance.status != Case.Status.SERVED:
+                    raise ValidationError({"status": "A Court Martial case can only be closed after it is served."})
+                close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
+                if not close_requested_now:
+                    raise ValidationError({"status": "Close request must be submitted by the investigation team before closing this Court Martial case."})
             elif prev_instance.status != Case.Status.SERVED:
                 raise ValidationError({"status": "A case can only be closed after it is served."})
 
@@ -350,6 +367,14 @@ class CaseViewSet(viewsets.ModelViewSet):
         is_new_close_request = close_request_in_payload and close_requested_now and not prev_instance.close_requested
         if is_prev_dci_case and is_new_close_request and not self._can_request_close(self.request.user, prev_instance):
             raise ValidationError({"close_requested": "Only team IO or assigned team members can request close for this case."})
+        if is_prev_court_martial and is_new_close_request:
+            if not self._can_request_close(self.request.user, prev_instance):
+                raise ValidationError({"close_requested": "Only team IO or assigned team members can request close for this Court Martial case."})
+            latest_milestone = self._latest_court_milestone(prev_instance)
+            if not latest_milestone or latest_milestone.milestone_type != "judgment":
+                raise ValidationError({"close_requested": "Close can only be requested after a Judgment milestone has been set."})
+            if not (latest_milestone.action_remarks or "").strip():
+                raise ValidationError({"close_requested": "The Judgment milestone must have Court Action remarks before requesting close."})
 
         reference_pdf = self.request.FILES.get("reference_pdf")
         if reference_pdf and not str(reference_pdf.name).lower().endswith(".pdf"):
@@ -534,8 +559,15 @@ class CaseViewSet(viewsets.ModelViewSet):
         ])
 
     def _send_closed_notification(self, case):
-        """Notify assigned team (IC + members), tasked battalion admin, and Det IC if detachment-level."""
+        """Notify IO, team members, tasked battalion admin, and Det IC when a case is closed.
+        Delivers both a dashboard notification and an email.
+        """
         recipients = set()
+
+        # IO directly assigned to the case
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
+
         # Assigned team IC + members
         if case.assigned_team_id:
             try:
@@ -565,8 +597,15 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         if not recipients:
             return
+
+        offence_label = (
+            case.offence_ref.name.strip()
+            if case.offence_ref and case.offence_ref.name
+            else (case.offence or "Not provided").strip() or "Not provided"
+        )
         msg = (
-            f"Case #{case.case_number} — '{case.title}' has been officially closed."
+            f"Case #{case.case_number} — '{case.title}' (Offence: {offence_label}) "
+            f"has been officially closed."
         )
         Notification.objects.bulk_create([
             Notification(
@@ -577,6 +616,23 @@ class CaseViewSet(viewsets.ModelViewSet):
                 related_id=case.id,
             ) for u in recipients
         ])
+
+        email_list = [u.email for u in recipients if u.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Case Closed — {case.case_number}",
+                    message=(
+                        f"{msg}\n\n"
+                        "No further action is required on your part unless instructed otherwise.\n"
+                        "Please log in to the MPIMS dashboard to view case details."
+                    ),
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
 
     def _send_case_update_notification(self, case, actor=None, update_date=None, update_text=""):
         """Notify HQ, tasked battalion/detachment, IO, and team members on case updates."""
@@ -673,9 +729,14 @@ class CaseViewSet(viewsets.ModelViewSet):
             if case.offence_ref and case.offence_ref.name
             else (case.offence or "Not provided").strip() or "Not provided"
         )
+        case_type = (
+            "Court Martial"
+            if case.criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
+            else "DCI/Civ Police"
+        )
         msg = (
-            f"{actor_label} requested close for DCI/Civ Police Case No {case.case_number}. "
-            f"Offence: {offence_label}. Please review and close on HQ dashboard."
+            f"{actor_label} has requested closure for {case_type} Case No {case.case_number}. "
+            f"Offence: {offence_label}. Please review and action on the HQ dashboard."
         )
 
         Notification.objects.bulk_create([
@@ -936,16 +997,16 @@ class CaseViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        if request.method == "GET":
+            qs = case.court_martial_milestones.select_related("created_by", "action_recorded_by").all()
+            serializer = CaseCourtMartialMilestoneSerializer(qs, many=True)
+            return Response(serializer.data)
+
         if not self._can_set_court_martial_schedule(request.user, case):
             return Response(
                 {"detail": "Only investigator/team IO/members or HQ admins can manage Court Martial milestones."},
                 status=http_status.HTTP_403_FORBIDDEN,
             )
-
-        if request.method == "GET":
-            qs = case.court_martial_milestones.select_related("created_by", "action_recorded_by").all()
-            serializer = CaseCourtMartialMilestoneSerializer(qs, many=True)
-            return Response(serializer.data)
 
         serializer = CaseCourtMartialMilestoneSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1019,6 +1080,70 @@ class CaseViewSet(viewsets.ModelViewSet):
             f"Updated {updated.milestone_type} milestone",
         )
         return Response(CaseCourtMartialMilestoneSerializer(updated).data)
+
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path=r"court-milestones/(?P<milestone_pk>\d+)/attachments",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def court_milestone_attachments(self, request, pk=None, milestone_pk=None):
+        case = self.get_object()
+        try:
+            milestone = CaseCourtMartialMilestone.objects.get(pk=milestone_pk, case=case)
+        except CaseCourtMartialMilestone.DoesNotExist:
+            return Response({"detail": "Milestone not found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        if request.method == "GET":
+            qs = milestone.attachments.select_related("uploaded_by").all()
+            serializer = CaseCourtMartialAttachmentSerializer(qs, many=True)
+            return Response(serializer.data)
+
+        # POST – upload attachment
+        if not (self._can_edit_court_action_remarks(request.user, case) or self._is_hq_admin_or_superuser(request.user)):
+            return Response(
+                {"detail": "You do not have permission to upload attachments for this milestone."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+        file_obj = request.FILES.get("file")
+        if not file_obj:
+            return Response({"detail": "No file provided."}, status=http_status.HTTP_400_BAD_REQUEST)
+        attachment = CaseCourtMartialAttachment.objects.create(
+            milestone=milestone,
+            file=file_obj,
+            file_name=file_obj.name,
+            uploaded_by=request.user,
+        )
+        return Response(
+            CaseCourtMartialAttachmentSerializer(attachment).data,
+            status=http_status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path=r"court-milestones/(?P<milestone_pk>\d+)/attachments/(?P<att_pk>\d+)",
+        parser_classes=[JSONParser],
+    )
+    def court_milestone_attachment_detail(self, request, pk=None, milestone_pk=None, att_pk=None):
+        case = self.get_object()
+        try:
+            milestone = CaseCourtMartialMilestone.objects.get(pk=milestone_pk, case=case)
+        except CaseCourtMartialMilestone.DoesNotExist:
+            return Response({"detail": "Milestone not found."}, status=http_status.HTTP_404_NOT_FOUND)
+        try:
+            attachment = milestone.attachments.get(pk=att_pk)
+        except CaseCourtMartialAttachment.DoesNotExist:
+            return Response({"detail": "Attachment not found."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        if not (self._is_hq_admin_or_superuser(request.user) or attachment.uploaded_by == request.user):
+            return Response(
+                {"detail": "You do not have permission to delete this attachment."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+        attachment.file.delete(save=False)
+        attachment.delete()
+        return Response(status=http_status.HTTP_204_NO_CONTENT)
 
     @action(
         detail=True,

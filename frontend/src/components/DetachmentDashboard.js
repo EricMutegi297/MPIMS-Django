@@ -234,7 +234,7 @@ export default function DetachmentDashboard({ user }) {
           </h2>
           <p className="text-sm text-gray-400 mt-0.5">
             {user?.detachment_name
-              ? `${user.detachment_name} — Detachment Dashboard`
+              ? `${user.detachment_name}  -  Detachment Dashboard`
               : "Detachment Dashboard"}
           </p>
         </div>
@@ -285,7 +285,7 @@ export default function DetachmentDashboard({ user }) {
             onClick={() => navigate("/dashboard/cases")}
             className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
           >
-            View All →
+            View All ->
           </button>
         </div>
         <div className="bg-gray-800 rounded-xl overflow-hidden">
@@ -372,7 +372,7 @@ export default function DetachmentDashboard({ user }) {
                     <td className="px-3 md:px-5 py-3 text-xs text-gray-400">
                       {c.investigation_deadline
                         ? new Date(c.investigation_deadline).toLocaleDateString("en-GB")
-                        : <span className="text-gray-600">—</span>}
+                        : <span className="text-gray-600"> - </span>}
                     </td>
                     <td className="px-3 md:px-5 py-3">
                       {c.status === "tasked" && (
@@ -432,7 +432,7 @@ export default function DetachmentDashboard({ user }) {
                 <div>
                   <p className="text-white font-medium">{t.name}</p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    {t.team_ic_detail?.name ? `IC: ${t.team_ic_detail.name}` : "No IC assigned"} ·{" "}
+                    {t.team_ic_detail?.name ? `IC: ${t.team_ic_detail.name}` : "No IC assigned"} .{" "}
                     {t.members?.length ?? 0} member{t.members?.length !== 1 ? "s" : ""}
                   </p>
                 </div>

@@ -61,6 +61,14 @@ export const caseService = {
   addCourtMilestone: (id, data) => api.post(`/api/cases/${id}/court-milestones/`, data),
   updateCourtMilestone: (id, milestoneId, data) => api.patch(`/api/cases/${id}/court-milestones/${milestoneId}/`, data),
   deleteCourtMilestone: (id, milestoneId) => api.delete(`/api/cases/${id}/court-milestones/${milestoneId}/`),
+  listCourtMilestoneAttachments: (caseId, milestoneId) =>
+    api.get(`/api/cases/${caseId}/court-milestones/${milestoneId}/attachments`),
+  uploadCourtMilestoneAttachment: (caseId, milestoneId, formData) =>
+    api.post(`/api/cases/${caseId}/court-milestones/${milestoneId}/attachments`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
+  deleteCourtMilestoneAttachment: (caseId, milestoneId, attId) =>
+    api.delete(`/api/cases/${caseId}/court-milestones/${milestoneId}/attachments/${attId}`),
   delete: (id) => api.delete(`/api/cases/${id}/`),
 };
 

@@ -187,7 +187,7 @@ export default function Formations({ user }) {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
+                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
                 ) : visibleBattalions.length === 0 ? (
                   <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
                 ) : visibleBattalions.map((b) => (
@@ -227,7 +227,7 @@ export default function Formations({ user }) {
                 {detachmentView.rows.map((d) => (
                   <div key={d.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
                     <p className="text-sm text-white font-medium">{d.name || "Unnamed detachment"}</p>
-                    <p className="text-xs text-gray-400">Company: {d.company || "—"} | AOR: {d.aor || "—"}</p>
+                    <p className="text-xs text-gray-400">Company: {d.company || " - "} | AOR: {d.aor || " - "}</p>
                   </div>
                 ))}
               </div>
@@ -238,7 +238,7 @@ export default function Formations({ user }) {
         {caseView && (
           <ModalWrap title={`${caseView.battalionName} Cases`} onClose={() => setCaseView(null)}>
             {caseViewLoading ? (
-              <p className="text-sm text-gray-400">Loading cases…</p>
+              <p className="text-sm text-gray-400">Loading cases...</p>
             ) : caseView.rows.length === 0 ? (
               <p className="text-sm text-gray-400">No cases found.</p>
             ) : (
@@ -246,7 +246,7 @@ export default function Formations({ user }) {
                 {caseView.rows.map((c) => (
                   <div key={c.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
                     <p className="text-sm text-white font-medium">{c.case_number || `Case #${c.id}`}</p>
-                    <p className="text-xs text-gray-400">Status: {c.status || "—"}</p>
+                    <p className="text-xs text-gray-400">Status: {c.status || " - "}</p>
                   </div>
                 ))}
               </div>
@@ -291,7 +291,7 @@ export default function Formations({ user }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
             ) : formations.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No formations found.</td></tr>
             ) : formations.map((f) => {
@@ -299,7 +299,7 @@ export default function Formations({ user }) {
               return (
                 <tr key={f.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                   <td className="px-4 py-2 text-white font-medium">{f.name}</td>
-                  <td className="px-4 py-2 text-gray-300">{f.location || "—"}</td>
+                  <td className="px-4 py-2 text-gray-300">{f.location || " - "}</td>
                   <td className="px-4 py-2 text-gray-300">{fUnits.length}</td>
                   <td className="px-4 py-2">
                     <div className="flex gap-3">
@@ -338,14 +338,14 @@ export default function Formations({ user }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
             ) : units.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No units found.</td></tr>
             ) : units.map((u) => (
               <tr key={u.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                 <td className="px-4 py-2 text-white font-medium">{u.name}</td>
-                <td className="px-4 py-2 text-gray-300">{u.formation_name || "—"}</td>
-                <td className="px-4 py-2 text-gray-300">{u.service || "—"}</td>
+                <td className="px-4 py-2 text-gray-300">{u.formation_name || " - "}</td>
+                <td className="px-4 py-2 text-gray-300">{u.service || " - "}</td>
                 <td className="px-4 py-2">
                   <div className="flex gap-3">
                     <ABtn label="Edit" color="blue" onClick={() => setUnitModal({ mode: "edit", data: {
@@ -402,7 +402,7 @@ function ModalWrap({ title, onClose, children }) {
       <div className="bg-gray-800 rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center sticky top-0 bg-gray-800">
           <h3 className="text-white font-semibold">{title}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">✕</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">x</button>
         </div>
         <div className="px-6 py-4 space-y-3">{children}</div>
       </div>
@@ -426,7 +426,7 @@ function SaveCancel({ saving, canSave, mode, onClose }) {
       <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
       <button type="submit" disabled={saving || !canSave}
         className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
-        {saving ? "Saving…" : mode === "add" ? "Create" : "Save Changes"}
+        {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
       </button>
     </div>
   );
@@ -458,7 +458,7 @@ function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
           <label className="text-xs text-gray-400">Formation *</label>
           <select value={form.formation} onChange={s("formation")} required
             className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-            <option value="">Select formation…</option>
+            <option value="">Select formation...</option>
             {formations.map((f) => (
               <option key={f.id} value={String(f.id)}>{f.name}</option>
             ))}

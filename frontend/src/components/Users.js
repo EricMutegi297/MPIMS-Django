@@ -1,5 +1,20 @@
-﻿import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { userService, formationService } from "../services/api";
+
+function SuccessToast({ message, onDone }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 2800);
+    return () => clearTimeout(t);
+  }, [onDone]);
+  return (
+    <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-2xl animate-fade-in-down">
+      <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+      </svg>
+      {message}
+    </div>
+  );
+}
 
 const ROLE_LABELS = {
   admin:        "Admin",
@@ -85,6 +100,7 @@ export default function Users({ user }) {
   const [detachments, setDetachments]   = useState([]);
   const [creating, setCreating]         = useState(false);
   const [createError, setCreateError]   = useState("");
+  const [successMsg, setSuccessMsg]     = useState("");
 
   // Roles that can optionally be scoped to a detachment
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
@@ -177,6 +193,7 @@ export default function Users({ user }) {
       await userService.update(editTarget.id, editForm);
       setShowEdit(false);
       loadUsers();
+      setSuccessMsg("User updated successfully.");
     } catch (err) {
       const data = err?.response?.data;
       if (data && typeof data === "object") {
@@ -195,6 +212,7 @@ export default function Users({ user }) {
       await userService.delete(id);
       setConfirmDeleteId(null);
       loadUsers();
+      setSuccessMsg("User deleted successfully.");
     } catch {
       // silently ignore
     } finally {
@@ -209,11 +227,14 @@ export default function Users({ user }) {
     try {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
-      // For battalion admin/IC Det the backend auto-assigns battalion; for superuser use form value
-      if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
+      // Ensure battalion is always included; backend enforce-assigns it for battalion admin/IC Det anyway
+      if ((isBattalionAdmin || isDetachmentIC) && !payload.battalion) {
+        payload.battalion = user?.battalion ?? payload.battalion;
+      }
       await userService.create(payload);
       setShowCreate(false);
       loadUsers();
+      setSuccessMsg("User created successfully.");
     } catch (err) {
       const data = err?.response?.data;
       if (data && typeof data === "object") {
@@ -263,13 +284,14 @@ export default function Users({ user }) {
   const title = isHqsAdmin || isSuperuser
     ? "All Users"
     : isDetachmentIC
-    ? `${user?.detachment_name ?? "Detachment"} — Personnel`
+    ? `${user?.detachment_name ?? "Detachment"}  -  Personnel`
     : user?.battalion_name
-    ? `${user.battalion_name} — Personnel`
+    ? `${user.battalion_name}  -  Personnel`
     : "Battalion Personnel";
 
   return (
     <>
+    {successMsg && <SuccessToast message={successMsg} onDone={() => setSuccessMsg("")} />}
     <div className="p-4 md:p-6 min-h-screen bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between mb-5">
@@ -554,14 +576,14 @@ export default function Users({ user }) {
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Detachment <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
+                    Detachment <span className="text-gray-500">(optional  -  leave blank for battalion-level)</span>
                   </label>
                   <select
                     value={form.detachment}
                     onChange={(e) => setForm({ ...form, detachment: e.target.value })}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    <option value="">— Battalion level (no detachment) —</option>
+                    <option value=""> -  Battalion level (no detachment)  - </option>
                     {detachments.map((d) => (
                       <option key={d.id} value={d.id}>{d.name}</option>
                     ))}
@@ -601,7 +623,7 @@ export default function Users({ user }) {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
         <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
-            <h2 className="text-white font-semibold text-base">Edit User — {editTarget.name}</h2>
+            <h2 className="text-white font-semibold text-base">Edit User  -  {editTarget.name}</h2>
             <button onClick={() => setShowEdit(false)} className="text-gray-400 hover:text-white">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

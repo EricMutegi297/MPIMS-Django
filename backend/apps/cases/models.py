@@ -60,6 +60,7 @@ class Case(models.Model):
     criminal_offence_type = models.CharField(
         max_length=20, choices=CriminalOffenceType.choices, blank=True
     )
+    police_station = models.CharField(max_length=150, blank=True)
     accused_name = models.CharField(max_length=120, blank=True)
     accused_service_number = models.CharField(max_length=20, blank=True)
     accused_rank = models.CharField(max_length=60, blank=True)
@@ -230,6 +231,36 @@ class CaseCourtMartialMilestone(models.Model):
 
     def __str__(self):
         return f"{self.case.case_number} {self.milestone_type} on {self.scheduled_date}"
+
+
+def court_martial_attachment_path(instance, filename):
+    case_number = instance.milestone.case.case_number or "draft"
+    return f"cases/{case_number}/court_martial_attachments/{filename}"
+
+
+class CaseCourtMartialAttachment(models.Model):
+    milestone = models.ForeignKey(
+        CaseCourtMartialMilestone,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+    file = models.FileField(upload_to=court_martial_attachment_path)
+    file_name = models.CharField(max_length=255, blank=True)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="court_martial_attachments_uploaded",
+    )
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "case_court_martial_attachments"
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"{self.milestone} – {self.file_name or self.file.name}"
 
 
 class CaseActivityLog(models.Model):

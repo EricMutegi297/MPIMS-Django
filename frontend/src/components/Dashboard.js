@@ -140,14 +140,6 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "my-team", label: "My Team", path: "/dashboard/my-team", show: user?.role === "investigator",
-      icon: (
-        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-        </svg>
-      ),
-    },
-    {
       key: "court-martial",
       label: "Court Martial",
       path: "/dashboard/court-martial",
@@ -316,7 +308,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center text-white">
-        Loading…
+        Loading...
       </div>
     );
   }
@@ -335,7 +327,9 @@ export default function Dashboard() {
   const roleLabel = !!user?.is_superuser
     ? "Superuser"
     : ROLE_LABELS[user?.role] || user?.role;
-  const battalionLabel = isDetachmentLevelRole && hasDetachment && user?.detachment_name
+  const battalionLabel = user?.role === "investigator"
+    ? "Investigator Dashboard"
+    : isDetachmentLevelRole && hasDetachment && user?.detachment_name
     ? `${user.detachment_name} Detachment Dashboard`
     : user?.battalion_name && String(user?.battalion_type || "").toLowerCase() === "hqs"
     ? `${user.battalion_name} Dashboard`
@@ -451,7 +445,7 @@ export default function Dashboard() {
                 className="w-8 h-8 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
                 aria-label="Close menu"
               >
-                ×
+                x
               </button>
             </div>
             <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
@@ -510,6 +504,7 @@ export default function Dashboard() {
         <Routes>
           <Route path="/" element={
             isHqsAdmin ? <HQDashboard user={user} /> :
+            user?.role === "investigator" ? <InvestigatorDashboard user={user} /> :
             (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
             (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
             user?.battalion_type ? <BattalionDashboard user={user} /> :

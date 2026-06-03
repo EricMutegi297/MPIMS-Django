@@ -13,4 +13,14 @@ urlpatterns = [
     path("api/morning-briefs/", include("apps.morningbriefs.urls")),
     path("api/formations/", include("apps.formations.urls")),
     path("api/offences/", include("apps.offences.urls")),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+# Livereload for development
+if settings.DEBUG:
+    from django.http import HttpResponse
+    from django.urls import re_path
+    def livereload_ping(request):
+        return HttpResponse("pong", content_type="text/plain")
+    urlpatterns += [re_path(r"^__reload__/?$", livereload_ping)]
+
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

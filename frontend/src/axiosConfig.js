@@ -4,7 +4,7 @@ const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 const api = axios.create({
   baseURL: BASE_URL,
-  // No withCredentials — we use JWT in Authorization header, not cookies
+  // No withCredentials  -  we use JWT in Authorization header, not cookies
 });
 
 const AUTH_PATHS = [

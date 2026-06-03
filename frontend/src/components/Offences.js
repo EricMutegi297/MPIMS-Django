@@ -7,7 +7,7 @@ export default function Offences({ user, offences = [], loading = false }) {
     <div className="p-4 max-w-2xl mx-auto">
       <h2 className="text-xl font-bold mb-4 text-white">Offences</h2>
       {loading ? (
-        <div className="text-gray-300">Loading…</div>
+        <div className="text-gray-300">Loading...</div>
       ) : offences.length === 0 ? (
         <div className="text-gray-400 italic py-8 text-center">No offences found.</div>
       ) : (

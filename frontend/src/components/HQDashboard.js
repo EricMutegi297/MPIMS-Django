@@ -124,7 +124,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Close Case</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
@@ -167,26 +167,26 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
     for (let i = 1; i <= totalPages; i++) pages.push(i);
   } else {
     pages.push(1);
-    if (page > 3) pages.push("…");
+    if (page > 3) pages.push("...");
     for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
-    if (page < totalPages - 2) pages.push("…");
+    if (page < totalPages - 2) pages.push("...");
     pages.push(totalPages);
   }
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
-      <span>Showing {start}–{end} of {totalCount} cases</span>
+      <span>Showing {start} - {end} of {totalCount} cases</span>
       <div className="flex items-center gap-1">
         <button
           onClick={() => onChange(page - 1)}
           disabled={page === 1}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          ← Prev
+          &lt;- Prev
         </button>
         {pages.map((p, i) =>
-          p === "…" ? (
-            <span key={`ellipsis-${i}`} className="px-1">…</span>
+          p === "..." ? (
+            <span key={`ellipsis-${i}`} className="px-1">...</span>
           ) : (
             <button
               key={p}
@@ -206,7 +206,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
           disabled={page === totalPages}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          Next →
+          Next ->
         </button>
       </div>
     </div>
@@ -329,7 +329,7 @@ export default function HQDashboard({ user }) {
           <h2 className="text-2xl font-bold text-white">
             {greeting}, {displayName}
           </h2>
-          <p className="text-sm text-gray-400 mt-0.5">HQ Overview — All Battalions</p>
+          <p className="text-sm text-gray-400 mt-0.5">HQ Overview  -  All Battalions</p>
         </div>
         <NotificationBell />
       </div>
@@ -455,7 +455,7 @@ export default function HQDashboard({ user }) {
             </button>
           ))}
           <span className="w-full sm:w-auto sm:ml-auto text-xs text-gray-500">
-            {loadingCounts ? "…" : `${totalCount} total`}
+            {loadingCounts ? "..." : `${totalCount} total`}
           </span>
         </div>
 

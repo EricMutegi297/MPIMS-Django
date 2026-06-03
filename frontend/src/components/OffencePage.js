@@ -90,7 +90,7 @@ export default function OffencePage({ user }) {
           </div>
         </form>
         {loading ? (
-          <div className="text-gray-300 text-center">Loading…</div>
+          <div className="text-gray-300 text-center">Loading...</div>
         ) : (
           <div className="overflow-x-auto rounded-lg shadow border border-gray-700 bg-gray-800">
             <table className="min-w-full text-sm text-left">

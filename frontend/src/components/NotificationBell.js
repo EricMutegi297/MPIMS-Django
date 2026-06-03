@@ -22,7 +22,7 @@ export default function NotificationBell() {
         : [];
       setNotifications(items);
     } catch {
-      // network / auth errors — leave state unchanged
+      // network / auth errors  -  leave state unchanged
     }
   }, []);
 
@@ -172,7 +172,7 @@ export default function NotificationBell() {
                 {unread.length > 0 && (
                   <>
                     <p className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-blue-400 bg-blue-900/10 border-b border-gray-700/40">
-                      New · {unread.length}
+                      New . {unread.length}
                     </p>
                     <ul>
                       {unread.map((n) => (
@@ -186,7 +186,7 @@ export default function NotificationBell() {
                 {read.length > 0 && (
                   <>
                     <p className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-500 bg-gray-700/20 border-b border-t border-gray-700/40 mt-0">
-                      Earlier · {read.length}
+                      Earlier . {read.length}
                     </p>
                     <ul>
                       {read.map((n) => (

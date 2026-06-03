@@ -92,26 +92,26 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
     for (let i = 1; i <= totalPages; i++) pages.push(i);
   } else {
     pages.push(1);
-    if (page > 3) pages.push("…");
+    if (page > 3) pages.push("...");
     for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
-    if (page < totalPages - 2) pages.push("…");
+    if (page < totalPages - 2) pages.push("...");
     pages.push(totalPages);
   }
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
-      <span>Showing {start}–{end} of {totalCount} cases</span>
+      <span>Showing {start} - {end} of {totalCount} cases</span>
       <div className="flex items-center gap-1">
         <button
           onClick={() => onChange(page - 1)}
           disabled={page === 1}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          ← Prev
+          &lt;- Prev
         </button>
         {pages.map((p, i) =>
-          p === "…" ? (
-            <span key={`ellipsis-${i}`} className="px-1">…</span>
+          p === "..." ? (
+            <span key={`ellipsis-${i}`} className="px-1">...</span>
           ) : (
             <button
               key={p}
@@ -131,7 +131,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
           disabled={page === totalPages}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          Next →
+          Next ->
         </button>
       </div>
     </div>
@@ -177,7 +177,7 @@ export default function BattalionDashboard({ user }) {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const descLimit = 120;
 
-  // One-time counts fetch (tiny requests — just need the `count` field)
+  // One-time counts fetch (tiny requests  -  just need the `count` field)
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
@@ -354,7 +354,7 @@ export default function BattalionDashboard({ user }) {
           </h2>
           <p className="text-sm text-gray-400 mt-0.5">
             {user?.battalion_name
-              ? `${user.battalion_name} — Battalion Overview`
+              ? `${user.battalion_name}  -  Battalion Overview`
               : "Battalion Overview"}
           </p>
         </div>
@@ -525,7 +525,7 @@ export default function BattalionDashboard({ user }) {
             onClick={() => navigate("/dashboard/cases")}
             className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
           >
-            Manage →
+            Manage ->
           </button>
         </div>
         <div className="bg-gray-800 rounded-xl overflow-hidden">
@@ -809,7 +809,7 @@ export default function BattalionDashboard({ user }) {
                 <p className="text-sm text-gray-200">
                   {teamDetails.team_ic_detail
                     ? `${teamDetails.team_ic_detail.rank ? `${teamDetails.team_ic_detail.rank} ` : ""}${teamDetails.team_ic_detail.name}`
-                    : "—"}
+                    : " - "}
                 </p>
                 {teamDetails.team_ic_detail?.service_number && (
                   <p className="text-xs text-gray-500 mt-1">{teamDetails.team_ic_detail.service_number}</p>

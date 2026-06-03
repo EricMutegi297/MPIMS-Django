@@ -123,7 +123,7 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
                   {uniqueCategories.map((cat) => (
                     <option key={cat} value={cat}>{cat}</option>
                   ))}
-                  <option value="__new__">Add new category…</option>
+                  <option value="__new__">Add new category...</option>
                 </select>
               </div>
               {category === "__new__" && (
@@ -161,7 +161,7 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
                   disabled={saving}
                   className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-lg transition-colors"
                 >
-                  {saving ? "Saving…" : "Save Offence"}
+                  {saving ? "Saving..." : "Save Offence"}
                 </button>
               </div>
             </form>

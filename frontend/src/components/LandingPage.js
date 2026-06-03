@@ -9,7 +9,7 @@ export default function LandingPage() {
         MPIMS
       </h1>
       <p className="text-gray-400 max-w-xl mb-8 leading-relaxed">
-        Military Police Information Management System — secure, centralised
+        Military Police Information Management System  -  secure, centralised
         management of cases, incidents, guardrooms and morning briefs.
       </p>
       <button

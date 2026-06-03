@@ -121,7 +121,7 @@ function DrilldownPanel({ drill, onClose }) {
     );
   });
 
-  /* print — opens formatted page in new window */
+  /* print  -  opens formatted page in new window */
   const handlePrint = () => {
     const win = window.open("", "_blank", "width=900,height=700");
     if (!win) return;
@@ -195,7 +195,7 @@ function DrilldownPanel({ drill, onClose }) {
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
               {loading
-                ? "Loading cases…"
+                ? "Loading cases..."
                 : `${filtered.length} case${filtered.length !== 1 ? "s" : ""} shown`}
             </p>
           </div>
@@ -228,7 +228,7 @@ function DrilldownPanel({ drill, onClose }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search case #, title, accused…"
+              placeholder="Search case #, title, accused..."
               className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-8 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {search && (
@@ -485,7 +485,7 @@ export default function DetachmentOverview({ user }) {
                   key={det.id}
                   className="border-b border-gray-700/40 hover:bg-gray-700/20 transition-colors"
                 >
-                  {/* name → all cases */}
+                  {/* name -> all cases */}
                   <td className="px-5 py-3">
                     <button
                       onClick={() => openDrill(det, "all")}
@@ -507,7 +507,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.tasked}
                       style={STATUS_PILL.tasked}
-                      title={`${det.tasked} tasked — click to view`}
+                      title={`${det.tasked} tasked  -  click to view`}
                       onClick={() => openDrill(det, "tasked")}
                     />
                   </td>
@@ -517,7 +517,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.under_investigation}
                       style={STATUS_PILL.under_investigation}
-                      title={`${det.under_investigation} under investigation — click to view`}
+                      title={`${det.under_investigation} under investigation  -  click to view`}
                       onClick={() => openDrill(det, "under_investigation")}
                     />
                   </td>
@@ -527,7 +527,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.pending}
                       style={STATUS_PILL.pending}
-                      title={`${det.pending} pending — click to view`}
+                      title={`${det.pending} pending  -  click to view`}
                       onClick={() => openDrill(det, "pending")}
                     />
                   </td>
@@ -537,12 +537,12 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.closed}
                       style={STATUS_PILL.closed}
-                      title={`${det.closed} closed — click to view`}
+                      title={`${det.closed} closed  -  click to view`}
                       onClick={() => openDrill(det, "closed")}
                     />
                   </td>
 
-                  {/* total → all */}
+                  {/* total -> all */}
                   <td className="px-5 py-3 text-center">
                     <button
                       onClick={() => openDrill(det, "all")}

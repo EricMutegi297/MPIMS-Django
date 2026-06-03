@@ -4,6 +4,7 @@ from .models import (
     Case,
     CaseActivityLog,
     CaseAttachment,
+    CaseCourtMartialAttachment,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
     InvestigationTeam,
@@ -88,6 +89,38 @@ class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
 
     def get_action_recorded_by_name(self, obj):
         return str(obj.action_recorded_by) if obj.action_recorded_by else None
+
+
+class CaseCourtMartialAttachmentSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.SerializerMethodField()
+    file_url = serializers.SerializerMethodField()
+    file_name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CaseCourtMartialAttachment
+        fields = [
+            "id",
+            "milestone",
+            "file",
+            "file_name",
+            "file_url",
+            "file_name_display",
+            "uploaded_by",
+            "uploaded_by_name",
+            "uploaded_at",
+        ]
+        read_only_fields = ["milestone", "uploaded_by", "uploaded_by_name", "uploaded_at"]
+
+    def get_uploaded_by_name(self, obj):
+        return str(obj.uploaded_by) if obj.uploaded_by else None
+
+    def get_file_url(self, obj):
+        return obj.file.url if obj.file else None
+
+    def get_file_name_display(self, obj):
+        if obj.file_name:
+            return obj.file_name
+        return obj.file.name.split("/")[-1] if obj.file else None
 
 
 class CaseActivityLogSerializer(serializers.ModelSerializer):
@@ -210,6 +243,7 @@ class InvestigationTeamSerializer(serializers.ModelSerializer):
 
 
 class CaseSerializer(serializers.ModelSerializer):
+    extra_attachments = CaseAttachmentSerializer(many=True, read_only=True)
     assigned_to_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     tasked_battalion_name = serializers.SerializerMethodField()
@@ -310,6 +344,14 @@ class CaseSerializer(serializers.ModelSerializer):
                     {"status": "Cases can only be closed after creation and service workflow."}
                 )
 
+            # RFI is mandatory before closing a case.
+            rfi_no_val = (attrs.get("rfi_no", None) if "rfi_no" in attrs else getattr(instance, "rfi_no", "")) or ""
+            rfi_doc_val = attrs.get("rfi_document", None) if "rfi_document" in attrs else getattr(instance, "rfi_document", None)
+            if not rfi_no_val.strip() and not rfi_doc_val:
+                raise serializers.ValidationError(
+                    {"rfi_no": "RFI number or RFI document is required before closing this case."}
+                )
+
             has_judgment_file = instance.extra_attachments.filter(
                 document_type=CaseAttachment.DocumentType.JUDGMENT
             ).exists()
@@ -377,4 +419,8 @@ class CaseSerializer(serializers.ModelSerializer):
             data.get("offence"),
             instance.offence_ref,
         )
+        # Always include extra_attachments (including judgment files)
+        data["extra_attachments"] = CaseAttachmentSerializer(
+            instance.extra_attachments.all(), many=True, context=self.context
+        ).data
         return data

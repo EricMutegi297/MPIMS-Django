@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_filters",
     "channels",
+    "django_apscheduler",
     # Local apps
     "apps.users",
     "apps.cases",
@@ -29,6 +30,8 @@ INSTALLED_APPS = [
     "apps.morningbriefs",
     "apps.formations",
     "apps.offences",
+    # Livereload for development
+    "livereload",
 ]
 
 MIDDLEWARE = [
@@ -41,6 +44,8 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Livereload middleware for development
+    "livereload.middleware.LiveReloadScript",
 ]
 
 ROOT_URLCONF = "mpims.urls"
@@ -158,3 +163,7 @@ CHANNEL_LAYERS = {
         # "CONFIG": {"hosts": [("127.0.0.1", 6379)]},
     }
 }
+
+# ── APScheduler ───────────────────────────────────────────────────────────────
+APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
+APSCHEDULER_RUN_NOW_TIMEOUT = 25  # seconds

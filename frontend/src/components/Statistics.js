@@ -17,7 +17,7 @@ function StatCard({ label, value, textColor = "text-white", border = "border-gra
     <div className={`rounded-lg border p-4 ${bg} ${border}`}>
       <p className={`text-xs uppercase tracking-wide opacity-70 ${textColor}`}>{label}</p>
       <p className={`text-3xl font-bold mt-1 ${textColor}`}>
-        {value === null || value === undefined ? "—" : value.toLocaleString()}
+        {value === null || value === undefined ? " - " : value.toLocaleString()}
       </p>
       {sub && <p className="text-xs mt-1 text-gray-500">{sub}</p>}
     </div>
@@ -91,7 +91,7 @@ export default function Statistics({ user }) {
   }, []);
 
   if (loading)
-    return <div className="p-8 text-gray-400 text-center animate-pulse">Loading statistics…</div>;
+    return <div className="p-8 text-gray-400 text-center animate-pulse">Loading statistics...</div>;
   if (error)
     return <div className="p-8 text-red-400 text-center">{error}</div>;
 

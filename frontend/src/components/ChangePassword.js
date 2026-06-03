@@ -101,7 +101,7 @@ export default function ChangePassword({ user }) {
                 </svg>
               </div>
               <p className="text-white font-semibold text-lg">Password changed!</p>
-              <p className="text-gray-400 text-sm mt-1">Redirecting to dashboard…</p>
+              <p className="text-gray-400 text-sm mt-1">Redirecting to dashboard...</p>
             </div>
           ) : (
             <form onSubmit={handleSubmit} noValidate className="space-y-5">
@@ -242,7 +242,7 @@ export default function ChangePassword({ user }) {
                 disabled={loading}
                 className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-2.5 text-sm transition-colors mt-2"
               >
-                {loading ? "Changing…" : "Change Password"}
+                {loading ? "Changing..." : "Change Password"}
               </button>
             </form>
           )}
@@ -251,7 +251,7 @@ export default function ChangePassword({ user }) {
         {/* User info footer */}
         {user && (
           <p className="mt-4 text-center text-xs text-gray-600">
-            Logged in as {user.rank ? `${user.rank} ` : ""}{user.name} · {user.service_number}
+            Logged in as {user.rank ? `${user.rank} ` : ""}{user.name} . {user.service_number}
           </p>
         )}
       </div>
