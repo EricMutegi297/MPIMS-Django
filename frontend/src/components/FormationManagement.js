@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { formationService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 const EMPTY_FORMATION = { name: "", code: "" };
 
@@ -65,6 +66,8 @@ export default function FormationManagement({ user }) {
   const [deleteId, setDeleteId] = useState(null);
 
   const isSuperAdmin = Boolean(user?.is_superuser);
+  useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
 
   const loadFormations = useCallback(async () => {
     setLoading(true);

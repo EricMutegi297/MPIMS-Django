@@ -2,9 +2,27 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, incidentService, formationService, guardroomService, teamService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
 }
 
 function normalizeDateForInput(value) {
@@ -34,18 +52,20 @@ function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <Tag
       onClick={onClick}
-      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
+      className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
         onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""
       }`}
     >
       <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-gray-500 truncate">{label}</p>
-        {loading ? (
-          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
-        ) : (
-          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
-        )}
+        <div className="min-h-[30px] mt-0.5 flex items-center">
+          {loading ? (
+            <div className="h-7 w-12 bg-gray-700 rounded animate-pulse" />
+          ) : (
+            <p className="text-2xl font-bold text-white">{value ?? 0}</p>
+          )}
+        </div>
       </div>
     </Tag>
   );
@@ -142,6 +162,7 @@ export default function BattalionDashboard({ user }) {
   const navigate = useNavigate();
   const isNormalAdmin = user?.role === "admin" && user?.battalion_type === "normal";
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
+  const isInvestigator = user?.role === "investigator";
 
   const [cases, setCases]           = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -173,6 +194,8 @@ export default function BattalionDashboard({ user }) {
   const [assigningTeam, setAssigningTeam] = useState(false);
   const [teamTaskError, setTeamTaskError] = useState("");
   const [teamDetails, setTeamDetails] = useState(null);
+  useAutoDismiss(taskError, setTaskError);
+  useAutoDismiss(teamTaskError, setTeamTaskError);
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const descLimit = 120;
@@ -216,7 +239,7 @@ export default function BattalionDashboard({ user }) {
         new:                 newRes.data.count   || 0,
         newOpen:             (newRes.data.count || 0) + (openRes.data.count || 0),
         tasked:              taskedRes.data.count || 0,
-        under_investigation: uiRes.data.count    || 0,
+        under_investigation: (uiRes.data.count || 0) + (isInvestigator ? (taskedRes.data.count || 0) : 0),
         pending:             peRes.data.count    || 0,
         served:              seRes.data.count    || 0,
         closed:              clRes.data.count    || 0,
@@ -231,7 +254,7 @@ export default function BattalionDashboard({ user }) {
     } finally {
       setLoadingCounts(false);
     }
-  }, []);
+  }, [isInvestigator]);
 
   // Paginated cases for the table
   const loadCases = useCallback(async () => {
@@ -248,8 +271,8 @@ export default function BattalionDashboard({ user }) {
     }
   }, [page]);
 
-  useEffect(() => { loadCounts(); }, [loadCounts]);
-  useEffect(() => { loadCases(); },  [loadCases]);
+  useEffect(() => scheduleAfterPaint(loadCounts), [loadCounts]);
+  useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
   // Load detachments under this battalion (for normal admin modal)
   useEffect(() => {
@@ -341,7 +364,7 @@ export default function BattalionDashboard({ user }) {
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const displayName = user?.name?.split(" ")[0] || "Officer";
+  const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">

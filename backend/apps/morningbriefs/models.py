@@ -4,14 +4,25 @@ from django.conf import settings
 
 class MorningBrief(models.Model):
     class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        READY = "ready", "Ready for Auto Publish"
+        PUBLISHED = "published", "Published"
         PENDING = "pending", "Pending"
         SUBMITTED = "submitted", "Submitted"
         LATE = "late", "Late"
         BELATED = "belated", "Belated"
 
     date = models.DateField()
+    morning_brief_year = models.PositiveSmallIntegerField(null=True, blank=True, editable=False)
+    morning_brief_sequence = models.PositiveIntegerField(null=True, blank=True, editable=False)
     unit = models.ForeignKey(
-        "formations.Unit", on_delete=models.CASCADE, related_name="morning_briefs"
+        "formations.Unit", null=True, blank=True, on_delete=models.CASCADE, related_name="morning_briefs"
+    )
+    battalion = models.ForeignKey(
+        "formations.Battalion", null=True, blank=True, on_delete=models.SET_NULL, related_name="morning_briefs"
+    )
+    detachment = models.ForeignKey(
+        "formations.Detachment", null=True, blank=True, on_delete=models.SET_NULL, related_name="morning_briefs"
     )
     submitted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -19,7 +30,7 @@ class MorningBrief(models.Model):
         on_delete=models.SET_NULL,
         related_name="submitted_briefs",
     )
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.DRAFT)
     total_strength = models.PositiveIntegerField(default=0)
     present = models.PositiveIntegerField(default=0)
     absent = models.PositiveIntegerField(default=0)

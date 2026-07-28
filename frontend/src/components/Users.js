@@ -1,12 +1,15 @@
 ﻿import React, { useEffect, useState, useCallback } from "react";
 import { userService, formationService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 const ROLE_LABELS = {
   admin:        "Admin",
   co:           "Commanding Officer",
+  oc:           "Officer Commanding",
   corps_cmd:    "Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
+  hod:          "Head of Department",
   guardroom_ic: "Guardroom IC",
   detachment:   "IC Det",
   personnel:    "Personnel",
@@ -22,9 +25,11 @@ const ROLE_LABELS = {
 const ROLE_BADGE = {
   admin:        "bg-blue-500/20 text-blue-400",
   co:           "bg-purple-500/20 text-purple-400",
+  oc:           "bg-fuchsia-500/20 text-fuchsia-400",
   corps_cmd:    "bg-red-500/20 text-red-400",
   investigator: "bg-indigo-500/20 text-indigo-400",
   duty_officer: "bg-yellow-500/20 text-yellow-400",
+  hod:          "bg-lime-500/20 text-lime-400",
   guardroom_ic: "bg-orange-500/20 text-orange-400",
   detachment:   "bg-teal-500/20 text-teal-400",
   personnel:    "bg-gray-500/20 text-gray-400",
@@ -47,6 +52,7 @@ export default function Users({ user }) {
   const [error, setError]       = useState("");
   const [search, setSearch]     = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
+  useAutoDismiss(error, setError);
 
   const isHqsAdmin      = user?.role === "admin" && user?.battalion_type === "hqs";
   const isSuperuser     = Boolean(user?.is_superuser);
@@ -56,9 +62,9 @@ export default function Users({ user }) {
 
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
+    ? ["admin","co","oc","corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
     : isBattalionAdmin
-    ? ["co","detachment","personnel","investigator","adj","2ic"]
+    ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
     : isDetachmentIC
     ? ["personnel","investigator"]
     : [];
@@ -68,7 +74,7 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","detachment","personnel","investigator","adj","2ic"]
+      ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
       : isDetachmentIC
       ? ["personnel","investigator"]
       : []
@@ -88,6 +94,7 @@ export default function Users({ user }) {
 
   // Roles that can optionally be scoped to a detachment
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
 
   const loadDetachments = useCallback((battalionId) => {
     if (!battalionId) { setDetachments([]); return; }
@@ -102,14 +109,16 @@ export default function Users({ user }) {
   const [editForm, setEditForm]         = useState({});
   const [editing, setEditing]           = useState(false);
   const [editError, setEditError]       = useState("");
+  useAutoDismiss(createError, setCreateError);
+  useAutoDismiss(editError, setEditError);
 
   // Delete confirm state
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleting, setDeleting]               = useState(false);
 
   const ALL_ROLES = [
-    "admin", "co", "corps_cmd", "investigator", "duty_officer",
-    "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
+    "admin", "co", "oc", "corps_cmd", "investigator", "duty_officer",
+    "hod", "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
     "mpc_hqs", "bsm", "cop", "adj", "2ic",
   ];
 
@@ -209,6 +218,7 @@ export default function Users({ user }) {
     try {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
+      if (!payload.battalion) delete payload.battalion;
       // For battalion admin/IC Det the backend auto-assigns battalion; for superuser use form value
       if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
       await userService.create(payload);
@@ -512,10 +522,16 @@ export default function Users({ user }) {
                   required value={form.role}
                   onChange={(e) => {
                     const newRole = e.target.value;
+                    const isGlobalRole = GLOBAL_LEVEL_ROLES.includes(newRole);
                     const clearDet = !DETACHMENT_LEVEL_ROLES.includes(newRole);
-                    setForm({ ...form, role: newRole, detachment: clearDet ? "" : form.detachment });
+                    setForm({
+                      ...form,
+                      role: newRole,
+                      battalion: isGlobalRole ? "" : form.battalion,
+                      detachment: clearDet || isGlobalRole ? "" : form.detachment,
+                    });
                     // Load detachments when switching to a detachment-level role and battalion is known
-                    if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion) {
+                    if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion && !isGlobalRole) {
                       loadDetachments(form.battalion);
                     }
                   }}
@@ -528,10 +544,17 @@ export default function Users({ user }) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Battalion *</label>
-                {isSuperuser || isHqsAdmin ? (
+                <label className="block text-xs text-gray-400 mb-1">
+                  Battalion {GLOBAL_LEVEL_ROLES.includes(form.role) ? "" : "*"}
+                </label>
+                {GLOBAL_LEVEL_ROLES.includes(form.role) ? (
+                  <input
+                    readOnly value="No battalion required"
+                    className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                  />
+                ) : isSuperuser || isHqsAdmin ? (
                   <select
-                    required value={form.battalion}
+                    required={!GLOBAL_LEVEL_ROLES.includes(form.role)} value={form.battalion}
                     onChange={(e) => {
                       const val = e.target.value;
                       setForm({ ...form, battalion: val, detachment: "" });

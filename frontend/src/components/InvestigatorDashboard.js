@@ -1,10 +1,28 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useSearchParams } from "react-router-dom";
-import { caseService, teamService, attachmentService } from "../services/api";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { caseService, caseBriefService, teamService, attachmentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
 }
 
 function normalizeDateForApi(value) {
@@ -108,8 +126,8 @@ function FilterCard({ cfg, value, isActive, loading, onClick }) {
           <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">active</span>
         )}
       </div>
-      <p className="text-xs text-gray-400 uppercase tracking-wider mb-1 leading-tight">{cfg.label}</p>
-      <p className={`text-2xl font-bold ${cfg.valueColor}`}>{loading ? "..." : value}</p>
+      <p className="min-h-[30px] text-xs text-gray-400 uppercase tracking-wider mb-1 leading-tight">{cfg.label}</p>
+      <p className={`min-h-[32px] text-2xl font-bold ${cfg.valueColor}`}>{loading ? "..." : value}</p>
     </button>
   );
 }
@@ -168,6 +186,13 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [err, setErr] = useState("");
+  const [showBriefUpload, setShowBriefUpload] = useState(false);
+  const [briefSummary, setBriefSummary] = useState("");
+  const [briefFile, setBriefFile] = useState(null);
+  const [briefUploading, setBriefUploading] = useState(false);
+  const [briefUploadErr, setBriefUploadErr] = useState("");
+  useAutoDismiss(err, setErr);
+  useAutoDismiss(briefUploadErr, setBriefUploadErr);
 
   // Activity log state
   const [activityLog, setActivityLog] = useState([]);
@@ -232,6 +257,39 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
     }
   };
 
+  const handleBriefToggle = () => {
+    setShowBriefUpload((prev) => !prev);
+    setBriefUploadErr("");
+    if (!showBriefUpload) {
+      setBriefSummary("");
+      setBriefFile(null);
+    }
+  };
+
+  const handleBriefUpload = async (e) => {
+    e.preventDefault();
+    if (!briefFile) { setBriefUploadErr("Select a brief document to upload."); return; }
+    setBriefUploading(true);
+    setBriefUploadErr("");
+    try {
+      const fd = new FormData();
+      if (briefSummary.trim()) fd.append("summary", briefSummary.trim());
+      fd.append("file", briefFile);
+      await caseBriefService.upload(caseObj.id, fd);
+      setBriefSummary("");
+      setBriefFile(null);
+      setShowBriefUpload(false);
+      refreshActivity();
+      onUploaded();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      const msgs = data?.summary?.[0] || data?.file?.[0] || data?.detail;
+      setBriefUploadErr(msgs || "Failed to upload brief.");
+    } finally {
+      setBriefUploading(false);
+    }
+  };
+
   const handleDelete = async (att) => {
     setDeleting(att.id);
     try {
@@ -261,10 +319,18 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
         : "",
     },
     caseObj.tasking_letter && { key: "tasking", label: "Tasking Letter", url: caseObj.tasking_letter, fileName: caseObj.tasking_letter.split("/").pop() },
+    caseObj.brief && {
+      key: "brief",
+      label: "Brief",
+      url: caseObj.brief.file,
+      fileName: caseObj.brief.file?.split("/").pop() || "Brief document",
+      meta: caseObj.brief.summary ? `Summary: ${caseObj.brief.summary}` : "",
+    },
   ].filter(Boolean);
 
   const totalFileCount = systemFiles.length + attachments.length;
-  const canUpload = caseObj.status === "under_investigation" || caseObj.status === "pending";
+  const caseIsInvestigationScope = ["under_investigation", "tasked", "pending"].includes(caseObj.status);
+  const canUpload = caseIsInvestigationScope;
 
   const tabs = [
     { key: "files",    label: `Files (${totalFileCount})` },
@@ -345,6 +411,46 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                     {uploading ? "Uploading…" : "Upload"}
                   </button>
                 </div>
+                {caseIsInvestigationScope && caseObj.criminal_offence_type !== "dci_civ_police" && (
+                  <button
+                    type="button"
+                    onClick={handleBriefToggle}
+                    className="w-full text-left mt-3 text-indigo-300 hover:text-indigo-100 text-sm font-medium"
+                  >
+                    {showBriefUpload ? "Cancel Brief Upload" : "Upload Brief"}
+                  </button>
+                )}
+                {showBriefUpload && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief Summary</label>
+                      <textarea
+                        value={briefSummary}
+                        onChange={(e) => setBriefSummary(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        rows={3}
+                        placeholder="Brief summary or notes (optional)"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief File</label>
+                      <input
+                        type="file"
+                        onChange={(e) => setBriefFile(e.target.files[0] || null)}
+                        className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-violet-600 file:text-white"
+                      />
+                    </div>
+                    {briefUploadErr && <p className="text-red-400 text-xs">{briefUploadErr}</p>}
+                    <button
+                      type="button"
+                      onClick={handleBriefUpload}
+                      disabled={briefUploading || !briefFile}
+                      className="w-full py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg"
+                    >
+                      {briefUploading ? "Uploading…" : "Upload Brief"}
+                    </button>
+                  </div>
+                )}
                 {err && <p className="text-red-400 text-xs">{err}</p>}
               </form>
             ) : (
@@ -623,6 +729,7 @@ function DescriptionCell({ text }) {
 function ResumeModal({ caseObj, onClose, onDone }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleResume = async () => {
     setSaving(true);
@@ -670,6 +777,7 @@ function CaseUpdateModal({ caseObj, onClose, onDone }) {
   const [referencePdf, setReferencePdf] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleSave = async () => {
     if (!updateText.trim()) {
@@ -780,6 +888,7 @@ function CloseModal({ caseObj, onClose, onDone }) {
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
   const canClose = judgmentFiles.length > 0;
 
   const handleClose = async () => {
@@ -857,32 +966,32 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
   const isCourtMartial = caseObj?.criminal_offence_type === "court_martial";
   const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
   const canServe = isDciCiv ? true : attachCount > 3;
-  const [remarks, setRemarks] = useState("");
+  const [remarks, setRemarks] = useState(caseObj?.remarks || "");
   const [mentioningDate, setMentioningDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
   const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleServe = async () => {
     if (!canServe) return;
     setSaving(true);
     setErr("");
     try {
-      const payload = isDciCiv
-        ? {
-            close_requested: true,
-            remarks: remarks.trim(),
-          }
-        : {
-            status: "served",
-            remarks: remarks.trim(),
-          };
+      const payload = isDciCiv ? { close_requested: true } : { status: "served" };
+      const trimmedRemarks = remarks.trim();
+      if (trimmedRemarks) {
+        payload.remarks = trimmedRemarks;
+      }
       if (isCourtMartial) {
         const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
         if (normalizedMentioningDate) {
           payload.mentioning_date = normalizedMentioningDate;
         }
-        payload.mentioning_remarks = mentioningRemarks.trim();
+        const trimmedMentioningRemarks = mentioningRemarks.trim();
+        if (trimmedMentioningRemarks) {
+          payload.mentioning_remarks = trimmedMentioningRemarks;
+        }
       }
       await caseService.update(caseObj.id, payload);
       onDone();
@@ -978,6 +1087,7 @@ function MentioningPromptModal({ caseObj, onClose, onSaved }) {
   const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleSave = async () => {
     const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
@@ -1064,6 +1174,7 @@ function PendingModal({ caseObj, onClose, onDone }) {
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handlePending = async () => {
     if (!reason.trim()) { setErr("A reason is required."); return; }
@@ -1112,11 +1223,13 @@ function PendingModal({ caseObj, onClose, onDone }) {
   );
 }
 
+// eslint-disable-next-line no-unused-vars
 function GuardroomModal({ caseObj, onClose, onDone }) {
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
+  useAutoDismiss(err, setErr);
 
   const handleRequest = async () => {
     if (!reason.trim()) { setErr("Please provide a reason for the guardroom request."); return; }
@@ -1402,6 +1515,63 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
 }
 
 // ── Generic table (all other filters) ────────────────────────────────────────
+function ClosedRow({ c, onAttach }) {
+  const dateClosed = c.closed_at
+    ? new Date(c.closed_at).toLocaleDateString("en-GB")
+    : c.updated_at
+    ? new Date(c.updated_at).toLocaleDateString("en-GB")
+    : "--";
+
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{dateClosed}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[220px] max-w-[340px]">
+        <span className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</span>
+      </td>
+    </tr>
+  );
+}
+
+function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1280px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
+            <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Offence</th>
+            <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Date Closed</th>
+            <th className="text-left px-3 py-3">Action Taken</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => <ClosedRow key={c.id} c={c} onAttach={onAttach} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   const renderAction = () => {
     const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
@@ -1507,7 +1677,7 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
   );
 }
 
-function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
+function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, isClosed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   if (isUnderInvestigation) {
     return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />;
   }
@@ -1516,6 +1686,9 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
   }
   if (isServed) {
     return <ServedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />;
+  }
+  if (isClosed) {
+    return <ClosedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} />;
   }
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
@@ -1646,6 +1819,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 export default function InvestigatorDashboard({ user }) {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [myTeams, setMyTeams] = useState([]);
   const [cases, setCases] = useState([]);
@@ -1656,7 +1830,6 @@ export default function InvestigatorDashboard({ user }) {
   const [mentioningPromptCase, setMentioningPromptCase] = useState(null);
   const [servingCase, setServingCase] = useState(null);
   const [pendingCase, setPendingCase] = useState(null);
-  const [guardroomCase, setGuardroomCase] = useState(null);
   const [updatingCase, setUpdatingCase] = useState(null);
   const [resumingCase, setResumingCase] = useState(null);
   const [closingCase, setClosingCase] = useState(null);
@@ -1697,16 +1870,17 @@ export default function InvestigatorDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, uiRes, peRes, seRes, clRes] = await Promise.all([
+      const [allRes, uiRes, taskedRes, peRes, seRes, clRes] = await Promise.all([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "under_investigation" }),
+        caseService.list({ page_size: 1, status: "tasked" }),
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
       ]);
       setStatusCounts({
         all:                allRes.data.count || 0,
-        under_investigation: uiRes.data.count || 0,
+        under_investigation: (uiRes.data.count || 0) + (taskedRes.data.count || 0),
         pending:            peRes.data.count || 0,
         served:             seRes.data.count || 0,
         closed:             clRes.data.count || 0,
@@ -1722,9 +1896,19 @@ export default function InvestigatorDashboard({ user }) {
     setLoadingCases(true);
     try {
       const params = { page, page_size: PAGE_SIZE };
-      if (activeFilter !== "all") params.status = activeFilter;
+      if (activeFilter !== "all") {
+        if (activeFilter === "under_investigation") {
+          params["status__in"] = "under_investigation,tasked";
+        } else {
+          params.status = activeFilter;
+        }
+      }
       const res = await caseService.list(params);
-      setCases(toArray(res.data));
+      const loadedCases = toArray(res.data);
+      const normalizedCases = activeFilter === "under_investigation"
+        ? loadedCases.map((c) => (c.status === "tasked" ? { ...c, status: "under_investigation" } : c))
+        : loadedCases;
+      setCases(normalizedCases);
       setTotalCount(res.data.count || 0);
     } catch {
       setCases([]);
@@ -1734,14 +1918,12 @@ export default function InvestigatorDashboard({ user }) {
     }
   }, [page, activeFilter]);
 
-  useEffect(() => {
+  useEffect(() => scheduleAfterPaint(() => {
     loadTeams();
     loadCounts();
-  }, [loadTeams, loadCounts]);
+  }), [loadTeams, loadCounts]);
 
-  useEffect(() => {
-    loadCases();
-  }, [loadCases]);
+  useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
   // With server-side pagination `cases` is only one page, so team-case counts
   // are shown without a per-team breakdown (team cards focus on team composition)
@@ -1880,9 +2062,10 @@ export default function InvestigatorDashboard({ user }) {
           isUnderInvestigation={activeFilter === "under_investigation"}
           isPending={activeFilter === "pending"}
           isServed={activeFilter === "served"}
+          isClosed={activeFilter === "closed"}
           onServe={(c) => setServingCase(c)}
           onMarkPending={(c) => setPendingCase(c)}
-          onGuardroom={(c) => setGuardroomCase(c)}
+          onGuardroom={(c) => navigate(`/dashboard/guardrooms?case=${c.id}`)}
           onCaseUpdate={(c) => setUpdatingCase(c)}
           onResume={(c) => setResumingCase(c)}
           onCloseCase={(c) => setClosingCase(c)}
@@ -1934,14 +2117,6 @@ export default function InvestigatorDashboard({ user }) {
         <PendingModal
           caseObj={pendingCase}
           onClose={() => setPendingCase(null)}
-          onDone={handleAttachmentChanged}
-        />
-      )}
-
-      {guardroomCase && (
-        <GuardroomModal
-          caseObj={guardroomCase}
-          onClose={() => setGuardroomCase(null)}
           onDone={handleAttachmentChanged}
         />
       )}

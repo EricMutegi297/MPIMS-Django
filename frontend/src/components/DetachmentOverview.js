@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import api from "../axiosConfig";
 import { caseService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 /* ─────────────────────── constants ────────────────────────────── */
 
@@ -352,6 +353,7 @@ export default function DetachmentOverview({ user }) {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState("");
   const [drill, setDrill]     = useState(null); // { detId, detName, company, status }
+  useAutoDismiss(error, setError);
 
   const load = useCallback(async () => {
     setLoading(true);

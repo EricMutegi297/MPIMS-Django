@@ -2,25 +2,45 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+}
+
 function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <div
-      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 ${onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""}`}
+      className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 ${onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""}`}
       onClick={onClick}
     >
       <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-gray-500 truncate">{label}</p>
-        {loading ? (
-          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
-        ) : (
-          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
-        )}
+        <div className="min-h-[30px] mt-0.5 flex items-center">
+          {loading ? (
+            <div className="h-7 w-12 bg-gray-700 rounded animate-pulse" />
+          ) : (
+            <p className="text-2xl font-bold text-white">{value ?? 0}</p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -50,6 +70,7 @@ function Footer() {
 export default function DetachmentDashboard({ user }) {
   const navigate = useNavigate();
   const detachmentId = user?.detachment_id ?? user?.detachment;
+  const canManageDetachmentTeams = user?.role === "detachment";
 
   // Cases
   const [cases, setCases]               = useState([]);
@@ -81,6 +102,8 @@ export default function DetachmentDashboard({ user }) {
   const [newTeamMembers, setNewTeamMembers] = useState([]);
   const [creatingTeam, setCreatingTeam]     = useState(false);
   const [createTeamError, setCreateTeamError] = useState("");
+  useAutoDismiss(assignError, setAssignError);
+  useAutoDismiss(createTeamError, setCreateTeamError);
 
   const loadCases = useCallback(async () => {
     setLoadingCases(true);
@@ -135,22 +158,23 @@ export default function DetachmentDashboard({ user }) {
     }
   }, []);
 
-  useEffect(() => {
+  useEffect(() => scheduleAfterPaint(() => {
     loadCases();
     loadCounts();
     loadTeams();
-  }, [loadCases, loadCounts, loadTeams]);
+  }), [loadCases, loadCounts, loadTeams]);
 
   useEffect(() => {
-    if (detachmentId) {
+    if (canManageDetachmentTeams && detachmentId) {
       userService.list({ detachment: detachmentId, page_size: 200 })
         .then((r) => setDetUsers(toArray(r.data)))
         .catch(() => {});
     }
-  }, [detachmentId]);
+  }, [canManageDetachmentTeams, detachmentId]);
 
   // Assign team
   const openAssignModal = (c) => {
+    if (!canManageDetachmentTeams) return;
     setShowCreateTeam(false);
     setAssignModal(c);
     setSelTeam(c.assigned_team || "");
@@ -159,6 +183,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleAssignTeam = async () => {
+    if (!canManageDetachmentTeams) { setAssignError("Only Detachment IC can assign investigation teams."); return; }
     if (!selTeam) { setAssignError("Please select a team."); return; }
     if (!deadline) { setAssignError("Investigation deadline is required."); return; }
     setAssigning(true);
@@ -192,6 +217,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleCreateTeam = async () => {
+    if (!canManageDetachmentTeams) { setCreateTeamError("Only Detachment IC can create investigation teams."); return; }
     if (!newTeamName.trim()) { setCreateTeamError("Team name is required."); return; }
     if (newTeamMembers.length < 2) { setCreateTeamError("Team must have at least 2 members."); return; }
     setCreatingTeam(true);
@@ -221,7 +247,7 @@ export default function DetachmentDashboard({ user }) {
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const displayName = user?.name?.split(" ")[0] || "Officer";
+  const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -289,7 +315,6 @@ export default function DetachmentDashboard({ user }) {
           </button>
         </div>
         <div className="bg-gray-800 rounded-xl overflow-hidden">
-              setAssignModal(null);
           {loadingCases ? (
             <div className="p-4 space-y-3">
               {[1,2,3].map((i) => (
@@ -375,7 +400,7 @@ export default function DetachmentDashboard({ user }) {
                         : <span className="text-gray-600">—</span>}
                     </td>
                     <td className="px-3 md:px-5 py-3">
-                      {c.status === "tasked" && (
+                      {canManageDetachmentTeams && c.status === "tasked" && (
                         <button
                           onClick={() => openAssignModal(c)}
                           className="px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
@@ -402,18 +427,20 @@ export default function DetachmentDashboard({ user }) {
           <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
             Investigation Teams
           </h3>
-          <button
-            onClick={() => {
-              setShowCreateTeam(true);
-              setNewTeamName("");
-              setNewTeamIC("");
-              setNewTeamMembers([]);
-              setCreateTeamError("");
-            }}
-            className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-          >
-            + Create Team
-          </button>
+          {canManageDetachmentTeams && (
+            <button
+              onClick={() => {
+                setShowCreateTeam(true);
+                setNewTeamName("");
+                setNewTeamIC("");
+                setNewTeamMembers([]);
+                setCreateTeamError("");
+              }}
+              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+            >
+              + Create Team
+            </button>
+          )}
         </div>
         {loadingTeams ? (
           <div className="space-y-2">
@@ -448,7 +475,7 @@ export default function DetachmentDashboard({ user }) {
       <Footer />
 
       {/* Assign Team Modal */}
-      {assignModal && (
+      {canManageDetachmentTeams && assignModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
           onClick={() => setAssignModal(null)}
@@ -512,7 +539,7 @@ export default function DetachmentDashboard({ user }) {
       )}
 
       {/* Create Team Modal */}
-      {showCreateTeam && (
+      {canManageDetachmentTeams && showCreateTeam && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
           onClick={() => setShowCreateTeam(false)}

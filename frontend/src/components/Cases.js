@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { caseService, formationService, offenceService, teamService, attachmentService } from "../services/api";
+import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -149,11 +150,19 @@ const ALL_RANKS = [
   "Recruit",
 ];
 
+const INIT_ACCUSED_ENTRY = {
+  name: "",
+  rank: "",
+  service_number: "",
+  service: "",
+  unit: "",
+};
+
 const INIT_CREATE = {
   title: "", description: "", offence: "", offence_ref: "", offence_type: "",
   service_offence_severity: "", criminal_offence_type: "",
-  accused_name: "", accused_rank: "", accused_service_number: "",
-  accused_service: "", accused_unit: "", submitting_unit: "", date_of_offence: "",
+  accused_entries: [INIT_ACCUSED_ENTRY],
+  accused_service: "", submitting_unit: "", date_of_offence: "", place_of_offence: "",
 };
 
 function Badge({ label, style }) {
@@ -208,7 +217,7 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
   const panelRef = useRef(null);
   const dropdownIdRef = useRef(`attachments-${Math.random().toString(36).slice(2)}`);
 
-  const hasRfi = Boolean(c?.rfi_document);
+  const hasRfi = Boolean(c?.rfi_document || c?.rfi_no || c?.rfi_date);
   const hasTaskingLetter = Boolean(c?.tasking_letter);
   const extraCount = Number(c?.extra_attachment_count || 0);
   const totalCount = (hasRfi ? 1 : 0) + (hasTaskingLetter ? 1 : 0) + extraCount;
@@ -282,14 +291,26 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
       {open && (
         <div className="mt-2 rounded-md border border-gray-700 bg-gray-800/90 p-2.5 min-w-[220px] space-y-1.5">
           {hasRfi && (
-            <a
-              href={c.rfi_document}
-              target="_blank"
-              rel="noreferrer"
-              className="block text-blue-400 hover:underline"
-            >
-              RFI Document - View
-            </a>
+            c.rfi_document ? (
+              <a
+                href={c.rfi_document}
+                target="_blank"
+                rel="noreferrer"
+                className="block text-blue-400 hover:underline"
+              >
+                RFI Document - View
+              </a>
+            ) : (
+              <div className="rounded-lg bg-gray-700/60 p-3 text-gray-300 text-xs">
+                <p className="font-medium text-white">RFI reference</p>
+                <p className="text-gray-400 mt-1">
+                  {[c.rfi_no && `No: ${c.rfi_no}`, c.rfi_date && `Date: ${c.rfi_date}`]
+                    .filter(Boolean)
+                    .join(" | ") || "RFI reference"
+                  }
+                </p>
+              </div>
+            )
           )}
 
           {hasTaskingLetter && (
@@ -336,12 +357,106 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
   );
 }
 
+const BRIEF_FORWARD_OPTIONS = [
+  { value: "detachment", label: "IC Det" },
+  { value: "hod", label: "HOD" },
+  { value: "adj", label: "Adjutant" },
+  { value: "2ic", label: "2IC" },
+  { value: "oc", label: "OC" },
+  { value: "co", label: "CO" },
+  { value: "corps_cmd", label: "Corps Commander" },
+];
+
+function caseHasDetachmentRoute(user, caseObj) {
+  return Boolean(caseObj?.tasked_detachment || caseObj?.tasked_detachment_name || user?.detachment);
+}
+
+function briefForwardHistory(brief) {
+  return Array.isArray(brief?.forward_history) ? brief.forward_history : [];
+}
+
+function currentBriefForwardHistory(brief) {
+  const revision = Number(brief?.revision || 1);
+  return briefForwardHistory(brief).filter((event) => Number(event.revision || 1) === revision);
+}
+
+function hasBriefForwardAccess(user, caseObj) {
+  const role = user?.role;
+  if (role === "investigator") return true;
+  const targetByRole = {
+    detachment: "detachment",
+    hod: "hod",
+    adj: "adj",
+    "2ic": "2ic",
+    oc: "oc",
+    co: "co",
+    corps_cmd: "corps_cmd",
+  };
+  const target = targetByRole[role];
+  const brief = caseObj?.brief || {};
+  if (!target) return false;
+  if (brief.forwarded_to_role === target) return true;
+  return briefForwardHistory(brief).some((event) => event.to_role === target || event.from_role === role);
+}
+
+function removeUsedBriefForwardOptions(brief, options) {
+  const usedTargets = new Set(currentBriefForwardHistory(brief).map((event) => event.to_role).filter(Boolean));
+  return options.filter((option) => !usedTargets.has(option.value));
+}
+
+function getBriefForwardOptions(user, caseObj) {
+  const currentTarget = caseObj?.brief?.forwarded_to_role || "";
+  const brief = caseObj?.brief || {};
+  let options = [];
+  if (user?.role === "investigator") {
+    if (caseHasDetachmentRoute(user, caseObj)) {
+      options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "detachment");
+      return removeUsedBriefForwardOptions(brief, options);
+    }
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["hod", "adj"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "detachment" && (currentTarget === "detachment" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["adj", "hod", "2ic", "oc"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "hod" && (currentTarget === "hod" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "adj" && (currentTarget === "adj" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "2ic" && (currentTarget === "2ic" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "co");
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "oc" && (currentTarget === "oc" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (user?.role === "co" && (currentTarget === "co" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "corps_cmd");
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  return [];
+}
+
 export default function Cases({ user, criminalTypeFilter }) {
   const detailPanelRef = useRef(null);
   const actionSaveInFlightRef = useRef(new Set());
   const [searchParams] = useSearchParams();
   const initialStatus = searchParams.get("status");
   const initialFilter = ALL_STATUSES.includes(initialStatus) ? initialStatus : "all";
+  const placeOfOffenceFilter = searchParams.get("place_of_offence") || "";
+  const accusedUnitFilter = searchParams.get("accused_unit") || "";
+  const accusedServiceFilter = searchParams.get("accused_service") || "";
+  const offenceFilter = searchParams.get("offence") || "";
+  const criminalTypeQueryFilter = searchParams.get("criminal_offence_type") || "";
+  const createdFromFilter = searchParams.get("created_from") || "";
+  const createdToFilter = searchParams.get("created_to") || "";
+  const activeCriminalTypeFilter = criminalTypeFilter || criminalTypeQueryFilter;
   const [cases, setCases]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [filter, setFilter]     = useState(initialFilter);
@@ -364,6 +479,13 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [taskFile, setTaskFile]       = useState(null);
   const [taskSaving, setTaskSaving]   = useState(false);
   const [taskErr, setTaskErr]         = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastVariant, setToastVariant] = useState("success");
+
+  function showToast(message, variant = "success") {
+    setToastMessage(message);
+    setToastVariant(variant);
+  }
 
   // Assign team form
   const [showTeam, setShowTeam]       = useState(false);
@@ -377,6 +499,25 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [statusErr, setStatusErr]     = useState("");
   const [rowActionSavingId, setRowActionSavingId] = useState(null);
   const [rowActionErr, setRowActionErr] = useState("");
+
+  // Document upload workflow
+  const [showDocumentUpload, setShowDocumentUpload] = useState(false);
+  const [docLabel, setDocLabel] = useState("");
+  const [docFile, setDocFile] = useState(null);
+  const [docUploading, setDocUploading] = useState(false);
+  const [docUploadErr, setDocUploadErr] = useState("");
+
+  // Brief upload workflow
+  const [showBriefUpload, setShowBriefUpload] = useState(false);
+  const [briefSummary, setBriefSummary] = useState("");
+  const [briefFile, setBriefFile] = useState(null);
+  const [briefUploading, setBriefUploading] = useState(false);
+  const [briefUploadErr, setBriefUploadErr] = useState("");
+  const [showForwardForm, setShowForwardForm] = useState(false);
+  const [forwardRole, setForwardRole] = useState("");
+  const [forwardNote, setForwardNote] = useState("");
+  const [forwarding, setForwarding] = useState(false);
+  const [forwardErr, setForwardErr] = useState("");
 
   // Court Martial workflow
   const [courtMilestones, setCourtMilestones] = useState([]);
@@ -395,6 +536,10 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [judgmentFileRows, setJudgmentFileRows] = useState([]);
   const [courtCloseSaving, setCourtCloseSaving] = useState(false);
   const [courtCloseErr, setCourtCloseErr] = useState("");
+  const [closeActionTaken, setCloseActionTaken] = useState("");
+  const [closeChargesheetFile, setCloseChargesheetFile] = useState(null);
+  const [closePartOneOrdersFile, setClosePartOneOrdersFile] = useState(null);
+  const [closeRfiFile, setCloseRfiFile] = useState(null);
   const [dateFieldActive, setDateFieldActive] = useState(false);
   const [caseActivity, setCaseActivity] = useState([]);
   const [caseActivityLoading, setCaseActivityLoading] = useState(false);
@@ -419,6 +564,19 @@ export default function Cases({ user, criminalTypeFilter }) {
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
     (user?.role === "admin" || user?.role === "co");
   const isInvestigator = user?.role === "investigator";
+  const briefForwardOptions = getBriefForwardOptions(user, selected);
+  useAutoDismiss(createErr, setCreateErr);
+  useAutoDismiss(taskErr, setTaskErr);
+  useAutoDismiss(toastMessage, setToastMessage, 4000);
+  useAutoDismiss(teamErr, setTeamErr);
+  useAutoDismiss(statusErr, setStatusErr);
+  useAutoDismiss(rowActionErr, setRowActionErr);
+  useAutoDismiss(docUploadErr, setDocUploadErr);
+  useAutoDismiss(briefUploadErr, setBriefUploadErr);
+  useAutoDismiss(forwardErr, setForwardErr);
+  useAutoDismiss(courtMilestoneErr, setCourtMilestoneErr);
+  useAutoDismiss(courtMilestoneSuccess, setCourtMilestoneSuccess);
+  useAutoDismiss(courtCloseErr, setCourtCloseErr);
 
   // ── Load cases ────────────────────────────────────────────────────
   function loadCases() {
@@ -482,6 +640,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   }, [searchParams]);
 
   // ── Helpers ───────────────────────────────────────────────────────
+  const todayISO = new Date().toISOString().slice(0, 10);
   function refreshSelected(updated) {
     setSelected(updated);
     setCases((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
@@ -504,6 +663,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     if (!showCourtCloseModal) {
       setCourtCloseCase(null);
       setJudgmentFileRows([]);
+      setCloseActionTaken("");
+      setCloseChargesheetFile(null);
+      setClosePartOneOrdersFile(null);
+      setCloseRfiFile(null);
       setCourtCloseErr("");
     }
   }
@@ -696,6 +859,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     setShowCourtCloseModal(false);
     setCourtCloseCase(null);
     setJudgmentFileRows([]);
+    setCloseActionTaken("");
+    setCloseChargesheetFile(null);
+    setClosePartOneOrdersFile(null);
+    setCloseRfiFile(null);
     setCourtCloseErr("");
   }
 
@@ -706,6 +873,10 @@ export default function Cases({ user, criminalTypeFilter }) {
       setSelected(caseObj);
     }
     setCourtCloseErr("");
+    setCloseActionTaken(caseObj.action_taken || "");
+    setCloseChargesheetFile(null);
+    setClosePartOneOrdersFile(null);
+    setCloseRfiFile(null);
     setJudgmentFileRows([newJudgmentFileRow()]);
     setShowCourtCloseModal(true);
   }
@@ -733,6 +904,23 @@ export default function Cases({ user, criminalTypeFilter }) {
     const rowsWithFiles = judgmentFileRows.filter((r) => r.file);
     if (!rowsWithFiles.length) {
       setCourtCloseErr("Attach at least one Judgment PDF file.");
+      return;
+    }
+
+    if (!String(closeActionTaken || "").trim()) {
+      setCourtCloseErr("Action taken is required before closing this case.");
+      return;
+    }
+
+    const hasExistingChargesheet = Boolean(closeCase.chargesheet);
+    const hasExistingPartOneOrders = Boolean(closeCase.part_one_orders);
+    if (!closeChargesheetFile && !closePartOneOrdersFile && !hasExistingChargesheet && !hasExistingPartOneOrders) {
+      setCourtCloseErr("Attach a Chargesheet or report before closing this case.");
+      return;
+    }
+
+    if (!activeCloseCase?.rfi_document && !closeRfiFile) {
+      setCourtCloseErr("Upload the RFI document before closing this case.");
       return;
     }
 
@@ -775,7 +963,14 @@ export default function Cases({ user, criminalTypeFilter }) {
         await attachmentService.upload(closeCase.id, fd);
       }
 
-      const res = await caseService.update(closeCase.id, { status: "closed" });
+      const fd = new FormData();
+      fd.append("status", "closed");
+      fd.append("action_taken", closeActionTaken.trim());
+      if (closeChargesheetFile) fd.append("chargesheet", closeChargesheetFile);
+      if (closePartOneOrdersFile) fd.append("part_one_orders", closePartOneOrdersFile);
+      if (closeRfiFile) fd.append("rfi_document", closeRfiFile);
+
+      const res = await caseService.update(closeCase.id, fd);
       refreshSelected(res.data);
       setFilter("closed");
       loadCases();
@@ -783,6 +978,10 @@ export default function Cases({ user, criminalTypeFilter }) {
       setShowCourtCloseModal(false);
       setCourtCloseCase(null);
       setJudgmentFileRows([]);
+      setCloseActionTaken("");
+      setCloseChargesheetFile(null);
+      setClosePartOneOrdersFile(null);
+      setCloseRfiFile(null);
       setCourtCloseErr("");
       setStatusErr("");
       setRowActionErr("");
@@ -831,12 +1030,18 @@ export default function Cases({ user, criminalTypeFilter }) {
     const fd = new FormData();
     Object.entries(createForm).forEach(([k, v]) => {
       if (k === "offence_ref") return; // handled separately below
-      if (k === "accused_unit" || k === "submitting_unit") return; // handled separately
+      if (k === "accused_entries") return; // handled separately below
+      if (k === "submitting_unit") return; // handled separately
       if (v) fd.append(k, v);
     });
     if (createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref);
-    if (createForm.accused_unit) fd.append("accused_unit", createForm.accused_unit);
     if (createForm.submitting_unit) fd.append("submitting_unit", createForm.submitting_unit);
+    const validAccusedEntries = (createForm.accused_entries || []).filter((entry) =>
+      Object.values(entry).some((value) => String(value || "").trim())
+    );
+    if (validAccusedEntries.length) {
+      fd.append("accused_entries", JSON.stringify(validAccusedEntries));
+    }
     try {
       await caseService.create(fd);
       setShowCreate(false);
@@ -867,6 +1072,8 @@ export default function Cases({ user, criminalTypeFilter }) {
     if (!taskBattalion) { setTaskErr("Select a battalion."); return; }
     if (!taskFile)      { setTaskErr("Attach a tasking letter."); return; }
     if (!taskingDate)   { setTaskErr("Set a tasking date."); return; }
+    const normalized = normalizeDateForApi(taskingDate);
+    if (normalized !== todayISO) { setTaskErr("Tasking date must be today's date."); return; }
     setTaskSaving(true);
     setTaskErr("");
     const now = new Date();
@@ -878,9 +1085,24 @@ export default function Cases({ user, criminalTypeFilter }) {
     fd.append("tasked_battalion", taskBattalion);
     fd.append("tasking_letter", taskFile);
     fd.append("tasking_date", taskingDateTime);
+    fd.append("status", "tasked");
+    // Debug: log FormData contents to help diagnose backend mismatch
+    try {
+      for (const pair of fd.entries()) {
+        // pair[1] may be a File object — log its name for readability
+        if (pair[1] instanceof File) {
+          console.debug("TaskFormData", pair[0], pair[1].name);
+        } else {
+          console.debug("TaskFormData", pair[0], pair[1]);
+        }
+      }
+    } catch (e) {
+      console.debug("TaskFormData: could not enumerate FormData", e);
+    }
     try {
       const res = await caseService.taskCase(selected.id, fd);
       setCases((prev) => prev.map((c) => (c.id === res.data.id ? res.data : c)));
+      showToast("Case tasked to battalion successfully.", "success");
       setSelected(null);
       setShowTask(false);
       setTaskModalMode(false);
@@ -889,14 +1111,16 @@ export default function Cases({ user, criminalTypeFilter }) {
       setTaskingDate("");
     } catch (err) {
       const d = err.response?.data;
+      let message = "Failed to task case.";
       if (typeof d === "object") {
-        const msgs = Object.entries(d)
+        message = Object.entries(d)
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
           .join(" | ");
-        setTaskErr(msgs);
-      } else {
-        setTaskErr("Failed to task case.");
+      } else if (typeof d === "string" && d.trim()) {
+        message = d;
       }
+      setTaskErr(message);
+      showToast(message, "error");
     } finally {
       setTaskSaving(false);
     }
@@ -918,6 +1142,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       setShowTeam(false);
       setTeamId("");
       setTeamDeadline("");
+      showToast("Investigation team assigned and case moved to Under Investigation.", "success");
     } catch (err) {
       const d = err?.response?.data;
       setTeamErr(
@@ -928,6 +1153,141 @@ export default function Cases({ user, criminalTypeFilter }) {
       );
     } finally {
       setTeamSaving(false);
+    }
+  }
+
+  function toggleDocumentUpload() {
+    setShowDocumentUpload((prev) => !prev);
+    setDocUploadErr("");
+    if (!showDocumentUpload) {
+      setDocLabel("");
+      setDocFile(null);
+    }
+  }
+
+  function toggleBriefUpload() {
+    setShowBriefUpload((prev) => !prev);
+    setBriefUploadErr("");
+    if (!showBriefUpload) {
+      setBriefSummary("");
+      setBriefFile(null);
+    }
+  }
+
+  function toggleForwardForm() {
+    setShowForwardForm((prev) => !prev);
+    setForwardErr("");
+    if (!showForwardForm) {
+      setForwardRole("");
+      setForwardNote("");
+    }
+  }
+
+  async function handleForwardBrief(e) {
+    e.preventDefault();
+    if (!forwardRole) {
+      setForwardErr("Select a recipient role.");
+      return;
+    }
+    if (!briefForwardOptions.some((option) => option.value === forwardRole)) {
+      setForwardErr("You cannot forward this brief to that role at this stage.");
+      return;
+    }
+    setForwarding(true);
+    setForwardErr("");
+    try {
+      const fd = new FormData();
+      fd.append("forwarded_to_role", forwardRole);
+      if (forwardNote.trim()) {
+        fd.append("forwarded_note", forwardNote.trim());
+      }
+      await caseBriefService.update(selected.id, fd);
+      refreshSelected(await caseService.get(selected.id).then((r) => r.data));
+      setShowForwardForm(false);
+      setForwardRole("");
+      setForwardNote("");
+      showToast("Brief forwarded successfully.", "success");
+    } catch (err) {
+      const d = err?.response?.data;
+      if (d?.detail) {
+        setForwardErr(String(d.detail));
+      } else if (d && typeof d === "object") {
+        const msgs = Object.entries(d)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setForwardErr(msgs || "Failed to forward brief.");
+      } else {
+        setForwardErr("Failed to forward brief.");
+      }
+    } finally {
+      setForwarding(false);
+    }
+  }
+
+  async function handleDocumentUpload(e) {
+    e.preventDefault();
+    if (!docFile) { setDocUploadErr("Select a document to upload."); return; }
+    if (!docLabel.trim()) { setDocUploadErr("Enter a document label."); return; }
+    setDocUploading(true);
+    setDocUploadErr("");
+    try {
+      const fd = new FormData();
+      fd.append("label", docLabel.trim());
+      fd.append("file", docFile);
+      const res = await attachmentService.upload(selected.id, fd);
+      refreshSelected(await caseService.get(selected.id).then((r) => r.data));
+      setDocLabel("");
+      setDocFile(null);
+      setShowDocumentUpload(false);
+      showToast("Document uploaded successfully.", "success");
+    } catch (err) {
+      const d = err?.response?.data;
+      if (d?.detail) {
+        setDocUploadErr(String(d.detail));
+      } else if (d && typeof d === "object") {
+        const msgs = Object.entries(d)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setDocUploadErr(msgs || "Failed to upload document.");
+      } else {
+        setDocUploadErr("Failed to upload document.");
+      }
+    } finally {
+      setDocUploading(false);
+    }
+  }
+
+  async function handleBriefUpload(e) {
+    e.preventDefault();
+    if (!briefFile) { setBriefUploadErr("Select a brief document to upload."); return; }
+    setBriefUploading(true);
+    setBriefUploadErr("");
+    try {
+      const fd = new FormData();
+      if (briefSummary.trim()) {
+        fd.append("summary", briefSummary.trim());
+      }
+      fd.append("file", briefFile);
+      await caseBriefService.upload(selected.id, fd);
+      refreshSelected(await caseService.get(selected.id).then((r) => r.data));
+      setBriefSummary("");
+      setBriefFile(null);
+      setShowBriefUpload(false);
+      showToast("Brief uploaded successfully.", "success");
+    } catch (err) {
+      const d = err?.response?.data;
+      if (d?.detail) {
+        setBriefUploadErr(String(d.detail));
+      } else if (d && typeof d === "object") {
+        const msgs = Object.entries(d)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setBriefUploadErr(msgs || "Failed to upload brief.");
+      } else {
+        setBriefUploadErr("Failed to upload brief.");
+      }
+    } finally {
+      setBriefUploading(false);
     }
   }
 
@@ -1013,16 +1373,44 @@ export default function Cases({ user, criminalTypeFilter }) {
   // ── Filter / search ───────────────────────────────────────────────
   const filtered = cases.filter((c) => {
     const matchStatus = filter === "all" || c.status === filter;
-    const matchCriminalType = !criminalTypeFilter || c.criminal_offence_type === criminalTypeFilter;
+    const matchCriminalType = !activeCriminalTypeFilter || c.criminal_offence_type === activeCriminalTypeFilter;
+    const matchPlace =
+      !placeOfOffenceFilter ||
+      String(c.place_of_offence || "").toLowerCase() === placeOfOffenceFilter.toLowerCase();
+    const matchOffence =
+      !offenceFilter ||
+      String(c.offence || c.offence_name || "").toLowerCase() === offenceFilter.toLowerCase();
+    const matchAccusedUnit =
+      !accusedUnitFilter ||
+      String(c.accused_unit || "") === String(accusedUnitFilter) ||
+      (Array.isArray(c.accused_entries) && c.accused_entries.some((entry) => String(entry.unit || "") === String(accusedUnitFilter)));
+    const matchAccusedService =
+      !accusedServiceFilter ||
+      String(c.accused_service || "") === String(accusedServiceFilter) ||
+      (Array.isArray(c.accused_entries) && c.accused_entries.some((entry) => String(entry.service || "") === String(accusedServiceFilter)));
+    const createdDate = c.created_at ? String(c.created_at).slice(0, 10) : "";
+    const matchCreatedFrom = !createdFromFilter || (createdDate && createdDate >= createdFromFilter);
+    const matchCreatedTo = !createdToFilter || (createdDate && createdDate <= createdToFilter);
     const q = search.toLowerCase();
     const matchSearch =
       !q ||
       (c.case_number || "").toLowerCase().includes(q) ||
       (c.title || "").toLowerCase().includes(q) ||
       (c.offence || "").toLowerCase().includes(q) ||
+      (c.place_of_offence || "").toLowerCase().includes(q) ||
       (c.accused_name || "").toLowerCase().includes(q) ||
       (c.accused_rank || "").toLowerCase().includes(q);
-    return matchStatus && matchSearch && matchCriminalType;
+    return (
+      matchStatus &&
+      matchSearch &&
+      matchCriminalType &&
+      matchPlace &&
+      matchOffence &&
+      matchAccusedUnit &&
+      matchAccusedService &&
+      matchCreatedFrom &&
+      matchCreatedTo
+    );
   });
 
   const counts = ALL_STATUSES.reduce((acc, s) => {
@@ -1047,7 +1435,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   }, null);
 
   const descLimit = 120;
-  const isDciFilter = criminalTypeFilter === "dci_civ_police";
+  const isDciFilter = activeCriminalTypeFilter === "dci_civ_police";
   const isAllFilter = filter === "all";
   const isNewFilter = filter === "new" || filter === "open";
   const isTaskedFilter = filter === "tasked";
@@ -1059,6 +1447,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isPendingFilter = filter === "pending";
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
+  const canCloseServedCases = isHqsAdmin || isSuperuser;
 
   useEffect(() => {
     if (isDciFilter && (filter === "pending" || filter === "served")) {
@@ -1076,6 +1465,12 @@ export default function Cases({ user, criminalTypeFilter }) {
     setCreateErr("");
     setShowCreate(false);
     setTaskModalMode(false);
+    const willShow = !showTask;
+    if (willShow) {
+      setTaskBattalion("");
+      setTaskFile(null);
+      setTaskingDate(todayISO);
+    }
     setShowTask((prev) => !prev);
     setTaskErr("");
   }
@@ -1113,7 +1508,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskErr("");
     setTaskBattalion("");
     setTaskFile(null);
-    setTaskingDate("");
+    setTaskingDate(todayISO);
     setShowTask(true);
   }
 
@@ -1149,6 +1544,20 @@ export default function Cases({ user, criminalTypeFilter }) {
   // ── Render ────────────────────────────────────────────────────────
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-4">
+      {toastMessage && (
+        <div className="fixed top-4 right-4 z-50">
+          <div className={`text-white px-4 py-3 rounded-lg shadow-lg border flex items-start gap-3 min-w-[260px] ${toastVariant === "success" ? "bg-green-600 border-green-500/70" : "bg-red-600 border-red-500/70"}`}>
+            <div className="flex-1 text-sm font-medium">{toastMessage}</div>
+            <button
+              type="button"
+              onClick={() => setToastMessage("")}
+              className="text-white/80 hover:text-white"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -1278,7 +1687,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             <p className="p-6 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-            <table className="sticky-head w-full min-w-[1180px] text-sm">
+            <table className="sticky-head w-full min-w-[1380px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-4 py-3 font-medium">Case #</th>
@@ -1326,11 +1735,17 @@ export default function Cases({ user, criminalTypeFilter }) {
                   {isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Remarks</th>
                   )}
+                  {isServedFilter && canCloseServedCases && (
+                    <th className="text-left px-4 py-3 font-medium">Action</th>
+                  )}
                   {isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
                   {isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Date Closed</th>
+                  )}
+                  {isClosedFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Action Taken</th>
                   )}
                 </tr>
               </thead>
@@ -1493,6 +1908,20 @@ export default function Cases({ user, criminalTypeFilter }) {
                     {isServedFilter && (
                       <td className="px-4 py-2.5 text-gray-300">{c.remarks || "--"}</td>
                     )}
+                    {isServedFilter && canCloseServedCases && (
+                      <td className="px-4 py-2.5 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openCourtCloseModal(c);
+                          }}
+                          className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors"
+                        >
+                          Close Case
+                        </button>
+                      </td>
+                    )}
                     {isClosedFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
@@ -1503,6 +1932,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                           : c.updated_at
                           ? new Date(c.updated_at).toLocaleDateString("en-GB")
                           : "--"}
+                      </td>
+                    )}
+                    {isClosedFilter && (
+                      <td className="px-4 py-2.5 text-gray-300 min-w-[220px] max-w-[340px]">
+                        <p className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</p>
                       </td>
                     )}
                   </tr>
@@ -1550,6 +1984,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Offence" value={selected.offence} />
               <Field label="Date of Offence" value={selected.date_of_offence} />
+              <Field label="Place of Offence" value={selected.place_of_offence} />
               <Field
                 label="Created"
                 value={selected.created_at ? new Date(selected.created_at).toLocaleDateString("en-GB") : null}
@@ -1558,7 +1993,27 @@ export default function Cases({ user, criminalTypeFilter }) {
             </div>
 
             {/* Accused */}
-            {(selected.accused_name || selected.accused_rank || selected.accused_service_number) && (
+            {selected.accused_entries?.length > 0 ? (
+              <div>
+                <SectionLabel>Accused entries</SectionLabel>
+                <div className="space-y-3 bg-gray-700/30 rounded-lg p-3">
+                  {selected.accused_entries.map((entry, idx) => (
+                    <div key={idx} className="rounded-xl border border-gray-600 bg-gray-800 p-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <Field label="Name" value={entry.name} />
+                        <Field label="Rank" value={entry.rank} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 mt-2">
+                        <Field label="Service #" value={entry.service_number} />
+                        <Field label="Service" value={entry.service} />
+                      </div>
+                      <Field label="Unit" value={entry.unit_name} />
+                    </div>
+                  ))}
+                  <Field label="Submitting Unit" value={selected.submitting_unit_name} />
+                </div>
+              </div>
+            ) : (selected.accused_name || selected.accused_rank || selected.accused_service_number) && (
               <div>
                 <SectionLabel>Accused</SectionLabel>
                 <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
@@ -1854,23 +2309,35 @@ export default function Cases({ user, criminalTypeFilter }) {
                         type="date"
                         value={taskingDate}
                         onChange={(e) => setTaskingDate(e.target.value)}
+                        min={todayISO}
+                        max={todayISO}
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       />
                       <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
                     </div>
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Tasking Letter *</label>
-                      <input
-                        type="file"
-                        onChange={(e) => setTaskFile(e.target.files[0])}
-                        accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                        className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
-                      />
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="file"
+                          onChange={(e) => { setTaskFile(e.target.files[0]); if (taskErr) setTaskErr(""); }}
+                          accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                          className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleTask}
+                          disabled={taskSaving || !taskFile}
+                          className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                        >
+                          {taskSaving ? "Tasking…" : "Task"}
+                        </button>
+                      </div>
                     </div>
                     <ErrMsg msg={taskErr} />
                     <button
                       type="submit"
-                      disabled={taskSaving}
+                      disabled={taskSaving || !taskFile}
                       className="w-full py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
                     >
                       {taskSaving ? "Tasking…" : "Submit Tasking"}
@@ -1922,6 +2389,156 @@ export default function Cases({ user, criminalTypeFilter }) {
                       className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-sm font-medium"
                     >
                       {teamSaving ? "Assigning…" : "Assign Team"}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {(selected.status === "under_investigation" || selected.status === "pending" || selected.assigned_team_name) && (
+              <div className="border-t border-gray-700 pt-4 space-y-3">
+                <p className="text-sm text-gray-300">Investigation actions</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={toggleDocumentUpload}
+                    className="px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded text-xs font-medium"
+                  >
+                    {showDocumentUpload ? "Cancel Document Upload" : "Upload Document"}
+                  </button>
+                  {!selected.brief ? (
+                    <button
+                      type="button"
+                      onClick={toggleBriefUpload}
+                      className="px-3 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded text-xs font-medium"
+                    >
+                      {showBriefUpload ? "Cancel Brief Upload" : "Upload Brief"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={toggleForwardForm}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-medium"
+                    >
+                      {showForwardForm ? "Cancel Forward" : "Brief uploaded - Forward"}
+                    </button>
+                  )}
+                </div>
+                {showDocumentUpload && (
+                  <form onSubmit={handleDocumentUpload} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Document Label</label>
+                      <input
+                        type="text"
+                        value={docLabel}
+                        onChange={(e) => setDocLabel(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                        placeholder="e.g. Evidence Document"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">File</label>
+                      <input
+                        type="file"
+                        onChange={(e) => setDocFile(e.target.files[0] || null)}
+                        className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-slate-600 file:text-white"
+                      />
+                    </div>
+                    <ErrMsg msg={docUploadErr} />
+                    <button
+                      type="submit"
+                      disabled={docUploading || !docFile || !docLabel.trim()}
+                      className="w-full py-2 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                    >
+                      {docUploading ? "Uploading…" : "Upload Document"}
+                    </button>
+                  </form>
+                )}
+                {showBriefUpload && !selected.brief && (
+                  <form onSubmit={handleBriefUpload} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief Summary</label>
+                      <textarea
+                        value={briefSummary}
+                        onChange={(e) => setBriefSummary(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                        rows={3}
+                        placeholder="Brief summary or notes (optional)"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief File</label>
+                      <input
+                        type="file"
+                        onChange={(e) => setBriefFile(e.target.files[0] || null)}
+                        className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-violet-600 file:text-white"
+                      />
+                    </div>
+                    <ErrMsg msg={briefUploadErr} />
+                    <button
+                      type="submit"
+                      disabled={briefUploading || !briefFile}
+                      className="w-full py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                    >
+                      {briefUploading ? "Uploading…" : "Upload Brief"}
+                    </button>
+                  </form>
+                )}
+                {selected.brief && (
+                  <div className="bg-emerald-600/10 border border-emerald-500/30 rounded-lg p-4 text-sm text-emerald-200">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-white">Brief uploaded</p>
+                        <p className="text-gray-300 text-xs mt-1">
+                          A brief has already been attached. Forward it to HOD or Adjutant instead of uploading another one.
+                        </p>
+                      </div>
+                      <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2.5 py-1 text-[11px] text-emerald-100">
+                        {selected.brief.status === "forwarded" ? "Forwarded" : "Uploaded"}
+                      </span>
+                    </div>
+                    {selected.brief.forwarded_to_role && (
+                      <p className="text-gray-300 text-xs mt-2">
+                        Forwarded to: <span className="text-white">{selected.brief.forwarded_to_role.toUpperCase()}</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+                {showForwardForm && selected.brief && (
+                  <form onSubmit={handleForwardBrief} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Forward brief to</label>
+                      <select
+                        value={forwardRole}
+                        onChange={(e) => setForwardRole(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      >
+                        <option value="">Select role…</option>
+                        {briefForwardOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      {briefForwardOptions.length === 0 && (
+                        <p className="mt-2 text-xs text-gray-400">No forwarding action is available for your role at this stage.</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Note (optional)</label>
+                      <textarea
+                        value={forwardNote}
+                        onChange={(e) => setForwardNote(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                        rows={3}
+                        placeholder="Optional forwarding note"
+                      />
+                    </div>
+                    <ErrMsg msg={forwardErr} />
+                    <button
+                      type="submit"
+                      disabled={forwarding || !forwardRole || briefForwardOptions.length === 0}
+                      className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                    >
+                      {forwarding ? "Forwarding…" : "Forward Brief"}
                     </button>
                   </form>
                 )}
@@ -1984,7 +2601,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                       Close Case
                     </button>
                   )}
-                  {selected.status === "served" && (!selectedIsCourtMartial || isHqsAdmin || isSuperuser) && (
+                  {selected.status === "served" && (isHqsAdmin || isSuperuser) && (
                     <button
                       onClick={() => openCourtCloseModal(selected)}
                       disabled={statusSaving}
@@ -2037,6 +2654,63 @@ export default function Cases({ user, criminalTypeFilter }) {
             </p>
 
             <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Action Taken *</label>
+                  <textarea
+                    value={closeActionTaken}
+                    onChange={(e) => setCloseActionTaken(e.target.value)}
+                    disabled={courtCloseSaving}
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                    rows={4}
+                    placeholder="Describe the action taken in closing this case"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Chargesheet / Report</label>
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                      onChange={(e) => setCloseChargesheetFile(e.target.files?.[0] || null)}
+                      disabled={courtCloseSaving}
+                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+                    />
+                    {closeChargesheetFile && (
+                      <p className="mt-2 text-xs text-gray-300">Selected: {closeChargesheetFile.name}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">Part One Orders</label>
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                      onChange={(e) => setClosePartOneOrdersFile(e.target.files?.[0] || null)}
+                      disabled={courtCloseSaving}
+                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+                    />
+                    {closePartOneOrdersFile && (
+                      <p className="mt-2 text-xs text-gray-300">Selected: {closePartOneOrdersFile.name}</p>
+                    )}
+                  </div>
+                </div>
+                {!activeCloseCase?.rfi_document && (
+                  <div>
+                    <label className="text-xs text-gray-400 block mb-1">RFI Document *</label>
+                    <input
+                      type="file"
+                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                      onChange={(e) => setCloseRfiFile(e.target.files?.[0] || null)}
+                      disabled={courtCloseSaving}
+                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+                    />
+                    {closeRfiFile && (
+                      <p className="mt-2 text-xs text-gray-300">Selected: {closeRfiFile.name}</p>
+                    )}
+                    <p className="text-[11px] text-gray-500 mt-1">RFI upload is required unless an RFI document already exists for this case.</p>
+                  </div>
+                )}
+              </div>
               {judgmentFileRows.map((row, idx) => (
                 <div key={row.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-2 items-end bg-gray-700/40 rounded-lg p-3">
                   <div>
@@ -2172,23 +2846,35 @@ export default function Cases({ user, criminalTypeFilter }) {
                   type="date"
                   value={taskingDate}
                   onChange={(e) => setTaskingDate(e.target.value)}
+                  min={todayISO}
+                  max={todayISO}
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                 />
                 <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
               </div>
               <div>
                 <label className="text-xs text-gray-400 block mb-1">Tasking Letter *</label>
-                <input
-                  type="file"
-                  onChange={(e) => setTaskFile(e.target.files[0])}
-                  accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                  className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
-                />
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    onChange={(e) => { setTaskFile(e.target.files[0]); if (taskErr) setTaskErr(""); }}
+                    accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                    className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTask}
+                    disabled={taskSaving || !taskFile}
+                    className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                  >
+                    {taskSaving ? "Tasking…" : "Task"}
+                  </button>
+                </div>
               </div>
               <ErrMsg msg={taskErr} />
               <button
                 type="submit"
-                disabled={taskSaving}
+                disabled={taskSaving || !taskFile}
                 className="w-full py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
               >
                 {taskSaving ? "Tasking…" : "Submit Tasking"}
@@ -2298,66 +2984,124 @@ export default function Cases({ user, criminalTypeFilter }) {
                   </div>
                 )}
 
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Accused Name</label>
-                  <input
-                    type="text"
-                    value={createForm.accused_name}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, accused_name: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Accused Rank</label>
-                  <select
-                    value={createForm.accused_rank}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, accused_rank: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  >
-                    <option value="">Select rank...</option>
-                    {ALL_RANKS.map((rank) => (
-                      <option key={rank} value={rank}>{rank}</option>
+                <div className="col-span-2">
+                  <SectionLabel>Accused entries (optional)</SectionLabel>
+                  <div className="space-y-3">
+                    {createForm.accused_entries.map((accused, idx) => (
+                      <div key={idx} className="rounded-xl border border-gray-700 bg-gray-900/70 p-3">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <p className="text-sm font-semibold text-white">Accused #{idx + 1}</p>
+                          {createForm.accused_entries.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.filter((_, index) => index !== idx),
+                              }))}
+                              className="text-xs text-red-300 hover:text-red-100"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-xs text-gray-400 block mb-1">Name</label>
+                            <input
+                              type="text"
+                              value={accused.name}
+                              onChange={(e) => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.map((entry, index) =>
+                                  index === idx ? { ...entry, name: e.target.value } : entry
+                                ),
+                              }))}
+                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-400 block mb-1">Rank</label>
+                            <select
+                              value={accused.rank}
+                              onChange={(e) => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.map((entry, index) =>
+                                  index === idx ? { ...entry, rank: e.target.value } : entry
+                                ),
+                              }))}
+                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                            >
+                              <option value="">Select rank...</option>
+                              {ALL_RANKS.map((rank) => (
+                                <option key={rank} value={rank}>{rank}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-400 block mb-1">Service #</label>
+                            <input
+                              type="text"
+                              value={accused.service_number}
+                              onChange={(e) => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.map((entry, index) =>
+                                  index === idx ? { ...entry, service_number: e.target.value } : entry
+                                ),
+                              }))}
+                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-gray-400 block mb-1">Service</label>
+                            <select
+                              value={accused.service}
+                              onChange={(e) => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.map((entry, index) =>
+                                  index === idx ? { ...entry, service: e.target.value } : entry
+                                ),
+                              }))}
+                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                            >
+                              <option value="">Select…</option>
+                              <option value="KA">KA</option>
+                              <option value="KAF">KAF</option>
+                              <option value="KN">KN</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-gray-400 block mb-1">Unit</label>
+                          <select
+                            value={accused.unit}
+                            onChange={(e) => setCreateForm((f) => ({
+                              ...f,
+                              accused_entries: f.accused_entries.map((entry, index) =>
+                                index === idx ? { ...entry, unit: e.target.value } : entry
+                              ),
+                            }))}
+                            className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                          >
+                            <option value="">Select unit…</option>
+                            {units.map((u) => (
+                              <option key={u.id} value={u.id}>{u.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
                     ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Accused Service #</label>
-                  <input
-                    type="text"
-                    value={createForm.accused_service_number}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, accused_service_number: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Service</label>
-                  <select
-                    value={createForm.accused_service}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, accused_service: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  >
-                    <option value="">Select…</option>
-                    <option value="KA">KA</option>
-                    <option value="KAF">KAF</option>
-                    <option value="KN">KN</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Accused Unit</label>
-                  <select
-                    value={createForm.accused_unit}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, accused_unit: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  >
-                    <option value="">Select unit…</option>
-                    {units.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
+                    <button
+                      type="button"
+                      onClick={() => setCreateForm((f) => ({
+                        ...f,
+                        accused_entries: [...(f.accused_entries || []), INIT_ACCUSED_ENTRY],
+                      }))}
+                      className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-3 py-2 text-xs text-gray-200 hover:border-gray-500 hover:bg-gray-700/80"
+                    >
+                      Add another accused
+                    </button>
+                    <p className="text-xs text-gray-400">Leave accused fields blank if the accused is not yet identified.</p>
+                  </div>
                 </div>
 
                 <div>
@@ -2381,6 +3125,17 @@ export default function Cases({ user, criminalTypeFilter }) {
                     value={createForm.date_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, date_of_offence: e.target.value }))}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <label className="text-xs text-gray-400 block mb-1">Place of Offence</label>
+                  <input
+                    type="text"
+                    value={createForm.place_of_offence}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, place_of_offence: e.target.value }))}
+                    placeholder="e.g. Embakasi, Kahawa, barracks, office, road, or scene"
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 placeholder-gray-500"
                   />
                 </div>
 

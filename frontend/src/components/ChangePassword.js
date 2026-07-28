@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 export default function ChangePassword({ user }) {
   const navigate = useNavigate();
@@ -18,6 +19,7 @@ export default function ChangePassword({ user }) {
   const [serverError, setServerError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  useAutoDismiss(serverError, setServerError);
 
   const toggleShow = (field) =>
     setShow((prev) => ({ ...prev, [field]: !prev[field] }));

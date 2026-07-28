@@ -4,7 +4,20 @@ from decouple import config
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config("SECRET_KEY")
-DEBUG = config("DEBUG", default=True, cast=bool)
+
+
+def _as_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "debug", "development", "dev"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
+        return False
+    return default
+
+
+DEBUG = _as_bool(config("DEBUG", default=True))
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
 
@@ -24,6 +37,7 @@ INSTALLED_APPS = [
     "apps.users",
     "apps.cases",
     "apps.incidents",
+    "apps.dutyrooms",
     "apps.guardrooms",
     "apps.notifications",
     "apps.morningbriefs",
@@ -148,6 +162,7 @@ EMAIL_USE_TLS      = config("EMAIL_USE_TLS",      default=True, cast=bool)
 EMAIL_HOST_USER    = config("EMAIL_HOST_USER",    default="")
 EMAIL_HOST_PASSWORD= config("EMAIL_HOST_PASSWORD",default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="MPIMS <noreply@mpims.ke>")
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 
 # ── Channels (WebSocket) ──────────────────────────────────────────────────────
 CHANNEL_LAYERS = {

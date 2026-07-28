@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { caseService, formationService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function toArr(data) {
@@ -23,6 +24,8 @@ export default function Formations({ user }) {
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState("");
   const [message,    setMessage]    = useState("");
+  useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
 
   const [fmModal,      setFmModal]      = useState(null);
   const [fmSaving,     setFmSaving]     = useState(false);

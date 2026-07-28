@@ -1,5 +1,11 @@
-from rest_framework import serializers
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
+from rest_framework import serializers
+
+from .access import is_battalion_admin, is_detachment_ic
 from .models import User
 
 
@@ -52,6 +58,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
         battalion = data.get("battalion")
         detachment = data.get("detachment")
         if role not in exempt_roles and not battalion and not detachment:
+            request = self.context.get("request")
+            actor = getattr(request, "user", None)
+            if is_battalion_admin(actor) or is_detachment_ic(actor):
+                return data
             raise serializers.ValidationError(
                 {"battalion": "Battalion or Detachment is required for this role."}
             )
@@ -88,3 +98,31 @@ class ChangePasswordSerializer(serializers.Serializer):
         if not user.check_password(value):
             raise serializers.ValidationError("Current password is incorrect.")
         return value
+
+    def validate_new_password(self, value):
+        validate_password(value, self.context["request"].user)
+        return value
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=6)
+
+    def validate(self, data):
+        try:
+            uid = force_str(urlsafe_base64_decode(data["uid"]))
+            user = User.objects.get(pk=uid, is_active=True)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            raise serializers.ValidationError({"token": "The password reset link is invalid or has expired."})
+
+        if not default_token_generator.check_token(user, data["token"]):
+            raise serializers.ValidationError({"token": "The password reset link is invalid or has expired."})
+
+        validate_password(data["new_password"], user)
+        data["user"] = user
+        return data

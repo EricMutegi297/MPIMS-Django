@@ -1,6 +1,7 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -8,6 +9,7 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  useAutoDismiss(error, setError);
 
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -43,7 +45,7 @@ export default function Login() {
             MPIMS
           </h1>
           <p className="text-gray-400 mt-1 text-sm">
-            Military Police Information Management System
+            Military Police Investigation Management System
           </p>
         </div>
 
@@ -65,7 +67,7 @@ export default function Login() {
               onChange={handleChange}
               required
               className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="e.g. MP123456"
+              placeholder="e.g. 151297"
             />
           </div>
 
@@ -103,6 +105,11 @@ export default function Login() {
                   </svg>
                 )}
               </button>
+            </div>
+            <div className="mt-2 text-right">
+              <Link to="/forgot-password" className="text-xs text-blue-400 hover:text-blue-300">
+                Forgot password?
+              </Link>
             </div>
           </div>
 

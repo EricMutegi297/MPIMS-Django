@@ -22,9 +22,11 @@ class User(AbstractBaseUser, PermissionsMixin):
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
         CO = "co", "Commanding Officer"
+        OC = "oc", "Officer Commanding"
         CORPS_CMD = "corps_cmd", "Corps Commander"
         INVESTIGATOR = "investigator", "Investigator"
         DUTY_OFFICER = "duty_officer", "Duty Officer"
+        HOD = "hod", "Head of Department"
         GUARDROOM_IC = "guardroom_ic", "Guardroom IC"
         DETACHMENT = "detachment", "Detachment IC"
         PERSONNEL = "personnel", "Personnel"

@@ -1,14 +1,23 @@
-﻿from rest_framework import serializers
+﻿import json
+from collections.abc import Mapping
+
+from django.utils import timezone
+from rest_framework import serializers
 from django.db.models import Q
 from .models import (
     Case,
     CaseActivityLog,
+    CaseAccused,
     CaseAttachment,
+    CaseBackBrief,
+    CaseBrief,
+    CaseBriefForward,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
+    ExhibitStorageRequest,
     InvestigationTeam,
 )
-from apps.formations.models import Battalion
+from apps.formations.models import Battalion, Unit
 from apps.users.models import User
 
 
@@ -46,6 +55,20 @@ class CaseCourtMartialHearingSerializer(serializers.ModelSerializer):
             "id", "case", "hearing_date", "remarks", "created_by", "created_by_name", "created_at", "updated_at",
         ]
         read_only_fields = ["case", "created_by", "created_by_name", "created_at", "updated_at"]
+
+
+class CaseAccusedSerializer(serializers.ModelSerializer):
+    unit_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CaseAccused
+        fields = ["id", "name", "rank", "service_number", "service", "unit", "unit_name"]
+        extra_kwargs = {
+            "unit": {"required": False, "allow_null": True},
+        }
+
+    def get_unit_name(self, obj):
+        return obj.unit.name if obj.unit else None
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
@@ -88,6 +111,333 @@ class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
 
     def get_action_recorded_by_name(self, obj):
         return str(obj.action_recorded_by) if obj.action_recorded_by else None
+
+
+class CaseBackBriefSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CaseBackBrief
+        fields = [
+            "id",
+            "brief",
+            "file",
+            "note",
+            "uploaded_by",
+            "uploaded_by_name",
+            "uploaded_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "brief",
+            "uploaded_by",
+            "uploaded_by_name",
+            "uploaded_at",
+            "updated_at",
+        ]
+
+    def get_uploaded_by_name(self, obj):
+        return str(obj.uploaded_by) if obj.uploaded_by else None
+
+
+class CaseBriefSerializer(serializers.ModelSerializer):
+    attached_by_name = serializers.SerializerMethodField()
+    forwarded_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+    forward_history = serializers.SerializerMethodField()
+    back_brief = CaseBackBriefSerializer(read_only=True)
+
+    class Meta:
+        model = CaseBrief
+        fields = [
+            "id",
+            "case",
+            "file",
+            "summary",
+            "status",
+            "forwarded_to_role",
+            "forwarded_note",
+            "forwarded_at",
+            "forwarded_from_role",
+            "forwarded_by",
+            "forwarded_by_name",
+            "approved_by",
+            "approved_by_name",
+            "approved_at",
+            "approved_note",
+            "revision",
+            "forward_history",
+            "back_brief",
+            "attached_by",
+            "attached_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "case",
+            "status",
+            "forwarded_at",
+            "forwarded_from_role",
+            "forwarded_by",
+            "forwarded_by_name",
+            "approved_by",
+            "approved_by_name",
+            "approved_at",
+            "approved_note",
+            "revision",
+            "forward_history",
+            "back_brief",
+            "attached_by",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_attached_by_name(self, obj):
+        return str(obj.attached_by) if obj.attached_by else None
+
+    def get_forwarded_by_name(self, obj):
+        return str(obj.forwarded_by) if obj.forwarded_by else None
+
+    def get_approved_by_name(self, obj):
+        return str(obj.approved_by) if obj.approved_by else None
+
+    def get_forward_history(self, obj):
+        events = obj.forward_history.select_related("forwarded_by").all()
+        return CaseBriefForwardSerializer(events, many=True, context=self.context).data
+
+
+class CaseBriefForwardSerializer(serializers.ModelSerializer):
+    forwarded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CaseBriefForward
+        fields = [
+            "id",
+            "from_role",
+            "to_role",
+            "forwarded_by",
+            "forwarded_by_name",
+            "note",
+            "revision",
+            "forwarded_at",
+        ]
+        read_only_fields = fields
+
+    def get_forwarded_by_name(self, obj):
+        return str(obj.forwarded_by) if obj.forwarded_by else None
+
+
+class ExhibitStorageRequestSerializer(serializers.ModelSerializer):
+    case_number = serializers.SerializerMethodField()
+    case_offence = serializers.SerializerMethodField()
+    case_accused = serializers.SerializerMethodField()
+    case_accused_service_number = serializers.SerializerMethodField()
+    parent_request_label = serializers.SerializerMethodField()
+    requested_by_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
+    stored_by_name = serializers.SerializerMethodField()
+    lifecycle_requested_by_name = serializers.SerializerMethodField()
+    lifecycle_reviewed_by_name = serializers.SerializerMethodField()
+    target_detachment_name = serializers.SerializerMethodField()
+    target_detachment_battalion = serializers.SerializerMethodField()
+    target_battalion_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExhibitStorageRequest
+        fields = [
+            "id",
+            "case",
+            "parent_request",
+            "parent_request_label",
+            "case_number",
+            "case_offence",
+            "case_accused",
+            "case_accused_service_number",
+            "exhibit_name",
+            "description",
+            "quantity",
+            "photo",
+            "storage_scope",
+            "target_detachment",
+            "target_detachment_name",
+            "target_detachment_battalion",
+            "target_battalion",
+            "target_battalion_name",
+            "status",
+            "requested_by",
+            "requested_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
+            "stored_by",
+            "stored_by_name",
+            "reviewer_comments",
+            "decline_reason",
+            "storage_reference",
+            "physical_location",
+            "lifecycle_action",
+            "lifecycle_reason",
+            "lifecycle_recipient_name",
+            "lifecycle_recipient_identifier",
+            "lifecycle_authority",
+            "lifecycle_disposal_mode",
+            "lifecycle_attachment",
+            "lifecycle_requested_by",
+            "lifecycle_requested_by_name",
+            "lifecycle_reviewed_by",
+            "lifecycle_reviewed_by_name",
+            "lifecycle_review_comments",
+            "lifecycle_decline_reason",
+            "reviewed_at",
+            "stored_at",
+            "lifecycle_requested_at",
+            "lifecycle_reviewed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "status",
+            "requested_by",
+            "requested_by_name",
+            "reviewed_by",
+            "reviewed_by_name",
+            "stored_by",
+            "stored_by_name",
+            "reviewer_comments",
+            "decline_reason",
+            "storage_reference",
+            "physical_location",
+            "lifecycle_action",
+            "lifecycle_reason",
+            "lifecycle_recipient_name",
+            "lifecycle_recipient_identifier",
+            "lifecycle_authority",
+            "lifecycle_disposal_mode",
+            "lifecycle_attachment",
+            "lifecycle_requested_by",
+            "lifecycle_requested_by_name",
+            "lifecycle_reviewed_by",
+            "lifecycle_reviewed_by_name",
+            "lifecycle_review_comments",
+            "lifecycle_decline_reason",
+            "reviewed_at",
+            "stored_at",
+            "lifecycle_requested_at",
+            "lifecycle_reviewed_at",
+            "created_at",
+            "updated_at",
+            "target_detachment_name",
+            "target_detachment_battalion",
+            "target_battalion_name",
+            "case_accused_service_number",
+            "parent_request_label",
+        ]
+
+    def get_case_number(self, obj):
+        return obj.case.case_number if obj.case else None
+
+    def get_case_offence(self, obj):
+        if not obj.case:
+            return None
+        return obj.case.offence or (obj.case.offence_ref.name if obj.case.offence_ref else None)
+
+    def get_case_accused(self, obj):
+        return obj.case.accused_name if obj.case else None
+
+    def get_case_accused_service_number(self, obj):
+        return obj.case.accused_service_number if obj.case else None
+
+    def get_parent_request_label(self, obj):
+        if not obj.parent_request:
+            return None
+        case_number = obj.parent_request.case.case_number if obj.parent_request.case else "Case"
+        return f"{obj.parent_request.exhibit_name} ({case_number})"
+
+    def get_requested_by_name(self, obj):
+        return str(obj.requested_by) if obj.requested_by else None
+
+    def get_reviewed_by_name(self, obj):
+        return str(obj.reviewed_by) if obj.reviewed_by else None
+
+    def get_stored_by_name(self, obj):
+        return str(obj.stored_by) if obj.stored_by else None
+
+    def get_lifecycle_requested_by_name(self, obj):
+        return str(obj.lifecycle_requested_by) if obj.lifecycle_requested_by else None
+
+    def get_lifecycle_reviewed_by_name(self, obj):
+        return str(obj.lifecycle_reviewed_by) if obj.lifecycle_reviewed_by else None
+
+    def get_target_detachment_name(self, obj):
+        return obj.target_detachment.name if obj.target_detachment else None
+
+    def get_target_detachment_battalion(self, obj):
+        return obj.target_detachment.battalion_id if obj.target_detachment else None
+
+    def get_target_battalion_name(self, obj):
+        return obj.target_battalion.name if obj.target_battalion else None
+
+    def _case_assigned_to_user(self, case, user):
+        if not case or not user:
+            return False
+        if case.assigned_to_id == user.id:
+            return True
+        team = getattr(case, "assigned_team", None)
+        if not team:
+            return False
+        if team.team_ic_id == user.id:
+            return True
+        return team.members.filter(id=user.id).exists()
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        if self.instance is not None:
+            return attrs
+
+        if not user or not user.is_authenticated or user.role != User.Role.INVESTIGATOR:
+            raise serializers.ValidationError("Only investigators can request exhibit storage.")
+
+        case = attrs.get("case")
+        if not self._case_assigned_to_user(case, user):
+            raise serializers.ValidationError({"case": "You can only request exhibit storage for cases assigned to you or your investigation team."})
+
+        parent_request = attrs.get("parent_request")
+        if parent_request:
+            if parent_request.case_id != case.id:
+                raise serializers.ValidationError({"parent_request": "Additional exhibits must belong to the same case as the stored exhibit."})
+            if parent_request.status != ExhibitStorageRequest.Status.STORED:
+                raise serializers.ValidationError({"parent_request": "Additional exhibits can only be added under an exhibit that has already been stored."})
+
+        storage_scope = attrs.get("storage_scope")
+        if storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT:
+            if not user.detachment_id:
+                raise serializers.ValidationError({"storage_scope": "You must belong to a detachment to request detachment storage."})
+            attrs["target_detachment"] = user.detachment
+            attrs["target_battalion"] = None
+        elif storage_scope == ExhibitStorageRequest.StorageScope.BATTALION:
+            battalion = attrs.get("target_battalion") or user.battalion or getattr(user.detachment, "battalion", None)
+            if not battalion:
+                raise serializers.ValidationError({"target_battalion": "Select the battalion that will store the exhibit."})
+            if battalion.battalion_type == Battalion.BattalionType.SPECIAL:
+                attrs["storage_scope"] = ExhibitStorageRequest.StorageScope.SPECIAL_BATTALION
+            attrs["target_battalion"] = battalion
+            attrs["target_detachment"] = None
+        elif storage_scope == ExhibitStorageRequest.StorageScope.SPECIAL_BATTALION:
+            target = attrs.get("target_battalion")
+            if not target:
+                raise serializers.ValidationError({"target_battalion": "Select the special battalion that will store the exhibit."})
+            if target.battalion_type != Battalion.BattalionType.SPECIAL:
+                raise serializers.ValidationError({"target_battalion": "Selected battalion must be a Special battalion."})
+            attrs["target_detachment"] = None
+        else:
+            raise serializers.ValidationError({"storage_scope": "Select where the exhibit should be stored."})
+
+        quantity = attrs.get("quantity") or 1
+        if quantity < 1:
+            raise serializers.ValidationError({"quantity": "Quantity must be at least 1."})
+
+        return attrs
 
 
 class CaseActivityLogSerializer(serializers.ModelSerializer):
@@ -220,11 +570,37 @@ class CaseSerializer(serializers.ModelSerializer):
     assigned_team_name = serializers.SerializerMethodField()
     tasked_detachment_name = serializers.SerializerMethodField()
     extra_attachment_count = serializers.SerializerMethodField()
+    brief = CaseBriefSerializer(read_only=True)
+    accused_entries = CaseAccusedSerializer(many=True, required=False)
+
+    def __init__(self, *args, **kwargs):
+        data = kwargs.get("data")
+        if isinstance(data, Mapping):
+            normalized = {}
+            if hasattr(data, "lists"):
+                for key, values in data.lists():
+                    normalized[key] = values[0] if len(values) == 1 else values
+            else:
+                for key, value in data.items():
+                    normalized[key] = value[0] if isinstance(value, list) and len(value) == 1 else value
+            kwargs["data"] = normalized
+        super().__init__(*args, **kwargs)
 
     class Meta:
         model = Case
         fields = "__all__"
         read_only_fields = ["case_number", "created_at", "updated_at", "served_at"]
+
+    def to_internal_value(self, data):
+        if isinstance(data, Mapping):
+            accused_entries = data.get("accused_entries")
+            if isinstance(accused_entries, str):
+                try:
+                    data = dict(data)
+                    data["accused_entries"] = json.loads(accused_entries)
+                except (ValueError, TypeError):
+                    raise serializers.ValidationError({"accused_entries": "Invalid JSON format."})
+        return super().to_internal_value(data)
 
     @staticmethod
     def _resolved_offence_text(raw_offence, offence_ref):
@@ -252,6 +628,10 @@ class CaseSerializer(serializers.ModelSerializer):
             "tasking_date",
             getattr(instance, "tasking_date", None),
         )
+        assigned_team = attrs.get(
+            "assigned_team",
+            getattr(instance, "assigned_team", None),
+        )
         offence_ref = attrs.get(
             "offence_ref",
             getattr(instance, "offence_ref", None),
@@ -268,6 +648,28 @@ class CaseSerializer(serializers.ModelSerializer):
         prev_status = getattr(instance, "status", None)
         mentioning_date = attrs.get("mentioning_date", getattr(instance, "mentioning_date", None))
         mentioning_remarks = attrs.get("mentioning_remarks", getattr(instance, "mentioning_remarks", ""))
+
+        accused_entries = attrs.get("accused_entries")
+        if isinstance(accused_entries, str):
+            try:
+                accused_entries = json.loads(accused_entries)
+            except (ValueError, TypeError):
+                raise serializers.ValidationError({"accused_entries": "Invalid JSON format."})
+            attrs["accused_entries"] = accused_entries
+
+        if accused_entries is not None:
+            if not isinstance(accused_entries, list):
+                raise serializers.ValidationError({"accused_entries": "Must be a list of accused entries."})
+            filtered_entries = []
+            for item in accused_entries:
+                if not isinstance(item, dict):
+                    raise serializers.ValidationError({"accused_entries": "Each accused entry must be an object."})
+                if any(
+                    str(item.get(field, "") or "").strip()
+                    for field in ["name", "rank", "service_number", "service", "unit"]
+                ):
+                    filtered_entries.append(item)
+            attrs["accused_entries"] = filtered_entries
 
         if self.instance is None:
             # Force status to "new" on creation
@@ -302,12 +704,50 @@ class CaseSerializer(serializers.ModelSerializer):
                 {"tasking_date": "Tasking date and time is required when tasking a battalion."}
             )
 
+        if tasked_battalion and tasking_letter and tasking_date and "status" not in attrs:
+            attrs["status"] = Case.Status.TASKED
+
+        if "assigned_team" in attrs and user and user.is_authenticated:
+            can_assign_team = (
+                user.is_superuser
+                or user.role in {User.Role.ADMIN, User.Role.CO, User.Role.DETACHMENT}
+            )
+            if not can_assign_team:
+                raise serializers.ValidationError({"assigned_team": "You are not allowed to assign investigation teams."})
+
         is_court_martial = criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
+        is_dci = criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
+        if assigned_team and not is_court_martial and not is_dci and "status" not in attrs:
+            attrs["status"] = Case.Status.UNDER_INVESTIGATION
+            if not attrs.get("team_assigned_at") and not getattr(instance, "team_assigned_at", None):
+                attrs["team_assigned_at"] = timezone.now()
+
+
+        if target_status == Case.Status.SERVED and not getattr(instance, "served_at", None):
+            attrs["served_at"] = timezone.now()
 
         if target_status == Case.Status.CLOSED:
             if not instance:
                 raise serializers.ValidationError(
                     {"status": "Cases can only be closed after creation and service workflow."}
+                )
+
+            if not str(attrs.get("action_taken") or getattr(instance, "action_taken", "") or "").strip():
+                raise serializers.ValidationError(
+                    {"action_taken": "Action taken is required before closing this case."}
+                )
+
+            if not (
+                attrs.get("chargesheet") or getattr(instance, "chargesheet", None)
+                or attrs.get("part_one_orders") or getattr(instance, "part_one_orders", None)
+            ):
+                raise serializers.ValidationError(
+                    {"chargesheet": "Attach a Chargesheet or report before closing this case."}
+                )
+
+            if not (attrs.get("rfi_document") or getattr(instance, "rfi_document", None)):
+                raise serializers.ValidationError(
+                    {"rfi_document": "Upload the RFI document before closing this case."}
                 )
 
             has_judgment_file = instance.extra_attachments.filter(
@@ -340,6 +780,54 @@ class CaseSerializer(serializers.ModelSerializer):
             attrs["offence"] = resolved_offence
 
         return attrs
+
+    def _sync_legacy_accused_fields(self, case):
+        first_accused = case.accused_entries.order_by("created_at").first()
+        if first_accused:
+            case.accused_name = first_accused.name or ""
+            case.accused_rank = first_accused.rank or ""
+            case.accused_service_number = first_accused.service_number or ""
+            case.accused_service = first_accused.service or ""
+            case.accused_unit = first_accused.unit
+        else:
+            case.accused_name = ""
+            case.accused_rank = ""
+            case.accused_service_number = ""
+            case.accused_service = ""
+            case.accused_unit = None
+        case.save(update_fields=[
+            "accused_name",
+            "accused_rank",
+            "accused_service_number",
+            "accused_service",
+            "accused_unit",
+        ])
+
+    def _create_or_update_accused_entries(self, case, accused_entries):
+        case.accused_entries.all().delete()
+        for entry in accused_entries:
+            case.accused_entries.create(
+                name=(entry.get("name") or "").strip(),
+                rank=(entry.get("rank") or "").strip(),
+                service_number=(entry.get("service_number") or "").strip(),
+                service=(entry.get("service") or "").strip(),
+                unit=entry.get("unit") or None,
+            )
+        self._sync_legacy_accused_fields(case)
+
+    def create(self, validated_data):
+        accused_entries = validated_data.pop("accused_entries", None)
+        case = super().create(validated_data)
+        if accused_entries is not None:
+            self._create_or_update_accused_entries(case, accused_entries)
+        return case
+
+    def update(self, instance, validated_data):
+        accused_entries = validated_data.pop("accused_entries", None)
+        case = super().update(instance, validated_data)
+        if accused_entries is not None:
+            self._create_or_update_accused_entries(case, accused_entries)
+        return case
 
     def get_assigned_to_name(self, obj):
         return str(obj.assigned_to) if obj.assigned_to else None

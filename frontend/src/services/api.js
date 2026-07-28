@@ -1,6 +1,8 @@
 
 import api from "../axiosConfig";
 
+const USER_CACHE_KEY = "mpims_user_cache";
+
 export const offenceService = {
   list: () => api.get("/api/offences/"),
   get: (id) => api.get(`/api/offences/${id}/`),
@@ -11,16 +13,25 @@ export const offenceService = {
 
 export const authService = {
   login: async (service_number, password) => {
+    sessionStorage.removeItem("access_token");
+    sessionStorage.removeItem("refresh_token");
+    sessionStorage.removeItem(USER_CACHE_KEY);
     const res = await api.post("/api/auth/login/", { service_number, password });
     sessionStorage.setItem("access_token", res.data.access);
     sessionStorage.setItem("refresh_token", res.data.refresh);
+    if (res.data.user) {
+      sessionStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data.user));
+    }
     return res;
   },
   logout: async () => {
-    const res = await api.post("/api/auth/logout/");
-    sessionStorage.removeItem("access_token");
-    sessionStorage.removeItem("refresh_token");
-    return res;
+    try {
+      return await api.post("/api/auth/logout/");
+    } finally {
+      sessionStorage.removeItem("access_token");
+      sessionStorage.removeItem("refresh_token");
+      sessionStorage.removeItem(USER_CACHE_KEY);
+    }
   },
   me: () => api.get("/api/auth/me/"),
   changePassword: async (data) => {
@@ -31,28 +42,22 @@ export const authService = {
     }
     return res;
   },
+  requestPasswordReset: (email) => api.post("/api/auth/password-reset/", { email }),
+  confirmPasswordReset: (data) => api.post("/api/auth/password-reset/confirm/", data),
 };
 
 export const caseService = {
   list: (params) => api.get("/api/cases/", { params }),
   get: (id) => api.get(`/api/cases/${id}/`),
   activity: (id) => api.get(`/api/cases/${id}/activity/`),
-  create: (formData) =>
-    api.post("/api/cases/", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }),
-  update: (id, data) =>
-    api.patch(`/api/cases/${id}/`, data, data instanceof FormData ? {
-      headers: { "Content-Type": "multipart/form-data" },
-    } : undefined),
-  taskCase: (id, formData) =>
-    api.patch(`/api/cases/${id}/`, formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }),
-  close: (id, formData) =>
-    api.patch(`/api/cases/${id}/`, formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }),
+  statistics: (params) => api.get("/api/cases/statistics/", { params }),
+  briefableCases: () => api.get("/api/cases/briefable-cases/"),
+  briefs: () => api.get("/api/cases/briefs/"),
+  backBriefs: () => api.get("/api/cases/back-briefs/"),
+  create: (formData) => api.post("/api/cases/", formData),
+  update: (id, data) => api.patch(`/api/cases/${id}/`, data),
+  taskCase: (id, formData) => api.patch(`/api/cases/${id}/`, formData),
+  close: (id, formData) => api.patch(`/api/cases/${id}/`, formData),
   listCourtHearings: (id) => api.get(`/api/cases/${id}/court-hearings/`),
   addCourtHearing: (id, data) => api.post(`/api/cases/${id}/court-hearings/`, data),
   updateCourtHearing: (id, hearingId, data) => api.patch(`/api/cases/${id}/court-hearings/${hearingId}/`, data),
@@ -66,12 +71,31 @@ export const caseService = {
 
 export const attachmentService = {
   list: (caseId) => api.get(`/api/cases/${caseId}/attachments/`),
-  upload: (caseId, formData) =>
-    api.post(`/api/cases/${caseId}/attachments/`, formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }),
+  upload: (caseId, formData) => api.post(`/api/cases/${caseId}/attachments/`, formData),
   delete: (caseId, attId) => api.delete(`/api/cases/${caseId}/attachments/${attId}/`),
   activity: (caseId) => api.get(`/api/cases/${caseId}/activity/`),
+};
+
+export const caseBriefService = {
+  get: (caseId) => api.get(`/api/cases/${caseId}/brief/`),
+  upload: (caseId, formData) => api.post(`/api/cases/${caseId}/brief/`, formData),
+  update: (caseId, formData) => api.patch(`/api/cases/${caseId}/brief/`, formData),
+  approve: (caseId, data = {}) => api.post(`/api/cases/${caseId}/brief/approve/`, data),
+  uploadBackBrief: (caseId, formData) => api.post(`/api/cases/${caseId}/back-brief/`, formData),
+};
+
+export const exhibitService = {
+  list: (params) => api.get("/api/cases/exhibits/", { params }),
+  eligibleCases: () => api.get("/api/cases/exhibits/eligible-cases/"),
+  storageDestinations: () => api.get("/api/cases/exhibits/storage-destinations/"),
+  create: (formData) => api.post("/api/cases/exhibits/", formData),
+  approve: (id, data = {}) => api.post(`/api/cases/exhibits/${id}/approve/`, data),
+  decline: (id, data = {}) => api.post(`/api/cases/exhibits/${id}/decline/`, data),
+  store: (id, data = {}) => api.post(`/api/cases/exhibits/${id}/store/`, data),
+  requestLifecycle: (id, formData) => api.post(`/api/cases/exhibits/${id}/request-lifecycle/`, formData),
+  approveLifecycle: (id, data = {}) => api.post(`/api/cases/exhibits/${id}/approve-lifecycle/`, data),
+  declineLifecycle: (id, data = {}) => api.post(`/api/cases/exhibits/${id}/decline-lifecycle/`, data),
+  scanReleaseDocument: () => api.post("/api/cases/exhibits/scan-release-document/", {}, { responseType: "blob" }),
 };
 
 export const incidentService = {
@@ -79,7 +103,26 @@ export const incidentService = {
   get: (id) => api.get(`/api/incidents/${id}/`),
   create: (data) => api.post("/api/incidents/", data),
   update: (id, data) => api.patch(`/api/incidents/${id}/`, data),
+  convertToCase: (id, data) => api.post(`/api/incidents/${id}/convert-to-case/`, data),
   delete: (id) => api.delete(`/api/incidents/${id}/`),
+};
+
+export const dutyRoomService = {
+  rosters: (params) => api.get("/api/dutyrooms/rosters/", { params }),
+  getRoster: (id) => api.get(`/api/dutyrooms/rosters/${id}/`),
+  createRoster: (data) => api.post("/api/dutyrooms/rosters/", data),
+  updateRoster: (id, data) => api.patch(`/api/dutyrooms/rosters/${id}/`, data),
+  deleteRoster: (id) => api.delete(`/api/dutyrooms/rosters/${id}/`),
+  forwardRoster: (id, data) => api.post(`/api/dutyrooms/rosters/${id}/forward/`, data),
+  approveRoster: (id, data = {}) => api.post(`/api/dutyrooms/rosters/${id}/approve/`, data),
+  returnRoster: (id, data) => api.post(`/api/dutyrooms/rosters/${id}/return/`, data),
+  declineRoster: (id, data) => api.post(`/api/dutyrooms/rosters/${id}/decline/`, data),
+  publishRoster: (id) => api.post(`/api/dutyrooms/rosters/${id}/publish/`),
+  approvers: () => api.get("/api/dutyrooms/rosters/approvers/"),
+  activeDutyRoom: () => api.get("/api/dutyrooms/rosters/active-duty-room/"),
+  entries: (params) => api.get("/api/dutyrooms/entries/", { params }),
+  createEntry: (data) => api.post("/api/dutyrooms/entries/", data),
+  createIncident: (entryId, data = {}) => api.post(`/api/dutyrooms/entries/${entryId}/create-incident/`, data),
 };
 
 export const notificationService = {
@@ -107,6 +150,10 @@ export const morningBriefService = {
   update: (id, data) => api.patch(`/api/morning-briefs/${id}/`, data),
   delete: (id) => api.delete(`/api/morning-briefs/${id}/`),
   submit: (id) => api.post(`/api/morning-briefs/${id}/submit/`),
+  publish: (id) => api.post(`/api/morning-briefs/${id}/publish/`),
+  addIncidents: (id, data) => api.post(`/api/morning-briefs/${id}/add-incidents/`, data),
+  compilerStatus: () => api.get("/api/morning-briefs/compiler-status/"),
+  compileFromIncidents: (data) => api.post("/api/morning-briefs/compile-from-incidents/", data),
 };
 
 export const formationService = {
@@ -149,8 +196,17 @@ export const teamService = {
 };
 
 export const guardroomService = {
-  list: () => api.get("/api/guardrooms/guardrooms/"),
+  list: (params) => api.get("/api/guardrooms/guardrooms/", { params }),
+  get: (id) => api.get(`/api/guardrooms/guardrooms/${id}/`),
   create: (data) => api.post("/api/guardrooms/guardrooms/", data),
   update: (id, data) => api.patch(`/api/guardrooms/guardrooms/${id}/`, data),
   delete: (id) => api.delete(`/api/guardrooms/guardrooms/${id}/`),
+  placementRequests: (params) => api.get("/api/guardrooms/placement-requests/", { params }),
+  createPlacementRequest: (data) => api.post("/api/guardrooms/placement-requests/", data),
+  approvePlacementRequest: (id, data) => api.post(`/api/guardrooms/placement-requests/${id}/approve/`, data),
+  rejectPlacementRequest: (id, data) => api.post(`/api/guardrooms/placement-requests/${id}/reject/`, data),
+  bookInPlacementRequest: (id) => api.post(`/api/guardrooms/placement-requests/${id}/book-in/`),
+  requestBookOut: (id) => api.post(`/api/guardrooms/placement-requests/${id}/request-book-out/`),
+  approveBookOut: (id, data) => api.post(`/api/guardrooms/placement-requests/${id}/approve-book-out/`, data),
+  freePlacementRequest: (id, data) => api.post(`/api/guardrooms/placement-requests/${id}/free/`, data),
 };

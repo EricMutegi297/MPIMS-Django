@@ -2,10 +2,28 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { attachmentService, caseService, guardroomService, incidentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
 }
 
 const PAGE_SIZE = 25;
@@ -27,18 +45,20 @@ function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <Tag
       onClick={onClick}
-      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
+      className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
         onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""
       }`}
     >
       <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-gray-500 truncate">{label}</p>
-        {loading ? (
-          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
-        ) : (
-          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
-        )}
+        <div className="min-h-[30px] mt-0.5 flex items-center">
+          {loading ? (
+            <div className="h-7 w-12 bg-gray-700 rounded animate-pulse" />
+          ) : (
+            <p className="text-2xl font-bold text-white">{value ?? 0}</p>
+          )}
+        </div>
       </div>
     </Tag>
   );
@@ -81,6 +101,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const canClose = judgmentFiles.length > 0;
+  useAutoDismiss(err, setErr);
 
   const handleCloseCase = async () => {
     if (!canClose) {
@@ -216,6 +237,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 // ── HQDashboard ───────────────────────────────────────────────────────────────
 export default function HQDashboard({ user }) {
   const navigate = useNavigate();
+  const isCorpsCommander = user?.role === "corps_cmd";
 
   const [cases, setCases]             = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -292,14 +314,14 @@ export default function HQDashboard({ user }) {
     finally { setLoadingCases(false); }
   }, [page, activeFilter]);
 
-  useEffect(() => { loadCounts(); }, [loadCounts]);
-  useEffect(() => { loadCases();  }, [loadCases]);
+  useEffect(() => scheduleAfterPaint(loadCounts), [loadCounts]);
+  useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const displayName = user?.name?.split(" ")[0] || "Officer";
+  const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   const FILTERS = [
     { key: "all",                 label: "All",              style: "bg-gray-600 text-gray-200"   },
@@ -315,6 +337,7 @@ export default function HQDashboard({ user }) {
   const descLimit = 120;
   const isTaskedFilter = activeFilter === "tasked";
   const isServedFilter = activeFilter === "served";
+  const isClosedFilter = activeFilter === "closed";
   const handleClosedCase = () => {
     loadCases();
     loadCounts();
@@ -329,7 +352,9 @@ export default function HQDashboard({ user }) {
           <h2 className="text-2xl font-bold text-white">
             {greeting}, {displayName}
           </h2>
-          <p className="text-sm text-gray-400 mt-0.5">HQ Overview — All Battalions</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            {isCorpsCommander ? "Corps Command Overview" : "HQ Overview"} — All Battalions
+          </p>
         </div>
         <NotificationBell />
       </div>
@@ -470,7 +495,7 @@ export default function HQDashboard({ user }) {
             <p className="p-5 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="sticky-head w-full min-w-[1180px] text-sm">
+              <table className="sticky-head w-full min-w-[1340px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
@@ -487,6 +512,8 @@ export default function HQDashboard({ user }) {
                   ) : (
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
+                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Date Closed</th>}
+                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action Taken</th>}
                       {isServedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
                     </>
                   )}
@@ -560,6 +587,20 @@ export default function HQDashboard({ user }) {
                             style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
                           />
                         </td>
+                        {isClosedFilter && (
+                          <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">
+                            {c.closed_at
+                              ? new Date(c.closed_at).toLocaleDateString("en-GB")
+                              : c.updated_at
+                              ? new Date(c.updated_at).toLocaleDateString("en-GB")
+                              : "--"}
+                          </td>
+                        )}
+                        {isClosedFilter && (
+                          <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[220px] max-w-[340px]">
+                            <p className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</p>
+                          </td>
+                        )}
                         {isServedFilter && (
                           <td className="px-3 md:px-5 py-3">
                             <button

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { teamService, userService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -197,6 +198,8 @@ export default function Teams({ user, scope = "detachment" }) {
   const [editMembers, setEditMembers]   = useState([]);
   const [editing, setEditing]           = useState(false);
   const [editError, setEditError]       = useState("");
+  useAutoDismiss(createError, setCreateError);
+  useAutoDismiss(editError, setEditError);
 
   // â”€â”€ Delete confirm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
