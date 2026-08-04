@@ -685,7 +685,7 @@ function RequestPlacementPanel({
           <div className="md:col-span-5 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             <InfoPill label="Offender" value={[selectedCase.accused_rank, selectedCase.accused_name, selectedCase.accused_service_number].filter(Boolean).join(" ") || "Not recorded"} />
             <InfoPill label="Unit" value={selectedCase.accused_unit_name || "--"} />
-            <InfoPill label="Team" value={selectedCase.assigned_team_name || "--"} />
+            <InfoPill label="Assignment" value={selectedCase.assigned_to_name || selectedCase.assigned_team_name || "--"} />
           </div>
         )}
 
@@ -879,8 +879,8 @@ function GuardStatusPanel({
               <th className="text-left px-4 py-3">Case</th>
               <th className="text-left px-4 py-3">Guardroom</th>
               <th className="text-left px-4 py-3">Requested By</th>
-              <th className="text-left px-4 py-3">Team</th>
-              <th className="text-left px-4 py-3">Detachment</th>
+              <th className="text-left px-4 py-3">Assignment</th>
+              <th className="text-left px-4 py-3">Company</th>
               <th className="text-left px-4 py-3">Booked In</th>
               <th className="text-left px-4 py-3">Time In</th>
               {showActions && <th className="text-left px-4 py-3">Action</th>}
@@ -906,7 +906,7 @@ function GuardStatusPanel({
                     <p className="text-xs text-gray-500">{entry.guardroom_location || ""}</p>
                   </td>
                   <td className="px-4 py-3 text-gray-400">{entry.requested_by_name || "--"}</td>
-                  <td className="px-4 py-3 text-gray-400">{entry.assigned_team_name || "--"}</td>
+                  <td className="px-4 py-3 text-gray-400">{entry.assigned_to_name || entry.assigned_team_name || "--"}</td>
                   <td className="px-4 py-3 text-gray-400">{entry.team_detachment_name || entry.tasked_detachment_name || "--"}</td>
                   <td className="px-4 py-3">
                     <p className="text-gray-300">{formatDate(entry.booked_in_at)}</p>

@@ -1,6 +1,6 @@
 from rest_framework import viewsets, permissions
 from django.db.models import Q
-from django.db.models import Count
+from django.db.models import Count, Prefetch
 from .models import Formation, Battalion, Unit, Detachment
 from .serializers import FormationSerializer, BattalionSerializer, UnitSerializer, DetachmentSerializer
 from apps.users.access import has_global_read_access
@@ -36,7 +36,12 @@ class BattalionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdminOrReadOnly]
 
     def get_queryset(self):
-        qs = Battalion.objects.select_related("formation").prefetch_related("detachments").annotate(
+        detachment_qs = Detachment.objects.annotate(
+            case_count=Count("tasked_cases", distinct=True)
+        ).order_by("company", "name")
+        qs = Battalion.objects.select_related("formation").prefetch_related(
+            Prefetch("detachments", queryset=detachment_qs)
+        ).annotate(
             case_count=Count("tasked_cases", distinct=True)
         )
         user = self.request.user
@@ -70,7 +75,9 @@ class DetachmentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsSuperAdminOrReadOnly]
 
     def get_queryset(self):
-        qs = Detachment.objects.select_related("battalion").all()
+        qs = Detachment.objects.select_related("battalion").annotate(
+            case_count=Count("tasked_cases", distinct=True)
+        )
         user = self.request.user
         if has_global_read_access(user):
             return qs

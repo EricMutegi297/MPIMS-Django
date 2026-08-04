@@ -9,7 +9,8 @@ from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from django.db import transaction
-from django.db.models import Avg, Count, Q, F, ExpressionWrapper, IntegerField, FloatField
+from django.db.models import Avg, Count, Q, F, ExpressionWrapper, IntegerField, FloatField, Prefetch
+from django.db.models.functions import TruncMonth
 from datetime import date
 from .models import (
     Case,
@@ -32,6 +33,7 @@ from .serializers import (
     CaseCourtMartialMilestoneSerializer,
     ExhibitStorageRequestSerializer,
     CaseSerializer,
+    CLOSED_CASE_FILE_ERROR,
     InvestigationTeamSerializer,
 )
 from apps.formations.models import Battalion
@@ -45,6 +47,11 @@ from apps.users.access import (
     should_block_command_write,
 )
 from apps.users.models import User
+
+
+def ensure_case_accepts_file_changes(case):
+    if case and case.status == Case.Status.CLOSED:
+        raise ValidationError({"case": CLOSED_CASE_FILE_ERROR})
 
 
 class InvestigationTeamViewSet(viewsets.ModelViewSet):
@@ -69,11 +76,11 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         if should_block_command_write(request.user, request.method):
             raise PermissionDenied(command_read_only_message(request.user))
         if request.method not in permissions.SAFE_METHODS and not self._can_manage_teams(request.user):
-            raise PermissionDenied("Only Detachment IC or Special Battalion Admin can create or manage investigation teams.")
+            raise PermissionDenied("Only IC COY or Special Battalion Admin can create or manage investigation teams.")
 
     def perform_create(self, serializer):
         user = self.request.user
-        # IC Det creates teams scoped to their detachment
+        # IC COY creates teams scoped to their company record
         if user.role == "detachment" and user.detachment_id:
             serializer.save(battalion=user.battalion, detachment=user.detachment)
         else:
@@ -87,25 +94,25 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(
                 Q(team_ic=user) | Q(members=user)
             ).distinct()
-        # IC Det sees only their detachment's teams
+        # IC COY sees only their company teams
         if user.role == "detachment" and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
         if user.battalion_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(battalion_id=user.battalion_id)
         return InvestigationTeam.objects.none()
 
-    _ACTIVE = ["under_investigation"]
+    _ACTIVE = [Case.Status.UNDER_INVESTIGATION, Case.Status.PENDING]
 
     @action(detail=False, methods=["get"], url_path="user-workload")
     def user_workload(self, request):
         """
         Returns all personnel (in the requester's scope) ranked by active-case
-        engagement: each active case their team is assigned counts once,
-        whether they are Team IC or a team member.
+        engagement: direct IO assignments plus active cases assigned to their
+        team, whether they are Team IC or a team member.
         """
         user = request.user
 
-        # Scope the user pool to same detachment / battalion
+        # Scope the user pool to same company / battalion
         if has_global_read_access(user):
             base_users = User.objects.all()
         elif user.role == "detachment" and user.detachment_id:
@@ -126,9 +133,14 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
                 filter=Q(investigation_teams__assigned_cases__status__in=self._ACTIVE),
                 distinct=True,
             ),
+            direct_cases=Count(
+                "assigned_cases__id",
+                filter=Q(assigned_cases__status__in=self._ACTIVE),
+                distinct=True,
+            ),
         ).annotate(
             total_engagement=ExpressionWrapper(
-                F("ic_cases") + F("member_cases"),
+                F("ic_cases") + F("member_cases") + F("direct_cases"),
                 output_field=IntegerField(),
             )
         ).order_by("-total_engagement", "name")
@@ -142,6 +154,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
                 "role": u.role,
                 "ic_cases": u.ic_cases,
                 "member_cases": u.member_cases,
+                "direct_cases": u.direct_cases,
                 "total_engagement": u.total_engagement,
             }
             for u in qs
@@ -217,6 +230,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         return qs.filter(requested_by=user)
 
     def perform_create(self, serializer):
+        ensure_case_accepts_file_changes(serializer.validated_data.get("case"))
         exhibit = serializer.save(requested_by=self.request.user)
         self._notify_approvers(exhibit)
 
@@ -339,6 +353,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="request-lifecycle")
     def request_lifecycle(self, request, pk=None):
         exhibit = self.get_object()
+        ensure_case_accepts_file_changes(exhibit.case)
         self._ensure_can_request_lifecycle(request.user, exhibit)
         if exhibit.status != ExhibitStorageRequest.Status.STORED:
             raise ValidationError({"status": "Only stored exhibits can be released."})
@@ -482,7 +497,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT:
             if user.role == User.Role.DETACHMENT and user.detachment_id == exhibit.target_detachment_id:
                 return
-            raise PermissionDenied("Only the target Detachment IC can review this exhibit storage request.")
+            raise PermissionDenied("Only the target IC COY can review this exhibit storage request.")
         if exhibit.storage_scope in {
             ExhibitStorageRequest.StorageScope.BATTALION,
             ExhibitStorageRequest.StorageScope.SPECIAL_BATTALION,
@@ -522,7 +537,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             if user.battalion_id in battalion_ids:
                 return
 
-        raise PermissionDenied("Only Admin, Detachment IC, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
+        raise PermissionDenied("Only Admin, IC COY, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
 
     def _ensure_can_scan_release_document(self, user):
         allowed_roles = {
@@ -660,6 +675,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
 
     def _notify_approvers(self, exhibit):
         recipients = self._approvers_for_exhibit(exhibit)
+
         if not recipients:
             return
         destination = exhibit.target_detachment or exhibit.target_battalion
@@ -880,6 +896,13 @@ class CaseViewSet(viewsets.ModelViewSet):
             "extra_attachments",
             "court_martial_hearings",
             "court_martial_milestones",
+            Prefetch(
+                "activity_logs",
+                queryset=CaseActivityLog.objects.filter(
+                    action=CaseActivityLog.Action.CASE_UPDATED
+                ).order_by("-created_at"),
+                to_attr="case_update_logs",
+            ),
         )
 
         if not user.is_authenticated:
@@ -895,7 +918,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 | Q(assigned_team__members=user)
             ).distinct()
 
-        # Battalion command users see cases tasked to their battalion or its detachments.
+        # Battalion command users see cases tasked to their battalion or its companies.
         if is_battalion_command(user):
             return base_qs.filter(
                 battalion_scope_q(
@@ -903,14 +926,17 @@ class CaseViewSet(viewsets.ModelViewSet):
                     battalion_field="tasked_battalion_id",
                     detachment_field="tasked_detachment",
                 )
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__battalion_id=user.battalion_id)
             ).distinct()
 
-        # Detachment IC (role=detachment) sees cases tasked to their detachment
+        # IC COY (role=detachment) sees cases tasked to their company record
         if user.role == "detachment" and user.detachment_id:
             return base_qs.filter(
                 Q(tasked_detachment_id=user.detachment_id)
+                | Q(assigned_to__detachment_id=user.detachment_id)
                 | Q(assigned_team__detachment_id=user.detachment_id)
             ).distinct()
 
@@ -935,19 +961,21 @@ class CaseViewSet(viewsets.ModelViewSet):
         return " ".join(parts) or actor.service_number
 
     def _notify_team(self, case, actor, message):
-        """Create dashboard notifications + send email to every active team member / IC,
+        """Create dashboard notifications + send email to every active IO / team member / IC,
         excluding the actor who triggered the action."""
-        if not case.assigned_team_id:
-            return
-        try:
-            team = case.assigned_team
-        except Exception:
-            return
         recipients = set()
-        if team.team_ic and team.team_ic.is_active:
-            recipients.add(team.team_ic)
-        for m in team.members.filter(is_active=True):
-            recipients.add(m)
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
+        if case.assigned_team_id:
+            try:
+                team = case.assigned_team
+            except Exception:
+                team = None
+            if team:
+                if team.team_ic and team.team_ic.is_active:
+                    recipients.add(team.team_ic)
+                for m in team.members.filter(is_active=True):
+                    recipients.add(m)
         if actor:
             recipients.discard(actor)
         if not recipients:
@@ -984,6 +1012,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             return False
         if self._is_hq_admin_or_superuser(user):
             return True
+        if case_obj.assigned_to_id and case_obj.assigned_to_id == user.id:
+            return True
         team = getattr(case_obj, "assigned_team", None)
         if not team:
             return False
@@ -1013,6 +1043,8 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _can_request_close(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
+        if case_obj.assigned_to_id and case_obj.assigned_to_id == user.id:
+            return True
         team = getattr(case_obj, "assigned_team", None)
         if not team:
             return False
@@ -1075,6 +1107,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
                 | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__battalion_id=user.battalion_id)
             ).distinct()
@@ -1093,6 +1127,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                     return qs.none()
                 return qs.filter(
                     Q(tasked_detachment_id=user.detachment_id)
+                    | Q(assigned_to__detachment_id=user.detachment_id)
                     | Q(assigned_team__detachment_id=user.detachment_id)
                 ).distinct()
             if not user.battalion_id:
@@ -1100,6 +1135,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
                 | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__battalion_id=user.battalion_id)
             ).distinct()
@@ -1117,6 +1154,11 @@ class CaseViewSet(viewsets.ModelViewSet):
         if not battalion_id and case_obj.assigned_team_id:
             team_detachment = getattr(case_obj.assigned_team, "detachment", None)
             battalion_id = getattr(team_detachment, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_to_id:
+            battalion_id = getattr(case_obj.assigned_to, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_to_id:
+            io_detachment = getattr(case_obj.assigned_to, "detachment", None)
+            battalion_id = getattr(io_detachment, "battalion_id", None)
         return battalion_id
 
     def _case_detachment_id(self, user, case_obj):
@@ -1124,6 +1166,10 @@ class CaseViewSet(viewsets.ModelViewSet):
             return case_obj.tasked_detachment_id
         if case_obj.assigned_team_id:
             detachment_id = getattr(case_obj.assigned_team, "detachment_id", None)
+            if detachment_id:
+                return detachment_id
+        if case_obj.assigned_to_id:
+            detachment_id = getattr(case_obj.assigned_to, "detachment_id", None)
             if detachment_id:
                 return detachment_id
         return getattr(user, "detachment_id", None)
@@ -1232,9 +1278,56 @@ class CaseViewSet(viewsets.ModelViewSet):
                              f"Case {instance.case_number} created")
 
     def perform_update(self, serializer):
-        instance = self.get_object()
+        instance = serializer.instance
         previous_status = instance.status
+        previous_assigned_team_id = instance.assigned_team_id
+        previous_assigned_to_id = instance.assigned_to_id
+        previous_tasked_battalion_id = instance.tasked_battalion_id
+        previous_tasked_detachment_id = instance.tasked_detachment_id
+        previous_close_requested = instance.close_requested
         case = serializer.save()
+
+        battalion_tasking_changed = (
+            previous_tasked_battalion_id != case.tasked_battalion_id
+            and case.tasked_battalion_id
+        )
+        if battalion_tasking_changed:
+            self._send_tasking_notification(case, created=False)
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.BATTALION_TASKED,
+                f"Case {case.case_number} tasked to {case.tasked_battalion}",
+            )
+
+        detachment_tasking_changed = (
+            previous_tasked_detachment_id != case.tasked_detachment_id
+            and case.tasked_detachment_id
+        )
+        if detachment_tasking_changed:
+            self._send_detachment_tasking_notification(case)
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.DETACHMENT_TASKED,
+                f"Case {case.case_number} tasked to {case.tasked_detachment}",
+            )
+
+        assignment_changed = (
+            previous_assigned_team_id != case.assigned_team_id
+            or previous_assigned_to_id != case.assigned_to_id
+        )
+        if assignment_changed:
+            self._send_assignment_notification(case, self.request.user)
+
+        if not previous_close_requested and case.close_requested:
+            self._send_close_request_notification(case, self.request.user)
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.CASE_UPDATED,
+                f"Close requested for Case {case.case_number}",
+            )
 
         if previous_status != case.status:
             if case.status == Case.Status.SERVED:
@@ -1256,6 +1349,37 @@ class CaseViewSet(viewsets.ModelViewSet):
                     CaseActivityLog.Action.CASE_UPDATED,
                     f"Case {case.case_number} closed",
                 )
+
+    def _send_assignment_notification(self, case, actor):
+        if case.assigned_to_id:
+            assignee_label = self._actor_label(case.assigned_to)
+            detail = f"Assigned IO {assignee_label}"
+            message = (
+                f"{self._actor_label(actor)} assigned Case #{case.case_number} "
+                f"'{case.title}' to IO {assignee_label}."
+            )
+        elif case.assigned_team_id:
+            team_name = case.assigned_team.name if case.assigned_team else "investigation team"
+            detail = f"Assigned investigation team {team_name}"
+            message = (
+                f"{self._actor_label(actor)} assigned Case #{case.case_number} "
+                f"'{case.title}' to investigation team {team_name}."
+            )
+        else:
+            self._log_action(
+                case,
+                actor,
+                CaseActivityLog.Action.TEAM_ASSIGNED,
+                "Cleared investigation assignment",
+            )
+            return
+
+        if case.investigation_deadline:
+            detail = f"{detail}; deadline {case.investigation_deadline}"
+            message = f"{message} Investigation deadline: {case.investigation_deadline}."
+
+        self._log_action(case, actor, CaseActivityLog.Action.TEAM_ASSIGNED, detail)
+        self._notify_team(case, actor=actor, message=message)
 
     def _create_duplicate_cases_for_accused(self, original_case, accused_entries):
         def suffix_for_index(index):
@@ -1314,24 +1438,38 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _send_tasking_notification(self, case, created):
         if not case.tasked_battalion_id:
             return
-        users = User.objects.filter(
+        battalion_users = User.objects.filter(
             battalion_id=case.tasked_battalion_id,
             is_active=True,
-        ).exclude(role="detachment")
-        if not users.exists():
+        ).exclude(role__in=[User.Role.DETACHMENT, User.Role.CORPS_CMD])
+        corps_commanders = User.objects.filter(role=User.Role.CORPS_CMD, is_active=True)
+        if not battalion_users.exists() and not corps_commanders.exists():
             return
-        msg = f"A new case (#{case.case_number or case.id}) has been tasked to your battalion: {case.title}"
+        case_ref = case.case_number or case.id
+        msg = f"A new case (#{case_ref}) has been tasked to your battalion: {case.title}"
         if not created:
-            msg = f"Case (#{case.case_number or case.id}) has been newly tasked to your battalion: {case.title}"
-        Notification.objects.bulk_create([
+            msg = f"Case (#{case_ref}) has been newly tasked to your battalion: {case.title}"
+        battalion_name = case.tasked_battalion.name if case.tasked_battalion else str(case.tasked_battalion_id)
+        corps_msg = f"Case (#{case_ref}) has been tasked to {battalion_name}: {case.title}"
+        notifications = [
             Notification(
                 recipient=u,
                 message=msg,
                 notification_type=Notification.Type.CASE,
                 related_model="case",
                 related_id=case.id,
-            ) for u in users
-        ])
+            ) for u in battalion_users
+        ]
+        notifications.extend(
+            Notification(
+                recipient=u,
+                message=corps_msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for u in corps_commanders
+        )
+        Notification.objects.bulk_create(notifications)
 
     def _notify_brief_recipients(self, case, actor, message):
         try:
@@ -1508,10 +1646,10 @@ class CaseViewSet(viewsets.ModelViewSet):
                 pass
 
     def _send_detachment_tasking_notification(self, case):
-        """Notify all users in the tasked detachment (role=detachment as IC Det)."""
+        """Notify all users in the tasked company (role=detachment as IC COY)."""
         if not case.tasked_detachment_id:
             return
-        # Notify users whose detachment matches and whose role is 'detachment' (IC Det)
+        # Notify users whose company record matches and whose role is 'detachment' (IC COY)
         users = User.objects.filter(
             detachment_id=case.tasked_detachment_id,
             role="detachment",
@@ -1541,9 +1679,11 @@ class CaseViewSet(viewsets.ModelViewSet):
             battalion__battalion_type=Battalion.BattalionType.HQS,
             is_active=True,
         )
-        if not hqs_admins.exists():
+        recipients = set(hqs_admins)
+        recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+        if not recipients:
             return
-        # Build actor attribution: "by Rank Name of Detachment/Battalion"
+        # Build actor attribution: "by Rank Name of Company/Battalion"
         if actor:
             actor_label = f"{actor.rank} {actor.name}".strip()
             if actor.detachment_id and actor.detachment:
@@ -1566,7 +1706,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 notification_type=Notification.Type.CASE,
                 related_model="case",
                 related_id=case.id,
-            ) for u in hqs_admins
+            ) for u in recipients
         ])
 
         email_list = [u.email for u in hqs_admins if u.email]
@@ -1583,8 +1723,10 @@ class CaseViewSet(viewsets.ModelViewSet):
                 pass
 
     def _send_closed_notification(self, case):
-        """Notify assigned team (IC + members), tasked battalion admin, and Det IC if detachment-level."""
+        """Notify assigned team (IC + members), tasked battalion admin, and IC COY if company-level."""
         recipients = set()
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
         # Assigned team IC + members
         if case.assigned_team_id:
             try:
@@ -1604,7 +1746,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 is_active=True,
             ))
 
-        # Detachment IC if this is a detachment-level case
+        # IC COY if this is a company-level case
         if case.tasked_detachment_id:
             recipients.update(User.objects.filter(
                 role="detachment",
@@ -1612,10 +1754,14 @@ class CaseViewSet(viewsets.ModelViewSet):
                 is_active=True,
             ))
 
+        recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+
         if not recipients:
             return
+        action_taken = (case.action_taken or "").strip() or "Not provided."
         msg = (
-            f"Case #{case.case_number} — '{case.title}' has been officially closed."
+            f"Case #{case.case_number} -- '{case.title}' has been officially closed. "
+            f"Action taken: {action_taken}"
         )
         Notification.objects.bulk_create([
             Notification(
@@ -1628,7 +1774,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         ])
 
     def _send_case_update_notification(self, case, actor=None, update_date=None, update_text=""):
-        """Notify HQ, tasked battalion/detachment, IO, and team members on case updates."""
+        """Notify HQ, tasked battalion/company, IO, and team members on case updates."""
         recipients = set()
 
         # HQ admins
@@ -1650,7 +1796,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 )
             )
 
-        # Tasked detachment IC users
+        # Tasked IC COY users
         if case.tasked_detachment_id:
             recipients.update(
                 User.objects.filter(
@@ -1753,7 +1899,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="detachment-summary")
     def detachment_summary(self, request):
         """
-        Returns per-detachment case count breakdown for the requesting user's battalion.
+        Returns per-company case count breakdown for the requesting user's battalion.
         Accessible to battalion admins and superusers.
         Superusers must supply ?battalion=<id> query param.
         Returns: { battalion_id, detachments: [{id, name, company, under_investigation, pending, closed, total}] }
@@ -1913,6 +2059,12 @@ class CaseViewSet(viewsets.ModelViewSet):
     def statistics(self, request):
         qs = self.get_queryset()
 
+        def shift_month(value, offset):
+            month = value.month + offset
+            year = value.year + (month - 1) // 12
+            month = ((month - 1) % 12) + 1
+            return date(year, month, 1)
+
         def top_text_field(field_name):
             rows = (
                 qs.exclude(**{f"{field_name}__isnull": True})
@@ -1963,8 +2115,46 @@ class CaseViewSet(viewsets.ModelViewSet):
         ]
         criminal_offence_types.sort(key=lambda item: (-item["count"], item["label"]))
 
+        status_counts = {
+            row["status"]: row["count"]
+            for row in qs.values("status").annotate(count=Count("id", distinct=True))
+        }
+        status_breakdown = [
+            {
+                "key": key,
+                "label": label,
+                "count": status_counts.get(key, 0),
+            }
+            for key, label in Case.Status.choices
+        ]
+
+        current_month = timezone.localdate().replace(day=1)
+        start_month = shift_month(current_month, -11)
+        trend_rows = (
+            qs.filter(created_at__date__gte=start_month)
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(count=Count("id", distinct=True))
+            .order_by("month")
+        )
+        trend_counts = {}
+        for row in trend_rows:
+            month_value = row.get("month")
+            if month_value:
+                trend_counts[month_value.date().replace(day=1).isoformat()] = row["count"]
+        monthly_case_trend = []
+        for offset in range(12):
+            month_value = shift_month(start_month, offset)
+            monthly_case_trend.append({
+                "month": month_value.isoformat(),
+                "label": month_value.strftime("%b %Y"),
+                "count": trend_counts.get(month_value.isoformat(), 0),
+            })
+
         return Response({
             "total_cases": qs.count(),
+            "status_breakdown": status_breakdown,
+            "monthly_case_trend": monthly_case_trend,
             "top_hotspots": top_text_field("place_of_offence"),
             "top_accused_units": top_accused_units,
             "top_offences": top_text_field("offence"),
@@ -2119,6 +2309,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             qs = case.extra_attachments.select_related("uploaded_by").all()
             serializer = CaseAttachmentSerializer(qs, many=True, context={"request": request})
             return Response(serializer.data)
+        ensure_case_accepts_file_changes(case)
         serializer = CaseAttachmentSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         att = serializer.save(case=case, uploaded_by=request.user)
@@ -2153,7 +2344,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             "tasked_detachment",
             "accused_unit",
         ).prefetch_related("assigned_team__members", "accused_entries")
-        qs = self._brief_case_scope(request.user, qs).filter(brief__isnull=True).order_by("-created_at")
+        qs = self._brief_case_scope(request.user, qs).filter(brief__isnull=True).exclude(status=Case.Status.CLOSED).order_by("-created_at")
         serializer = CaseSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
 
@@ -2226,6 +2417,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             else:
                 qs = qs.filter(
                     Q(tasked_detachment_id=request.user.detachment_id)
+                    | Q(assigned_to__detachment_id=request.user.detachment_id)
                     | Q(assigned_team__detachment_id=request.user.detachment_id)
                 ).distinct()
         else:
@@ -2249,6 +2441,9 @@ class CaseViewSet(viewsets.ModelViewSet):
                 raise PermissionDenied("This brief has not been forwarded to your role.")
             serializer = CaseBriefSerializer(case.brief, context={"request": request})
             return Response(serializer.data)
+
+        if request.method == "POST" or request.FILES.get("file"):
+            ensure_case_accepts_file_changes(case)
 
         data = request.data.copy()
         if request.method == "POST":
@@ -2357,6 +2552,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("Only Corps Commander can approve briefs for back-brief attachment.")
 
         case = self.get_object()
+        ensure_case_accepts_file_changes(case)
         if not hasattr(case, "brief"):
             return Response(
                 {"detail": "No brief exists for this case."},
@@ -2437,6 +2633,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     )
     def delete_attachment(self, request, pk=None, att_pk=None):
         case = self.get_object()
+        ensure_case_accepts_file_changes(case)
         try:
             att = case.extra_attachments.get(pk=att_pk)
             filename = att.file.name.split("/")[-1] if att.file else str(att_pk)

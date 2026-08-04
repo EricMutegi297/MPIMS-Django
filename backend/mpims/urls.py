@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/dutyrooms/", include("apps.dutyrooms.urls")),
     path("api/guardrooms/", include("apps.guardrooms.urls")),
     path("api/notifications/", include("apps.notifications.urls")),
+    path("api/audit/", include("apps.audit.urls")),
     path("api/morning-briefs/", include("apps.morningbriefs.urls")),
     path("api/formations/", include("apps.formations.urls")),
     path("api/offences/", include("apps.offences.urls")),

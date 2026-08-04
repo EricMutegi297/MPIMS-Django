@@ -236,6 +236,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
 
   const handleUpload = async (e) => {
     e.preventDefault();
+    if (caseObj.status === "closed") { setErr("Closed cases do not allow further uploads or attachment changes."); return; }
     if (!file) { setErr("Please select a file."); return; }
     setUploading(true);
     setErr("");
@@ -268,6 +269,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
 
   const handleBriefUpload = async (e) => {
     e.preventDefault();
+    if (caseObj.status === "closed") { setBriefUploadErr("Closed cases do not allow further uploads or attachment changes."); return; }
     if (!briefFile) { setBriefUploadErr("Select a brief document to upload."); return; }
     setBriefUploading(true);
     setBriefUploadErr("");
@@ -291,6 +293,10 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
   };
 
   const handleDelete = async (att) => {
+    if (caseObj.status === "closed") {
+      setErr("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
     setDeleting(att.id);
     try {
       await attachmentService.delete(caseObj.id, att.id);
@@ -330,7 +336,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
 
   const totalFileCount = systemFiles.length + attachments.length;
   const caseIsInvestigationScope = ["under_investigation", "tasked", "pending"].includes(caseObj.status);
-  const canUpload = caseIsInvestigationScope;
+  const canUpload = caseIsInvestigationScope && caseObj.status !== "closed";
 
   const tabs = [
     { key: "files",    label: `Files (${totalFileCount})` },
@@ -1319,7 +1325,14 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
                 isDciCiv ? (
                   <>
                     <button onClick={() => onCaseUpdate(c)} className="text-[10px] px-2 py-0.5 rounded bg-cyan-700/80 hover:bg-cyan-600 text-white transition-colors whitespace-nowrap" title="Case Update">Case Update</button>
-                    <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Request Close">Request Close</button>
+                    <button
+                      onClick={() => onServe(c)}
+                      disabled={c.close_requested}
+                      className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors whitespace-nowrap"
+                      title="Request Close"
+                    >
+                      {c.close_requested ? "Requested" : "Request Close"}
+                    </button>
                   </>
                 ) : (
                   <>
@@ -1588,10 +1601,11 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
             </button>
             <button
               onClick={() => onServe(c)}
-              className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap"
+              disabled={c.close_requested}
+              className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors whitespace-nowrap"
               title="Request Close"
             >
-              Request Close
+              {c.close_requested ? "Requested" : "Request Close"}
             </button>
           </div>
         );

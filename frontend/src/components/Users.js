@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { userService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
@@ -11,7 +11,7 @@ const ROLE_LABELS = {
   duty_officer: "Duty Officer",
   hod:          "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment:   "IC Det",
+  detachment:   "IC COY",
   personnel:    "Personnel",
   legal:        "Legal",
   order_nco:    "Order NCO",
@@ -83,7 +83,7 @@ export default function Users({ user }) {
   // Create user modal state
   const BLANK_FORM = {
     service_number: "", name: "", rank: "", email: "", role: "",
-    password: "", battalion: "", detachment: "",
+    battalion: "", detachment: "",
   };
   const [showCreate, setShowCreate]     = useState(false);
   const [form, setForm]                 = useState(BLANK_FORM);
@@ -91,8 +91,9 @@ export default function Users({ user }) {
   const [detachments, setDetachments]   = useState([]);
   const [creating, setCreating]         = useState(false);
   const [createError, setCreateError]   = useState("");
+  const [createNotice, setCreateNotice] = useState("");
 
-  // Roles that can optionally be scoped to a detachment
+  // Roles that can optionally be scoped to a company
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
   const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
 
@@ -110,17 +111,12 @@ export default function Users({ user }) {
   const [editing, setEditing]           = useState(false);
   const [editError, setEditError]       = useState("");
   useAutoDismiss(createError, setCreateError);
+  useAutoDismiss(createNotice, setCreateNotice);
   useAutoDismiss(editError, setEditError);
 
   // Delete confirm state
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleting, setDeleting]               = useState(false);
-
-  const ALL_ROLES = [
-    "admin", "co", "oc", "corps_cmd", "investigator", "duty_officer",
-    "hod", "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
-    "mpc_hqs", "bsm", "cop", "adj", "2ic",
-  ];
 
   const ALL_RANKS = [
     "General",
@@ -152,6 +148,7 @@ export default function Users({ user }) {
     };
     setForm(prefill);
     setCreateError("");
+    setCreateNotice("");
     setDetachments([]);
     setShowCreate(true);
     if (battalions.length === 0) {
@@ -219,9 +216,20 @@ export default function Users({ user }) {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
       if (!payload.battalion) delete payload.battalion;
-      // For battalion admin/IC Det the backend auto-assigns battalion; for superuser use form value
+      delete payload.password;
+      // For battalion admin/IC COY the backend auto-assigns battalion; for superuser use form value
       if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
-      await userService.create(payload);
+      const res = await userService.create(payload);
+      const email = res.data?.activation_email || payload.email;
+      const sent = Boolean(res.data?.activation_email_sent);
+      const delivery = res.data?.activation_delivery;
+      setCreateNotice(
+        sent && delivery === "console"
+          ? `Account created. Activation link printed in the backend terminal for ${email}.`
+          : sent
+          ? `Account created. Activation link sent to ${email}.`
+          : `Account created, but activation email could not be sent to ${email}. Check email settings.`
+      );
       setShowCreate(false);
       loadUsers();
     } catch (err) {
@@ -253,7 +261,7 @@ export default function Users({ user }) {
       .then((res) => setUsers(toArray(res.data)))
       .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [isHqsAdmin, isSuperuser, user?.battalion]);
+  }, [isHqsAdmin, isSuperuser, isDetachmentIC, user?.battalion, user?.detachment]);
 
   useEffect(() => {
     loadUsers();
@@ -273,7 +281,7 @@ export default function Users({ user }) {
   const title = isHqsAdmin || isSuperuser
     ? "All Users"
     : isDetachmentIC
-    ? `${user?.detachment_name ?? "Detachment"} — Personnel`
+    ? `${user?.detachment_name ?? "Company"} — Personnel`
     : user?.battalion_name
     ? `${user.battalion_name} — Personnel`
     : "Battalion Personnel";
@@ -350,6 +358,12 @@ export default function Users({ user }) {
       {error && (
         <div className="bg-red-900/30 border border-red-700 text-red-400 text-sm rounded-lg px-4 py-3 mb-5">
           {error}
+        </div>
+      )}
+
+      {createNotice && (
+        <div className="bg-blue-900/30 border border-blue-700 text-blue-200 text-sm rounded-lg px-4 py-3 mb-5">
+          {createNotice}
         </div>
       )}
 
@@ -530,7 +544,7 @@ export default function Users({ user }) {
                       battalion: isGlobalRole ? "" : form.battalion,
                       detachment: clearDet || isGlobalRole ? "" : form.detachment,
                     });
-                    // Load detachments when switching to a detachment-level role and battalion is known
+                    // Load companies when switching to a company-level role and battalion is known
                     if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion && !isGlobalRole) {
                       loadDetachments(form.battalion);
                     }
@@ -577,27 +591,33 @@ export default function Users({ user }) {
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Detachment <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
+                    Company <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
                   </label>
                   <select
                     value={form.detachment}
                     onChange={(e) => setForm({ ...form, detachment: e.target.value })}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    <option value="">— Battalion level (no detachment) —</option>
+                    <option value="">— Battalion level (no company) —</option>
                     {detachments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
+                      <option key={d.id} value={d.id}>
+                        {d.company ? `${d.company} Company` : "Company"}{d.name ? ` - ${d.name}` : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
               )}
-              <div className="col-span-2">
-                <label className="block text-xs text-gray-400 mb-1">Password *</label>
-                <input
-                  required type="password" value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
+              <div className="col-span-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-3">
+                <label className="block text-xs text-blue-200 mb-1">Activation Email</label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-white">{form.email || "Enter user email"}</span>
+                  <span className="rounded bg-blue-500/20 px-2 py-1 text-[11px] font-semibold uppercase text-blue-100">
+                    Set-password link
+                  </span>
+                </div>
+                <p className="mt-2 text-xs text-blue-100/80">
+                  The system will email a secure link for the user to create their own password.
+                </p>
               </div>
             </div>
             <div className="flex justify-end gap-3 pt-2">

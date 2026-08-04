@@ -2,6 +2,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from apps.common.fields import EncryptedTextField
+
 
 class DutyRoster(models.Model):
     class Status(models.TextChoices):
@@ -56,9 +58,9 @@ class DutyRoster(models.Model):
         related_name="approved_duty_rosters",
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    approval_note = models.TextField(blank=True)
-    returned_reason = models.TextField(blank=True)
-    declined_reason = models.TextField(blank=True)
+    approval_note = EncryptedTextField(blank=True)
+    returned_reason = EncryptedTextField(blank=True)
+    declined_reason = EncryptedTextField(blank=True)
     published_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -104,7 +106,7 @@ class DutyRosterPost(models.Model):
     starts_at = models.DateTimeField()
     ends_at = models.DateTimeField()
     required_personnel = models.PositiveSmallIntegerField(default=1)
-    notes = models.TextField(blank=True)
+    notes = EncryptedTextField(blank=True)
     assigned_personnel = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
         through="DutyRosterAssignment",
@@ -224,6 +226,8 @@ class OccurrenceEntry(models.Model):
     injured_count = models.PositiveIntegerField(null=True, blank=True)
     dead_count = models.PositiveIntegerField(null=True, blank=True)
     injury_severity = models.CharField(max_length=20, choices=InjurySeverity.choices, blank=True)
+    rta_vehicles = models.JSONField(blank=True, default=list)
+    rta_casualties = models.JSONField(blank=True, default=list)
     incident_title = models.CharField(max_length=160, blank=True)
     place = models.CharField(max_length=200, blank=True)
     service_vehicle = models.CharField(max_length=120, blank=True)
@@ -231,12 +235,12 @@ class OccurrenceEntry(models.Model):
     originating_unit = models.CharField(max_length=160, blank=True)
     civilian = models.CharField(max_length=200, blank=True)
     service_member = models.CharField(max_length=200, blank=True)
-    description = models.TextField()
-    history = models.TextField(blank=True)
-    injuries = models.TextField(blank=True)
-    damages = models.TextField(blank=True)
-    how_occurred = models.TextField(blank=True)
-    action_taken = models.TextField(blank=True)
+    description = EncryptedTextField()
+    history = EncryptedTextField(blank=True)
+    injuries = EncryptedTextField(blank=True)
+    damages = EncryptedTextField(blank=True)
+    how_occurred = EncryptedTextField(blank=True)
+    action_taken = EncryptedTextField(blank=True)
     police_ob_reference = models.CharField(max_length=160, blank=True)
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

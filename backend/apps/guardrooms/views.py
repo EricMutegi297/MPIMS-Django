@@ -382,7 +382,7 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
             battalion_id = self._placement_battalion_id(placement)
             if user.battalion_id == battalion_id:
                 return
-        raise PermissionDenied("Only the Detachment IC or tasked battalion Adjutant can review this guardroom request.")
+        raise PermissionDenied("Only the IC COY or tasked battalion Adjutant can review this guardroom request.")
 
     def _ensure_can_review_book_out(self, user, placement):
         if user.is_superuser:
@@ -453,7 +453,7 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
         recipients = detachment_recipients or self._adjutants_for_placement(placement)
         if not recipients:
             return
-        reviewer_label = "Detachment IC" if detachment_recipients else "Adjutant"
+        reviewer_label = "IC COY" if detachment_recipients else "Adjutant"
 
         message = (
             f"Guardroom placement request for {placement.case.case_number} "

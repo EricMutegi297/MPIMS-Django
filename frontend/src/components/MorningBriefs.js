@@ -130,6 +130,10 @@ function ReportLine({ label, value }) {
   );
 }
 
+function isRoadTrafficIncident(incident) {
+  return String(incident?.incident_type || "").toLowerCase().includes("road traffic accident");
+}
+
 function MorningBriefReport({ brief }) {
   const incidents = toArray(brief?.incidents);
   return (
@@ -194,19 +198,17 @@ function MorningBriefReport({ brief }) {
                 <ReportLine label="Svc Member" value={incident.service_member} />
                 <ReportLine label="Civ" value={incident.civilian} />
               </p>
+              {incident.police_ob_reference && (
+                <p>
+                  <ReportLine label="Police / External OB" value={incident.police_ob_reference} />
+                </p>
+              )}
               <p>
-                <strong>History of the Incident:</strong> {incident.history || incident.description || "--"}
+                <strong>{isRoadTrafficIncident(incident) ? "History of the Accident" : "History of the Incident"}:</strong> {incident.history || incident.description || "--"}
               </p>
               {incident.injuries && <p><strong>Injuries:</strong> {incident.injuries}</p>}
               {incident.damages && <p><strong>Damages:</strong> {incident.damages}</p>}
-              {incident.how_occurred && <p><strong>How the Incident Occurred:</strong> {incident.how_occurred}</p>}
-              {(incident.action_taken || incident.police_ob_reference || incident.source_ob_number) && (
-                <p>
-                  <ReportLine label="Action Taken" value={incident.action_taken} />
-                  <ReportLine label="Police / External OB" value={incident.police_ob_reference} />
-                  <ReportLine label="MPIMS OB" value={incident.source_ob_number} />
-                </p>
-              )}
+              {incident.how_occurred && <p><strong>{isRoadTrafficIncident(incident) ? "How the Accident Occurred" : "How the Incident Occurred"}:</strong> {incident.how_occurred}</p>}
             </div>
           </div>
         ))}

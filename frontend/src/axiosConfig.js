@@ -13,6 +13,7 @@ const AUTH_PATHS = [
   "/api/auth/logout/",
   "/api/auth/password-reset/",
   "/api/auth/password-reset/confirm/",
+  "/api/auth/totp/login/verify/",
   "/api/auth/token/refresh/",
 ];
 
@@ -20,6 +21,7 @@ const ANONYMOUS_AUTH_PATHS = [
   "/api/auth/login/",
   "/api/auth/password-reset/",
   "/api/auth/password-reset/confirm/",
+  "/api/auth/totp/login/verify/",
   "/api/auth/token/refresh/",
 ];
 

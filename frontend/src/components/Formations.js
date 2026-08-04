@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
@@ -17,7 +18,8 @@ const EMPTY_FORMATION = { name: "", location: "" };
 const EMPTY_UNIT = { name: "", code: "", formation: "", service: "KA", email: "", mobile_no: "", location_county: "" };
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function Formations({ user }) {
+export default function Formations({ user, mode = "formations" }) {
+  const navigate = useNavigate();
   const [formations, setFormations] = useState([]);
   const [units,      setUnits]      = useState([]);
   const [battalions, setBattalions] = useState([]);
@@ -40,7 +42,9 @@ export default function Formations({ user }) {
 
   const isSuperAdmin = Boolean(user?.is_superuser);
   const isHqsAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const canViewBattalionSummary = isSuperAdmin || isHqsAdmin;
+  const isCorpsCommander = user?.role === "corps_cmd";
+  const canViewBattalionSummary = isSuperAdmin || isHqsAdmin || isCorpsCommander;
+  const showBattalionSummary = mode === "battalions" && canViewBattalionSummary;
   const visibleBattalions = battalions.filter(
     (b) => String(b?.battalion_type || "").toLowerCase() !== "hqs"
   );
@@ -154,7 +158,21 @@ export default function Formations({ user }) {
     }
   };
 
-  if (!canViewBattalionSummary) {
+  const openCompanyCases = (detachment) => {
+    if (!detachment?.id) return;
+    navigate(`/dashboard/cases?tasked_detachment=${encodeURIComponent(detachment.id)}`);
+  };
+
+  if (mode === "battalions" && !canViewBattalionSummary) {
+    return (
+      <div className="p-6">
+        <h2 className="text-xl font-semibold text-white">Battalions</h2>
+        <p className="text-gray-400 mt-2 text-sm">Only Corps Commander, HQ Admin, or Super Admin can view all battalions.</p>
+      </div>
+    );
+  }
+
+  if (mode !== "battalions" && !isSuperAdmin) {
     return (
       <div className="p-6">
         <h2 className="text-xl font-semibold text-white">Formations</h2>
@@ -163,7 +181,7 @@ export default function Formations({ user }) {
     );
   }
 
-  if (isHqsAdmin && !isSuperAdmin) {
+  if (showBattalionSummary) {
     return (
       <div className="p-6 space-y-6">
         <div>
@@ -184,7 +202,7 @@ export default function Formations({ user }) {
               <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
                 <tr>
                   <th className="text-left px-4 py-2">Battalion</th>
-                  <th className="text-left px-4 py-2">Detachments</th>
+                  <th className="text-left px-4 py-2">Companies</th>
                   <th className="text-left px-4 py-2">Case Count</th>
                 </tr>
               </thead>
@@ -222,16 +240,26 @@ export default function Formations({ user }) {
         </div>
 
         {detachmentView && (
-          <ModalWrap title={`${detachmentView.battalionName} Detachments`} onClose={() => setDetachmentView(null)}>
+          <ModalWrap title={`${detachmentView.battalionName} Companies`} onClose={() => setDetachmentView(null)}>
             {detachmentView.rows.length === 0 ? (
-              <p className="text-sm text-gray-400">No detachments found.</p>
+              <p className="text-sm text-gray-400">No companies found.</p>
             ) : (
               <div className="space-y-2">
                 {detachmentView.rows.map((d) => (
-                  <div key={d.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
-                    <p className="text-sm text-white font-medium">{d.name || "Unnamed detachment"}</p>
-                    <p className="text-xs text-gray-400">Company: {d.company || "—"} | AOR: {d.aor || "—"}</p>
-                  </div>
+                  <button
+                    type="button"
+                    key={d.id}
+                    onClick={() => openCompanyCases(d)}
+                    className="w-full text-left rounded border border-gray-700 bg-gray-900/50 px-3 py-2 transition-colors hover:border-blue-500/60 hover:bg-blue-900/20"
+                  >
+                    <p className="text-sm text-white font-medium">
+                      {d.company ? `${d.company} Company` : "Company"}
+                    </p>
+                    <p className="text-xs text-gray-400">Name: {d.name || "—"} | AOR: {d.aor || "—"}</p>
+                    <p className="text-xs text-blue-400 mt-1">
+                      Case Count: <span className="underline underline-offset-2">{d.case_count ?? 0}</span>
+                    </p>
+                  </button>
                 ))}
               </div>
             )}

@@ -185,6 +185,10 @@ export default function BackBriefs({ user }) {
 
   async function handleSubmit(event) {
     event.preventDefault();
+    if (activeCase?.status === "closed") {
+      setError("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
     if (!activeCase || !backBriefFile) {
       setError("Attach a back-brief file.");
       return;
@@ -369,12 +373,12 @@ export default function BackBriefs({ user }) {
                               </button>
                             </>
                           )}
-                          {canUpload && !backBrief && status === "ready" && (
+                          {canUpload && caseObj.status !== "closed" && !backBrief && status === "ready" && (
                             <button type="button" onClick={() => openAttach(caseObj)} className="rounded-md bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
                               Attach Back-Brief
                             </button>
                           )}
-                          {canUpload && !backBrief && status !== "ready" && (
+                          {canUpload && caseObj.status !== "closed" && !backBrief && status !== "ready" && (
                             <button type="button" disabled className="rounded-md bg-slate-300 px-2.5 py-1.5 text-xs font-semibold text-white">
                               {backBriefStatusLabel(status)}
                             </button>

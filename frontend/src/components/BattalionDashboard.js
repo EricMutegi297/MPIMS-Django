@@ -1,11 +1,33 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { caseService, incidentService, formationService, guardroomService, teamService } from "../services/api";
+import { caseService, incidentService, formationService, guardroomService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function userLabel(user) {
+  if (!user) return "";
+  const name = [user.rank, user.name].filter(Boolean).join(" ").trim();
+  const serviceNumber = user.service_number ? ` (${user.service_number})` : "";
+  return `${name || user.service_number || "Unknown"}${name ? serviceNumber : ""}`;
+}
+
+function userWorkload(user, workloadMap) {
+  return workloadMap[user?.id] ?? 0;
+}
+
+function userLabelWithWorkload(user, workloadMap) {
+  const load = userWorkload(user, workloadMap);
+  return `${userLabel(user)} - ${load} active case${load !== 1 ? "s" : ""}`;
+}
+
+function sortUsersByWorkload(workloadMap) {
+  return (a, b) =>
+    userWorkload(a, workloadMap) - userWorkload(b, workloadMap) ||
+    userLabel(a).localeCompare(userLabel(b));
 }
 
 function scheduleAfterPaint(callback) {
@@ -180,7 +202,7 @@ export default function BattalionDashboard({ user }) {
   const [totalGuardrooms, setTotalGuardrooms] = useState(0);
   const [expandedDesc, setExpandedDesc] = useState({});
 
-  // Task-to-detachment modal state
+  // Task-to-company modal state
   const [taskModal, setTaskModal]       = useState(null); // case object or null
   const [detachments, setDetachments]   = useState([]);
   const [selDetachment, setSelDetachment] = useState("");
@@ -189,13 +211,19 @@ export default function BattalionDashboard({ user }) {
 
   const [teamTaskModal, setTeamTaskModal] = useState(null);
   const [teams, setTeams] = useState([]);
+  const [investigators, setInvestigators] = useState([]);
+  const [workload, setWorkload] = useState([]);
+  const [assignmentMode, setAssignmentMode] = useState("io");
   const [selTeam, setSelTeam] = useState("");
+  const [selIo, setSelIo] = useState("");
   const [selTeamDeadline, setSelTeamDeadline] = useState("");
   const [assigningTeam, setAssigningTeam] = useState(false);
   const [teamTaskError, setTeamTaskError] = useState("");
   const [teamDetails, setTeamDetails] = useState(null);
   useAutoDismiss(taskError, setTaskError);
   useAutoDismiss(teamTaskError, setTeamTaskError);
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
+  const sortedInvestigators = [...investigators].sort(sortUsersByWorkload(workloadMap));
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const descLimit = 120;
@@ -274,7 +302,7 @@ export default function BattalionDashboard({ user }) {
   useEffect(() => scheduleAfterPaint(loadCounts), [loadCounts]);
   useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
-  // Load detachments under this battalion (for normal admin modal)
+  // Load companies under this battalion (backed by detachment records)
   useEffect(() => {
     if (isNormalAdmin && (user?.battalion_id ?? user?.battalion)) {
       formationService.detachments({ battalion: user.battalion_id ?? user.battalion, page_size: 100 })
@@ -285,9 +313,16 @@ export default function BattalionDashboard({ user }) {
 
   useEffect(() => {
     if (isSpecialBattalionAdmin && (user?.battalion_id ?? user?.battalion)) {
-      teamService.list({ battalion: user.battalion_id ?? user.battalion, page_size: 200 })
+      const battalionId = user.battalion_id ?? user.battalion;
+      teamService.list({ battalion: battalionId, page_size: 200 })
         .then((r) => setTeams(toArray(r.data)))
         .catch(() => setTeams([]));
+      teamService.workload()
+        .then((r) => setWorkload(toArray(r.data)))
+        .catch(() => setWorkload([]));
+      userService.list({ battalion: battalionId, role: "investigator", page_size: 200 })
+        .then((r) => setInvestigators(toArray(r.data).filter((u) => u.role === "investigator" && u.is_active !== false)))
+        .catch(() => setInvestigators([]));
     }
   }, [isSpecialBattalionAdmin, user?.battalion_id, user?.battalion]);
 
@@ -299,7 +334,9 @@ export default function BattalionDashboard({ user }) {
 
   const openTeamTaskModal = (caseObj) => {
     setTeamTaskModal(caseObj);
-    setSelTeam("");
+    setAssignmentMode(caseObj?.assigned_team ? "team" : "io");
+    setSelTeam(caseObj?.assigned_team ? String(caseObj.assigned_team) : "");
+    setSelIo(caseObj?.assigned_to ? String(caseObj.assigned_to) : "");
     setSelTeamDeadline(normalizeDateForInput(caseObj?.investigation_deadline));
     setTeamTaskError("");
   };
@@ -321,7 +358,7 @@ export default function BattalionDashboard({ user }) {
   };
 
   const handleTaskToDetachment = async () => {
-    if (!selDetachment) { setTaskError("Please select a detachment."); return; }
+    if (!selDetachment) { setTaskError("Please select a company."); return; }
     setTaskingCase(true);
     setTaskError("");
     try {
@@ -330,32 +367,47 @@ export default function BattalionDashboard({ user }) {
       loadCases();
       loadCounts();
     } catch (e) {
-      setTaskError(e?.response?.data?.detail || "Failed to task case to detachment.");
+      setTaskError(e?.response?.data?.detail || "Failed to task case to company.");
     } finally {
       setTaskingCase(false);
     }
   };
 
   const handleAssignTeam = async () => {
-    if (!selTeam) { setTeamTaskError("Please select a team."); return; }
+    if (assignmentMode === "team" && !selTeam) { setTeamTaskError("Please select a team."); return; }
+    if (assignmentMode === "io" && !selIo) { setTeamTaskError("Please select an IO."); return; }
     if (!selTeamDeadline) { setTeamTaskError("Investigation deadline is required."); return; }
     setAssigningTeam(true);
     setTeamTaskError("");
     try {
-      await caseService.update(teamTaskModal.id, {
-        assigned_team: selTeam,
+      const payload = {
         investigation_deadline: selTeamDeadline,
-      });
+      };
+      if (assignmentMode === "io") {
+        payload.assigned_to = selIo;
+        payload.assigned_team = null;
+      } else {
+        payload.assigned_team = selTeam;
+        payload.assigned_to = null;
+      }
+      await caseService.update(teamTaskModal.id, payload);
       setTeamTaskModal(null);
       loadCases();
       loadCounts();
+      teamService
+        .workload()
+        .then((res) => setWorkload(toArray(res.data)))
+        .catch(() => setWorkload([]));
     } catch (e) {
       const data = e?.response?.data;
       setTeamTaskError(
         data?.detail ||
         data?.non_field_errors?.[0] ||
+        data?.assignment?.[0] ||
+        data?.assigned_to?.[0] ||
+        data?.assigned_team?.[0] ||
         data?.investigation_deadline?.[0] ||
-        "Failed to assign case to team."
+        "Failed to assign case."
       );
     } finally {
       setAssigningTeam(false);
@@ -631,25 +683,30 @@ export default function BattalionDashboard({ user }) {
                             onClick={() => openTaskModal(c)}
                             className="px-3 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white transition-colors"
                           >
-                            Task to Detachment
+                            Task to Company
                           </button>
                         )}
                         {c.tasked_detachment && (
                           <span className="text-xs text-gray-500 italic">
-                            Detachment tasked
+                            Company tasked
                           </span>
                         )}
                       </td>
                     )}
                     {isSpecialBattalionAdmin && (
                       <td className="px-3 md:px-5 py-3">
-                        {c.status === "tasked" && !c.assigned_team && (
+                        {c.status === "tasked" && !c.assigned_team && !c.assigned_to && (
                           <button
                             onClick={() => openTeamTaskModal(c)}
                             className="px-3 py-1 text-xs rounded bg-cyan-600 hover:bg-cyan-500 text-white transition-colors"
                           >
-                            Assign Team
+                            Assign IO / Team
                           </button>
+                        )}
+                        {c.assigned_to && (
+                          <span className="text-xs font-semibold text-indigo-300">
+                            {c.assigned_to_name || "Assigned IO"}
+                          </span>
                         )}
                         {c.assigned_team && (
                           <button
@@ -678,7 +735,7 @@ export default function BattalionDashboard({ user }) {
 
       <Footer />
 
-      {/* Task to Detachment Modal */}
+      {/* Task to Company Modal */}
       {taskModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
@@ -688,28 +745,30 @@ export default function BattalionDashboard({ user }) {
             className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-bold text-white mb-1">Task Case to Detachment</h2>
+            <h2 className="text-lg font-bold text-white mb-1">Task Case to Company</h2>
             <p className="text-sm text-gray-400 mb-5">
               Case <span className="font-mono text-gray-300">{taskModal.case_number}</span>:{" "}
               {taskModal.title || taskModal.offence}
             </p>
 
             <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
-              Select Detachment
+              Select Company
             </label>
             <select
               value={selDetachment}
               onChange={(e) => setSelDetachment(e.target.value)}
               className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 mb-4"
             >
-              <option value="">-- Choose Detachment --</option>
+              <option value="">-- Choose Company --</option>
               {detachments.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
+                <option key={d.id} value={d.id}>
+                  {d.company ? `${d.company} Company` : "Company"}{d.name ? ` - ${d.name}` : ""}
+                </option>
               ))}
             </select>
 
             {detachments.length === 0 && (
-              <p className="text-xs text-orange-400 mb-4">No detachments found under this battalion.</p>
+              <p className="text-xs text-orange-400 mb-4">No companies found under this battalion.</p>
             )}
 
             {taskError && (
@@ -728,14 +787,14 @@ export default function BattalionDashboard({ user }) {
                 disabled={taskingCase || !selDetachment}
                 className="px-4 py-2 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {taskingCase ? "Tasking..." : "Task to Detachment"}
+                {taskingCase ? "Tasking..." : "Task to Company"}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Assign to Team Modal */}
+      {/* Assign to IO or Team Modal */}
       {teamTaskModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
@@ -745,24 +804,69 @@ export default function BattalionDashboard({ user }) {
             className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-bold text-white mb-1">Assign Case to Team</h2>
+            <h2 className="text-lg font-bold text-white mb-1">Assign Case</h2>
             <p className="text-sm text-gray-400 mb-5">
               Case <span className="font-mono text-gray-300">{teamTaskModal.case_number}</span>: {teamTaskModal.title || teamTaskModal.offence}
             </p>
 
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
-              Select Team
-            </label>
-            <select
-              value={selTeam}
-              onChange={(e) => setSelTeam(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
-            >
-              <option value="">-- Choose Team --</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-900 p-1 border border-gray-700 mb-4">
+              <button
+                type="button"
+                onClick={() => setAssignmentMode("io")}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                  assignmentMode === "io"
+                    ? "bg-cyan-600 text-white"
+                    : "text-gray-400 hover:text-white hover:bg-gray-700"
+                }`}
+              >
+                Single IO
+              </button>
+              <button
+                type="button"
+                onClick={() => setAssignmentMode("team")}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                  assignmentMode === "team"
+                    ? "bg-cyan-600 text-white"
+                    : "text-gray-400 hover:text-white hover:bg-gray-700"
+                }`}
+              >
+                Team
+              </button>
+            </div>
+
+            {assignmentMode === "io" ? (
+              <>
+                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+                  Select IO
+                </label>
+                <select
+                  value={selIo}
+                  onChange={(e) => setSelIo(e.target.value)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
+                >
+                  <option value="">-- Choose IO --</option>
+                  {sortedInvestigators.map((io) => (
+                    <option key={io.id} value={io.id}>{userLabelWithWorkload(io, workloadMap)}</option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <>
+                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+                  Select Team
+                </label>
+                <select
+                  value={selTeam}
+                  onChange={(e) => setSelTeam(e.target.value)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
+                >
+                  <option value="">-- Choose Team --</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
 
             <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
               Investigation Deadline
@@ -774,8 +878,11 @@ export default function BattalionDashboard({ user }) {
               className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
             />
 
-            {teams.length === 0 && (
+            {assignmentMode === "team" && teams.length === 0 && (
               <p className="text-xs text-orange-400 mb-4">No teams found under this battalion.</p>
+            )}
+            {assignmentMode === "io" && investigators.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No investigators found under this battalion.</p>
             )}
 
             {teamTaskError && (
@@ -791,10 +898,10 @@ export default function BattalionDashboard({ user }) {
               </button>
               <button
                 onClick={handleAssignTeam}
-                disabled={assigningTeam || !selTeam || !selTeamDeadline}
+                disabled={assigningTeam || !selTeamDeadline || (assignmentMode === "io" ? !selIo : !selTeam)}
                 className="px-4 py-2 text-sm rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {assigningTeam ? "Assigning..." : "Assign to Team"}
+                {assigningTeam ? "Assigning..." : "Assign Case"}
               </button>
             </div>
           </div>

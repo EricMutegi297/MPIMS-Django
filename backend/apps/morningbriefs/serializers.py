@@ -160,7 +160,7 @@ class MorningBriefSerializer(serializers.ModelSerializer):
     def get_morning_brief_serial(self, obj):
         if not obj.morning_brief_year or not obj.morning_brief_sequence:
             return None
-        return f"MB/{obj.morning_brief_sequence:03d}/{obj.morning_brief_year % 100:02d}"
+        return f"MPC/{obj.morning_brief_sequence:03d}/{obj.morning_brief_year % 100:02d}"
 
     def get_battalion_name(self, obj):
         return obj.battalion.name if obj.battalion else None

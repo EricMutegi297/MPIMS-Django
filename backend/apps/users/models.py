@@ -1,5 +1,8 @@
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
+from django.utils import timezone
+
+from apps.common.fields import EncryptedTextField
 
 
 class UserManager(BaseUserManager):
@@ -28,7 +31,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         DUTY_OFFICER = "duty_officer", "Duty Officer"
         HOD = "hod", "Head of Department"
         GUARDROOM_IC = "guardroom_ic", "Guardroom IC"
-        DETACHMENT = "detachment", "Detachment IC"
+        DETACHMENT = "detachment", "IC COY"
         PERSONNEL = "personnel", "Personnel"
         LEGAL = "legal", "Legal Officer"
         ORDER_NCO = "order_nco", "Order NCO"
@@ -72,3 +75,100 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f"{self.rank} {self.name} ({self.service_number})"
+
+
+class TOTPDevice(models.Model):
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="totp_device",
+    )
+    secret = EncryptedTextField()
+    confirmed = models.BooleanField(default=False)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_verified_counter = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    last_used_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        db_table = "user_totp_devices"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        status = "confirmed" if self.confirmed else "pending"
+        return f"{self.user.service_number} TOTP ({status})"
+
+    @property
+    def is_locked(self):
+        return bool(self.locked_until and self.locked_until > timezone.now())
+
+
+class TOTPLoginChallenge(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="totp_login_challenges",
+    )
+    challenge_id = models.CharField(max_length=64, unique=True, db_index=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "user_totp_login_challenges"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "expires_at"]),
+            models.Index(fields=["consumed_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        return self.consumed_at is None and self.expires_at > timezone.now()
+
+    def consume(self):
+        self.consumed_at = timezone.now()
+        self.save(update_fields=["consumed_at"])
+
+    def __str__(self):
+        return f"{self.user.service_number} TOTP challenge {self.challenge_id}"
+
+
+class LoginThrottle(models.Model):
+    class Scope(models.TextChoices):
+        ACCOUNT = "account", "Account"
+        IP = "ip", "IP Address"
+        ACCOUNT_IP = "account_ip", "Account + IP"
+
+    scope = models.CharField(max_length=20, choices=Scope.choices)
+    key_hash = models.CharField(max_length=64)
+    label = EncryptedTextField(blank=True)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
+    first_failed_at = models.DateTimeField(null=True, blank=True)
+    last_failed_at = models.DateTimeField(null=True, blank=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_login_throttles"
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["scope", "key_hash"], name="uniq_login_throttle_scope_key"),
+        ]
+        indexes = [
+            models.Index(fields=["scope", "locked_until"]),
+            models.Index(fields=["last_failed_at"]),
+        ]
+
+    @property
+    def is_locked(self):
+        return bool(self.locked_until and self.locked_until > timezone.now())
+
+    def __str__(self):
+        return f"{self.scope} login throttle ({self.failed_attempts})"

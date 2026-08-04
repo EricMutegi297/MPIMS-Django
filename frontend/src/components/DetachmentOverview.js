@@ -41,6 +41,11 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function companyLabel(det) {
+  const company = det?.company ? `${det.company} Company` : "Company";
+  return det?.name ? `${company} - ${det.name}` : company;
+}
+
 function ClickPill({ value, style, onClick, title }) {
   return (
     <button
@@ -86,7 +91,7 @@ function DrilldownPanel({ drill, onClose }) {
   const [search, setSearch]       = useState("");
   const panelRef                  = useRef(null);
 
-  /* fetch cases whenever detachment or status filter changes */
+  /* fetch cases whenever company or status filter changes */
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -157,7 +162,7 @@ function DrilldownPanel({ drill, onClose }) {
   </style>
 </head>
 <body>
-  <h2>Cases \u2014 ${drill.detName} (Coy ${drill.company})</h2>
+  <h2>Cases \u2014 ${drill.detName}</h2>
   <p>Filter: ${statusLabel} &nbsp;|&nbsp; ${filtered.length} case${filtered.length !== 1 ? "s" : ""}
      &nbsp;|&nbsp; Printed: ${new Date().toLocaleString("en-GB")}</p>
   <table>
@@ -190,9 +195,6 @@ function DrilldownPanel({ drill, onClose }) {
           <div>
             <h3 className="text-base font-bold text-white">
               {drill.detName}
-              <span className="ml-2 text-xs font-normal text-gray-400">
-                Coy {drill.company}
-              </span>
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
               {loading
@@ -364,7 +366,7 @@ export default function DetachmentOverview({ user }) {
     } catch (e) {
       setError(
         e?.response?.data?.detail ||
-        "Failed to load detachment summary. Check your permissions."
+        "Failed to load company summary. Check your permissions."
       );
     } finally {
       setLoading(false);
@@ -381,7 +383,7 @@ export default function DetachmentOverview({ user }) {
   const grandTotal    = detachments.reduce((s, d) => s + (d.total || 0), 0);
 
   const openDrill = (det, status) =>
-    setDrill({ detId: det.id, detName: det.name, company: det.company, status });
+    setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -389,9 +391,9 @@ export default function DetachmentOverview({ user }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">Detachments Overview</h2>
+          <h2 className="text-2xl font-bold text-white">Companies Overview</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            Click any count or detachment name to drill into the cases
+            Click any count or company name to drill into the cases
           </p>
         </div>
         <button
@@ -408,7 +410,7 @@ export default function DetachmentOverview({ user }) {
       {!loading && !error && detachments.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <SummaryCard
-            label="Detachments"
+            label="Companies"
             value={detachments.length}
             accent="bg-blue-500/10"
             textColor="text-blue-400"
@@ -456,11 +458,11 @@ export default function DetachmentOverview({ user }) {
       <div className="bg-gray-800 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700/60">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            Detachment Case Summary
+            Company Case Summary
           </h3>
           {!loading && (
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-gray-700 text-gray-400">
-              {detachments.length} detachment{detachments.length !== 1 ? "s" : ""}
+              {detachments.length} compan{detachments.length !== 1 ? "ies" : "y"}
             </span>
           )}
         </div>
@@ -476,7 +478,7 @@ export default function DetachmentOverview({ user }) {
           </table>
         ) : !error && detachments.length === 0 ? (
           <p className="p-6 text-gray-500 text-sm text-center">
-            No detachments found under your battalion.
+            No companies found under your battalion.
           </p>
         ) : !error ? (
           <table className="w-full text-sm">
@@ -493,14 +495,14 @@ export default function DetachmentOverview({ user }) {
                       onClick={() => openDrill(det, "all")}
                       className="text-gray-200 font-medium hover:text-blue-400 transition-colors text-left"
                     >
-                      {det.name}
+                      {det.company ? `${det.company} Company` : "Company"}
                     </button>
                   </td>
 
                   {/* company badge */}
                   <td className="px-5 py-3 text-gray-400 text-center">
                     <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 text-xs">
-                      Coy {det.company}
+                      {det.name || "--"}
                     </span>
                   </td>
 
@@ -549,7 +551,7 @@ export default function DetachmentOverview({ user }) {
                     <button
                       onClick={() => openDrill(det, "all")}
                       className="text-white font-semibold hover:text-blue-400 transition-colors"
-                      title="View all cases for this detachment"
+                      title="View all cases for this company"
                     >
                       {det.total ?? 0}
                     </button>
@@ -596,7 +598,7 @@ export default function DetachmentOverview({ user }) {
 
       {!loading && !error && detachments.length > 0 && (
         <p className="text-xs text-gray-600 text-center">
-          Click any count or detachment name to drill down. Use the Print button inside the panel to export.
+          Click any count or company name to drill down. Use the Print button inside the panel to export.
         </p>
       )}
 
@@ -614,8 +616,8 @@ function SummaryTableHead() {
   return (
     <thead>
       <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
-        <th className="text-left   px-5 py-3 font-medium">Detachment</th>
-        <th className="text-center px-5 py-3 font-medium">Company</th>
+        <th className="text-left   px-5 py-3 font-medium">Company</th>
+        <th className="text-center px-5 py-3 font-medium">Name</th>
         <th className="text-center px-5 py-3 font-medium">Tasked</th>
         <th className="text-center px-5 py-3 font-medium">Under Investigation</th>
         <th className="text-center px-5 py-3 font-medium">Pending</th>

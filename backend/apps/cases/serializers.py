@@ -21,6 +21,10 @@ from apps.formations.models import Battalion, Unit
 from apps.users.models import User
 
 
+CLOSED_CASE_FILE_ERROR = "Closed cases do not allow further uploads or attachment changes."
+CASE_FILE_FIELDS = {"tasking_letter", "rfi_document", "chargesheet", "part_one_orders"}
+
+
 class CaseAttachmentSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.SerializerMethodField()
     file_name = serializers.SerializerMethodField()
@@ -391,6 +395,12 @@ class ExhibitStorageRequestSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context.get("request")
         user = getattr(request, "user", None)
+        case = attrs.get("case", getattr(self.instance, "case", None))
+
+        if case and case.status == Case.Status.CLOSED:
+            is_file_write = self.instance is None or bool(getattr(request, "FILES", None)) or "photo" in attrs
+            if is_file_write:
+                raise serializers.ValidationError({"case": CLOSED_CASE_FILE_ERROR})
 
         if self.instance is not None:
             return attrs
@@ -560,6 +570,11 @@ class InvestigationTeamSerializer(serializers.ModelSerializer):
 
 
 class CaseSerializer(serializers.ModelSerializer):
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
     assigned_to_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     tasked_battalion_name = serializers.SerializerMethodField()
@@ -570,6 +585,8 @@ class CaseSerializer(serializers.ModelSerializer):
     assigned_team_name = serializers.SerializerMethodField()
     tasked_detachment_name = serializers.SerializerMethodField()
     extra_attachment_count = serializers.SerializerMethodField()
+    latest_update = serializers.SerializerMethodField()
+    latest_update_at = serializers.SerializerMethodField()
     brief = CaseBriefSerializer(read_only=True)
     accused_entries = CaseAccusedSerializer(many=True, required=False)
 
@@ -611,6 +628,46 @@ class CaseSerializer(serializers.ModelSerializer):
             return offence_text
         return ""
 
+    @staticmethod
+    def _user_battalion_id(user):
+        if not user:
+            return None
+        return getattr(user, "battalion_id", None) or getattr(
+            getattr(user, "detachment", None),
+            "battalion_id",
+            None,
+        )
+
+    @staticmethod
+    def _team_battalion_id(team):
+        if not team:
+            return None
+        return getattr(team, "battalion_id", None) or getattr(
+            getattr(team, "detachment", None),
+            "battalion_id",
+            None,
+        )
+
+    def _validate_assignment_scope(self, assigned_team, assigned_to, tasked_battalion, tasked_detachment):
+        errors = {}
+
+        if assigned_team:
+            if tasked_detachment and assigned_team.detachment_id != tasked_detachment.id:
+                errors["assigned_team"] = "Selected team must belong to the tasked company."
+            elif tasked_battalion and self._team_battalion_id(assigned_team) != tasked_battalion.id:
+                errors["assigned_team"] = "Selected team must belong to the tasked battalion."
+
+        if assigned_to:
+            if assigned_to.role != User.Role.INVESTIGATOR:
+                errors["assigned_to"] = "Select an active investigator as the IO."
+            elif tasked_detachment and assigned_to.detachment_id != tasked_detachment.id:
+                errors["assigned_to"] = "Selected IO must belong to the tasked company."
+            elif tasked_battalion and self._user_battalion_id(assigned_to) != tasked_battalion.id:
+                errors["assigned_to"] = "Selected IO must belong to the tasked battalion."
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
     def validate(self, attrs):
         request = self.context.get("request")
         user = getattr(request, "user", None)
@@ -628,9 +685,24 @@ class CaseSerializer(serializers.ModelSerializer):
             "tasking_date",
             getattr(instance, "tasking_date", None),
         )
+        tasked_detachment = attrs.get(
+            "tasked_detachment",
+            getattr(instance, "tasked_detachment", None),
+        )
+        assigned_team_in_payload = "assigned_team" in attrs
+        assigned_to_in_payload = "assigned_to" in attrs
         assigned_team = attrs.get(
             "assigned_team",
             getattr(instance, "assigned_team", None),
+        )
+        assigned_to = attrs.get(
+            "assigned_to",
+            getattr(instance, "assigned_to", None),
+        )
+        close_requested_in_payload = "close_requested" in attrs
+        close_requested = attrs.get(
+            "close_requested",
+            getattr(instance, "close_requested", False),
         )
         offence_ref = attrs.get(
             "offence_ref",
@@ -644,10 +716,18 @@ class CaseSerializer(serializers.ModelSerializer):
             "criminal_offence_type",
             getattr(instance, "criminal_offence_type", ""),
         )
+        status_in_payload = "status" in attrs
         target_status = attrs.get("status", getattr(instance, "status", None))
         prev_status = getattr(instance, "status", None)
         mentioning_date = attrs.get("mentioning_date", getattr(instance, "mentioning_date", None))
         mentioning_remarks = attrs.get("mentioning_remarks", getattr(instance, "mentioning_remarks", ""))
+
+        if instance and instance.status == Case.Status.CLOSED:
+            blocked_file_fields = sorted(field for field in CASE_FILE_FIELDS if field in attrs)
+            if blocked_file_fields:
+                raise serializers.ValidationError({
+                    field: CLOSED_CASE_FILE_ERROR for field in blocked_file_fields
+                })
 
         accused_entries = attrs.get("accused_entries")
         if isinstance(accused_entries, str):
@@ -704,24 +784,79 @@ class CaseSerializer(serializers.ModelSerializer):
                 {"tasking_date": "Tasking date and time is required when tasking a battalion."}
             )
 
-        if tasked_battalion and tasking_letter and tasking_date and "status" not in attrs:
+        tasking_requested = any(
+            field in attrs
+            for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
+        )
+        if (
+            tasking_requested
+            and tasked_battalion
+            and tasking_letter
+            and tasking_date
+            and not status_in_payload
+            and target_status in {Case.Status.NEW, Case.Status.OPEN}
+        ):
             attrs["status"] = Case.Status.TASKED
+            target_status = Case.Status.TASKED
 
-        if "assigned_team" in attrs and user and user.is_authenticated:
-            can_assign_team = (
+        assignment_requested = assigned_team_in_payload or assigned_to_in_payload
+        if assigned_team_in_payload and assigned_to_in_payload and assigned_team and assigned_to:
+            raise serializers.ValidationError(
+                {"assignment": "Assign the case to either one IO or one team, not both."}
+            )
+
+        if assigned_team_in_payload and assigned_team:
+            attrs["assigned_to"] = None
+            assigned_to = None
+        elif assigned_to_in_payload and assigned_to:
+            attrs["assigned_team"] = None
+            assigned_team = None
+
+        if assignment_requested and user and user.is_authenticated:
+            can_assign_case = (
                 user.is_superuser
                 or user.role in {User.Role.ADMIN, User.Role.CO, User.Role.DETACHMENT}
             )
-            if not can_assign_team:
-                raise serializers.ValidationError({"assigned_team": "You are not allowed to assign investigation teams."})
+            if not can_assign_case:
+                raise serializers.ValidationError({"assignment": "You are not allowed to assign cases for investigation."})
+            self._validate_assignment_scope(
+                assigned_team,
+                assigned_to,
+                tasked_battalion,
+                tasked_detachment,
+            )
 
         is_court_martial = criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
-        is_dci = criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
-        if assigned_team and not is_court_martial and not is_dci and "status" not in attrs:
+        assignment_target = assigned_team or assigned_to
+        if assignment_target and assignment_requested and not attrs.get("team_assigned_at"):
+            attrs["team_assigned_at"] = timezone.now()
+        if (
+            assignment_target
+            and assignment_requested
+            and not is_court_martial
+            and not status_in_payload
+            and target_status in {Case.Status.NEW, Case.Status.OPEN, Case.Status.TASKED}
+        ):
             attrs["status"] = Case.Status.UNDER_INVESTIGATION
-            if not attrs.get("team_assigned_at") and not getattr(instance, "team_assigned_at", None):
-                attrs["team_assigned_at"] = timezone.now()
-
+            target_status = Case.Status.UNDER_INVESTIGATION
+        if (
+            assignment_target
+            and close_requested_in_payload
+            and close_requested
+            and not is_court_martial
+            and not status_in_payload
+            and target_status == Case.Status.TASKED
+        ):
+            attrs["status"] = Case.Status.UNDER_INVESTIGATION
+            target_status = Case.Status.UNDER_INVESTIGATION
+        if (
+            close_requested_in_payload
+            and close_requested
+            and instance
+            and not getattr(instance, "close_requested", False)
+            and not attrs.get("close_requested_at")
+        ):
+            attrs["close_requested_at"] = timezone.now()
 
         if target_status == Case.Status.SERVED and not getattr(instance, "served_at", None):
             attrs["served_at"] = timezone.now()
@@ -858,6 +993,26 @@ class CaseSerializer(serializers.ModelSerializer):
 
     def get_extra_attachment_count(self, obj):
         return obj.extra_attachments.count()
+
+    def _latest_case_update_log(self, obj):
+        prefetched = getattr(obj, "case_update_logs", None)
+        if prefetched is not None:
+            return prefetched[0] if prefetched else None
+        return obj.activity_logs.filter(
+            action=CaseActivityLog.Action.CASE_UPDATED
+        ).order_by("-created_at").first()
+
+    def get_latest_update(self, obj):
+        latest = self._latest_case_update_log(obj)
+        if latest and latest.detail:
+            return latest.detail
+        return obj.action_taken or obj.mentioning_remarks or obj.remarks or ""
+
+    def get_latest_update_at(self, obj):
+        latest = self._latest_case_update_log(obj)
+        if latest:
+            return latest.created_at
+        return obj.mentioning_date or obj.updated_at
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

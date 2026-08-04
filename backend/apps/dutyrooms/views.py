@@ -3,13 +3,15 @@ import re
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Count, Max, Q, Sum
+from django.utils.dateparse import parse_date
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
+from apps.formations.models import Unit
 from apps.incidents.models import Incident
 from apps.notifications.models import Notification
 from apps.users.access import command_read_only_message, has_global_read_access, is_battalion_command, should_block_command_write
@@ -120,7 +122,7 @@ class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         if detachment and not battalion:
             battalion = detachment.battalion
         if not battalion and not detachment:
-            raise ValidationError({"battalion": "Order NCO must belong to a battalion or detachment."})
+            raise ValidationError({"battalion": "Order NCO must belong to a battalion or company."})
         serializer.save(created_by=user, battalion=battalion, detachment=detachment)
 
     def perform_update(self, serializer):
@@ -182,7 +184,7 @@ class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
 
         approver_id = request.data.get("forwarded_to")
         if not approver_id:
-            raise ValidationError({"forwarded_to": "Select Det IC, Adjutant, HOD, 2IC, or OC for approval."})
+            raise ValidationError({"forwarded_to": "Select IC COY, Adjutant, HOD, 2IC, or OC for approval."})
         try:
             approver = self._approver_queryset(request.user).get(id=approver_id)
         except User.DoesNotExist as exc:
@@ -400,13 +402,98 @@ class OccurrenceBookViewSet(viewsets.ReadOnlyModelViewSet):
 class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
     serializer_class = OccurrenceEntrySerializer
     permission_classes = [permissions.IsAuthenticated]
-    filterset_fields = ["entry_type", "status", "requires_investigation", "book"]
-    search_fields = ["description", "action_taken", "linked_incident__incident_number"]
+    filterset_fields = ["entry_type", "road_traffic_type", "status", "requires_investigation", "book"]
+    search_fields = ["linked_incident__incident_number"]
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         if should_block_command_write(request.user, request.method):
             raise PermissionDenied(command_read_only_message(request.user))
+
+    @staticmethod
+    def _parse_report_date(value, fallback, field_name):
+        if not value:
+            return fallback
+        parsed = parse_date(str(value))
+        if not parsed:
+            raise ValidationError({field_name: "Use YYYY-MM-DD format."})
+        return parsed
+
+    @action(detail=False, methods=["get"], url_path="traffic-statistics")
+    def traffic_statistics(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get("period") or "range"
+        qs = self.get_queryset().filter(
+            entry_type=OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT
+        )
+
+        if period == "as_at":
+            as_at = self._parse_report_date(request.query_params.get("as_at"), today, "as_at")
+            qs = qs.filter(occurred_at__date__lte=as_at)
+            period_payload = {"period": "as_at", "as_at": as_at.isoformat()}
+        else:
+            if period != "range":
+                period = "range"
+            month_start = today.replace(day=1)
+            date_from = self._parse_report_date(request.query_params.get("date_from"), month_start, "date_from")
+            date_to = self._parse_report_date(request.query_params.get("date_to"), today, "date_to")
+            if date_from > date_to:
+                raise ValidationError({"date_from": "Date from cannot be later than date to."})
+            qs = qs.filter(occurred_at__date__gte=date_from, occurred_at__date__lte=date_to)
+            period_payload = {
+                "period": period,
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+            }
+
+        grouped = {
+            row["road_traffic_type"] or "not_recorded": row
+            for row in qs.values("road_traffic_type").annotate(
+                reported=Count("id"),
+                yankee=Sum("injured_count"),
+                xray=Sum("dead_count"),
+            )
+        }
+        labels = dict(OccurrenceEntry.RoadTrafficType.choices)
+        rows = []
+        for key, label in OccurrenceEntry.RoadTrafficType.choices:
+            row = grouped.pop(key, {})
+            rows.append({
+                "key": key,
+                "label": label,
+                "reported": row.get("reported") or 0,
+                "yankee": row.get("yankee") or 0,
+                "xray": row.get("xray") or 0,
+            })
+        for key, row in grouped.items():
+            rows.append({
+                "key": key,
+                "label": labels.get(key, "Not recorded" if key == "not_recorded" else key.replace("_", " ").title()),
+                "reported": row.get("reported") or 0,
+                "yankee": row.get("yankee") or 0,
+                "xray": row.get("xray") or 0,
+            })
+
+        totals = {
+            "reported": sum(row["reported"] for row in rows),
+            "yankee": sum(row["yankee"] for row in rows),
+            "xray": sum(row["xray"] for row in rows),
+        }
+        return Response({
+            **period_payload,
+            "generated_at": timezone.now(),
+            "legend": {"yankee": "injured", "xray": "dead"},
+            "totals": totals,
+            "rows": rows,
+        })
+
+    @action(detail=False, methods=["get"], url_path="unit-options")
+    def unit_options(self, request):
+        search = str(request.query_params.get("search") or "").strip()
+        qs = Unit.objects.all().order_by("name")
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
+        return Response(list(qs.values("id", "name", "code")))
 
     def get_queryset(self):
         qs = OccurrenceEntry.objects.select_related(
@@ -416,6 +503,23 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             "recorded_by",
             "linked_incident",
         )
+        params = self.request.query_params
+        date_from = self._parse_report_date(params.get("date_from"), None, "date_from")
+        date_to = self._parse_report_date(params.get("date_to") or params.get("as_at"), None, "date_to")
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({"date_from": "Date from cannot be later than date to."})
+        if date_from:
+            qs = qs.filter(occurred_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(occurred_at__date__lte=date_to)
+        road_traffic_type = params.get("road_traffic_type")
+        if road_traffic_type:
+            qs = qs.filter(road_traffic_type=road_traffic_type)
+        metric = params.get("metric")
+        if metric == "yankee":
+            qs = qs.filter(injured_count__gt=0)
+        elif metric == "xray":
+            qs = qs.filter(dead_count__gt=0)
         user = self.request.user
         if has_global_read_access(user):
             return qs
@@ -443,11 +547,14 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             if book.status == OccurrenceBook.Status.CLOSED:
                 raise ValidationError({"book": "The daily occurrence book is already closed."})
             next_serial = (book.entries.aggregate(value=Max("serial_no"))["value"] or 0) + 1
+            originating_unit = duty_post.roster.unit_label
+            if serializer.validated_data.get("entry_type") == OccurrenceEntry.EntryType.INCIDENT:
+                originating_unit = self._user_originating_sub_unit_label(self.request.user) or originating_unit
             serializer.save(
                 book=book,
                 serial_no=next_serial,
                 recorded_by=self.request.user,
-                originating_unit=duty_post.roster.unit_label,
+                originating_unit=originating_unit,
             )
 
     @action(detail=True, methods=["post"], url_path="create-incident")
@@ -472,17 +579,20 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         if not location:
             raise ValidationError({"place": "Place must be entered on the OB entry before creating an incident record."})
         casualty_summary = self._road_traffic_casualty_summary(entry)
-        injuries = "\n".join(part for part in [entry.injuries, casualty_summary] if part)
+        vehicle_summary = self._road_traffic_vehicle_summary(entry)
+        driver_summary = self._road_traffic_driver_summary(entry)
+        injuries = entry.injuries or casualty_summary
+        description = entry.description or self._road_traffic_description(entry)
 
         incident = Incident.objects.create(
             incident_type=incident_type,
-            description=entry.description,
+            description=description,
             location=location,
-            service_vehicle=entry.service_vehicle,
+            service_vehicle=entry.service_vehicle or vehicle_summary,
             unit_involved=entry.unit_involved,
             originating_unit=entry.originating_unit,
             civilian=entry.civilian,
-            service_member=entry.service_member,
+            service_member=entry.service_member or driver_summary,
             history=entry.history,
             injuries=injuries,
             damages=entry.damages,
@@ -504,12 +614,70 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
     def _road_traffic_casualty_summary(self, entry):
         if entry.entry_type != OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT:
             return ""
-        if entry.road_traffic_type == OccurrenceEntry.RoadTrafficType.INJURY and entry.injured_count:
-            severity = entry.get_injury_severity_display() if entry.injury_severity else "Not specified"
-            return f"Number injured: {entry.injured_count}. Severity: {severity}."
-        if entry.road_traffic_type == OccurrenceEntry.RoadTrafficType.FATAL and entry.dead_count:
-            return f"Number dead: {entry.dead_count}."
-        return ""
+        lines = [
+            f"Personnel injured: {entry.injured_count or 'Nil'}. Personnel dead: {entry.dead_count or 'Nil'}."
+        ]
+        casualties = entry.rta_casualties or []
+        if casualties:
+            detail_lines = []
+            for index, casualty in enumerate(casualties, start=1):
+                status = "Dead" if casualty.get("casualty_status") == "dead" else "Injured"
+                person = self._rta_person_label(casualty, "ID No" if casualty.get("person_type") == "civilian" else "Svc No")
+                severity = ""
+                if status == "Injured" and casualty.get("injury_severity"):
+                    severity = f"; Severity: {dict(OccurrenceEntry.InjurySeverity.choices).get(casualty.get('injury_severity'), casualty.get('injury_severity'))}"
+                detail_lines.append(f"{index}. {status}: {person or 'Details not specified'}{severity}")
+            lines.append("Onboard personnel / casualties:\n" + "\n".join(detail_lines))
+        return "\n".join(lines)
+
+    def _road_traffic_vehicle_summary(self, entry):
+        if entry.entry_type != OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT:
+            return ""
+        lines = []
+        for index, vehicle in enumerate(entry.rta_vehicles or [], start=1):
+            type_label = "Civilian vehicle" if vehicle.get("vehicle_type") == "civilian" else "Service vehicle"
+            details = vehicle.get("vehicle_details") or "Not specified"
+            lines.append(f"{index}. {type_label}: {details}")
+        return "\n".join(lines)
+
+    def _road_traffic_driver_summary(self, entry):
+        if entry.entry_type != OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT:
+            return ""
+        lines = []
+        for index, vehicle in enumerate(entry.rta_vehicles or [], start=1):
+            driver = self._rta_person_label({
+                "identifier": vehicle.get("driver_identifier"),
+                "rank": vehicle.get("driver_rank"),
+                "name": vehicle.get("driver_name"),
+                "unit": vehicle.get("driver_unit"),
+                "is_unknown": vehicle.get("driver_unknown"),
+            }, "ID No" if vehicle.get("driver_person_type") == "civilian" else "Svc No")
+            if driver:
+                lines.append(f"{index}. Driver: {driver}")
+        return "\n".join(lines)
+
+    def _road_traffic_description(self, entry):
+        if entry.entry_type != OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT:
+            return entry.description
+        sections = [
+            f"{entry.get_road_traffic_type_display() or 'Road Traffic Accident'} recorded at {entry.place or 'place not specified'}.",
+            self._road_traffic_casualty_summary(entry),
+            self._road_traffic_vehicle_summary(entry),
+        ]
+        return "\n".join(section for section in sections if section)
+
+    def _rta_person_label(self, person, identifier_label):
+        if person.get("is_unknown"):
+            return "Unknown civilian"
+        parts = []
+        if person.get("identifier"):
+            parts.append(f"{identifier_label}: {person.get('identifier')}")
+        for field in ["rank", "name"]:
+            if person.get(field):
+                parts.append(str(person.get(field)))
+        if person.get("unit"):
+            parts.append(f"Unit: {person.get('unit')}")
+        return " ".join(parts)
 
     def _current_duty_room_post(self, user):
         now = timezone.now()
@@ -525,6 +693,13 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             .order_by("ends_at")
             .first()
         )
+
+    def _user_originating_sub_unit_label(self, user):
+        if getattr(user, "detachment_id", None):
+            return user.detachment.name
+        if getattr(user, "battalion_id", None):
+            return user.battalion.name
+        return ""
 
     def _can_convert_to_incident(self, user, entry):
         if user.role == User.Role.DUTY_OFFICER:

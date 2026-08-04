@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 
+from apps.common.fields import EncryptedTextField
+
 
 def release_letter_path(instance, filename):
     case_ref = getattr(instance.case, "case_number", None) or "guardroom"
@@ -114,15 +116,15 @@ class GuardroomPlacementRequest(models.Model):
         blank=True,
         related_name="released_guardroom_placement_requests",
     )
-    reviewer_comments = models.TextField(blank=True)
-    rejection_reason = models.TextField(blank=True)
+    reviewer_comments = EncryptedTextField(blank=True)
+    rejection_reason = EncryptedTextField(blank=True)
     book_out_status = models.CharField(
         max_length=20,
         choices=BookOutStatus.choices,
         default=BookOutStatus.NOT_REQUESTED,
     )
-    book_out_comments = models.TextField(blank=True)
-    book_out_rejection_reason = models.TextField(blank=True)
+    book_out_comments = EncryptedTextField(blank=True)
+    book_out_rejection_reason = EncryptedTextField(blank=True)
     release_letter = models.FileField(upload_to=release_letter_path, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

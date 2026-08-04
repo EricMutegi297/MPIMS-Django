@@ -14,6 +14,8 @@ class UserSerializer(serializers.ModelSerializer):
     battalion_type = serializers.SerializerMethodField()
     detachment_name = serializers.SerializerMethodField()
     is_superuser = serializers.SerializerMethodField()
+    totp_configured = serializers.SerializerMethodField()
+    totp_required = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -21,7 +23,9 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
             "battalion_name", "battalion_type", "detachment_name",
-            "is_active", "is_superuser", "must_change_password", "created_at",
+            "is_active", "is_superuser", "must_change_password",
+            "totp_configured", "totp_required",
+            "created_at",
         ]
         read_only_fields = ["id", "created_at"]
 
@@ -37,15 +41,24 @@ class UserSerializer(serializers.ModelSerializer):
     def get_is_superuser(self, obj):
         return bool(obj.is_superuser)
 
+    def get_totp_configured(self, obj):
+        try:
+            return bool(obj.totp_device.confirmed)
+        except Exception:
+            return False
+
+    def get_totp_required(self, obj):
+        from django.conf import settings
+
+        return bool(getattr(settings, "TOTP_REQUIRED", True))
+
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
-
     class Meta:
         model = User
         fields = [
             "service_number", "name", "rank", "email", "role",
-            "unit", "battalion", "formation", "detachment", "password",
+            "unit", "battalion", "formation", "detachment",
         ]
         extra_kwargs = {
             "rank":  {"required": True, "allow_blank": False},
@@ -63,14 +76,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
             if is_battalion_admin(actor) or is_detachment_ic(actor):
                 return data
             raise serializers.ValidationError(
-                {"battalion": "Battalion or Detachment is required for this role."}
+                {"battalion": "Battalion or Company is required for this role."}
             )
         return data
 
     def create(self, validated_data):
-        password = validated_data.pop("password")
         user = User(**validated_data)
-        user.set_password(password)
+        user.set_unusable_password()
+        user.must_change_password = True
         user.save()
         return user
 
@@ -100,7 +113,10 @@ class ChangePasswordSerializer(serializers.Serializer):
         return value
 
     def validate_new_password(self, value):
-        validate_password(value, self.context["request"].user)
+        user = self.context["request"].user
+        if user.check_password(value):
+            raise serializers.ValidationError("New password cannot be the same as current password.")
+        validate_password(value, user)
         return value
 
 
@@ -123,6 +139,8 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         if not default_token_generator.check_token(user, data["token"]):
             raise serializers.ValidationError({"token": "The password reset link is invalid or has expired."})
 
+        if user.check_password(data["new_password"]):
+            raise serializers.ValidationError({"new_password": "New password cannot be the same as current password."})
         validate_password(data["new_password"], user)
         data["user"] = user
         return data

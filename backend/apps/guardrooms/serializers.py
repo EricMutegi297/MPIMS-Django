@@ -40,6 +40,7 @@ class GuardroomPlacementRequestSerializer(serializers.ModelSerializer):
     accused_service_number = serializers.CharField(source="case.accused_service_number", read_only=True)
     accused_unit_name = serializers.CharField(source="case.accused_unit.name", read_only=True)
     assigned_team_name = serializers.CharField(source="case.assigned_team.name", read_only=True)
+    assigned_to_name = serializers.SerializerMethodField()
     team_detachment_name = serializers.CharField(source="case.assigned_team.detachment.name", read_only=True)
     tasked_battalion_name = serializers.CharField(source="case.tasked_battalion.name", read_only=True)
     tasked_detachment_name = serializers.CharField(source="case.tasked_detachment.name", read_only=True)
@@ -71,6 +72,7 @@ class GuardroomPlacementRequestSerializer(serializers.ModelSerializer):
             "accused_service_number",
             "accused_unit_name",
             "assigned_team_name",
+            "assigned_to_name",
             "team_detachment_name",
             "tasked_battalion_name",
             "tasked_detachment_name",
@@ -144,6 +146,10 @@ class GuardroomPlacementRequestSerializer(serializers.ModelSerializer):
             "reviewed_at",
             "booked_in_at",
         ]
+
+    def get_assigned_to_name(self, obj):
+        assigned_to = getattr(obj.case, "assigned_to", None)
+        return str(assigned_to) if assigned_to else None
 
     def get_requested_by_name(self, obj):
         if obj.requested_by:

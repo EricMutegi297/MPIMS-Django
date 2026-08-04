@@ -4,6 +4,8 @@ from decouple import config
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config("SECRET_KEY")
+FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY", default="")
+FIELD_ENCRYPTION_OLD_KEYS = config("FIELD_ENCRYPTION_OLD_KEYS", default="")
 
 
 def _as_bool(value, default=True):
@@ -40,6 +42,7 @@ INSTALLED_APPS = [
     "apps.dutyrooms",
     "apps.guardrooms",
     "apps.notifications",
+    "apps.audit",
     "apps.morningbriefs",
     "apps.formations",
     "apps.offences",
@@ -53,6 +56,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "apps.audit.middleware.AuditLogMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -87,6 +91,9 @@ DATABASES = {
         "PASSWORD": config("DB_PASSWORD"),
         "HOST": config("DB_HOST", default="localhost"),
         "PORT": config("DB_PORT", default="5432"),
+        "OPTIONS": {
+            "sslmode": config("DB_SSLMODE", default="prefer"),
+        },
     }
 }
 
@@ -100,7 +107,7 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 # ── REST Framework ────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.users.authentication.MPIMSJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",  # keeps Django admin working
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -119,6 +126,8 @@ REST_FRAMEWORK = {
 from datetime import timedelta  # noqa: E402
 
 SIMPLE_JWT = {
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": SECRET_KEY,
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
@@ -163,6 +172,19 @@ EMAIL_HOST_USER    = config("EMAIL_HOST_USER",    default="")
 EMAIL_HOST_PASSWORD= config("EMAIL_HOST_PASSWORD",default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="MPIMS <noreply@mpims.ke>")
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
+
+# Google Authenticator / TOTP MFA.
+TOTP_REQUIRED = config("TOTP_REQUIRED", default=True, cast=bool)
+TOTP_ISSUER_NAME = config("TOTP_ISSUER_NAME", default="MPIMS")
+TOTP_CODE_WINDOW = config("TOTP_CODE_WINDOW", default=1, cast=int)
+TOTP_SETUP_TOKEN_LIFETIME_MINUTES = config("TOTP_SETUP_TOKEN_LIFETIME_MINUTES", default=30, cast=int)
+TOTP_LOCKOUT_MINUTES = config("TOTP_LOCKOUT_MINUTES", default=15, cast=int)
+
+# Brute-force protection.
+LOGIN_FAILURE_LIMIT = config("LOGIN_FAILURE_LIMIT", default=5, cast=int)
+LOGIN_IP_FAILURE_LIMIT = config("LOGIN_IP_FAILURE_LIMIT", default=25, cast=int)
+LOGIN_FAILURE_WINDOW_MINUTES = config("LOGIN_FAILURE_WINDOW_MINUTES", default=15, cast=int)
+LOGIN_LOCKOUT_MINUTES = config("LOGIN_LOCKOUT_MINUTES", default=15, cast=int)
 
 # ── Channels (WebSocket) ──────────────────────────────────────────────────────
 CHANNEL_LAYERS = {

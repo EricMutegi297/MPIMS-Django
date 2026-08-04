@@ -2,6 +2,8 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 
+from apps.common.fields import EncryptedTextField
+
 
 def case_attachment_path(instance, filename):
     case_ref = instance.case_number or "draft"
@@ -68,7 +70,7 @@ class Case(models.Model):
 
     case_number = models.CharField(max_length=30, unique=True, blank=True)
     title = models.CharField(max_length=200, blank=True)
-    description = models.TextField(blank=True)
+    description = EncryptedTextField(blank=True)
     status = models.CharField(max_length=25, choices=Status.choices, default=Status.NEW)
     offence = models.CharField(max_length=200, blank=True)
     offence_ref = models.ForeignKey(
@@ -135,12 +137,12 @@ class Case(models.Model):
         on_delete=models.SET_NULL,
         related_name="tasked_cases",
     )
-    action_taken = models.TextField(blank=True)
-    remarks = models.TextField(blank=True)
+    action_taken = EncryptedTextField(blank=True)
+    remarks = EncryptedTextField(blank=True)
     chargesheet = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
-    mentioning_remarks = models.TextField(blank=True)
+    mentioning_remarks = EncryptedTextField(blank=True)
     close_requested = models.BooleanField(default=False)
     close_requested_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
@@ -232,7 +234,7 @@ class CaseBrief(models.Model):
         CO = "co", "Commanding Officer"
         OC = "oc", "OC"
         CORPS_CMD = "corps_cmd", "Corps Cmd"
-        DETACHMENT = "detachment", "Detachment IC"
+        DETACHMENT = "detachment", "IC COY"
         ADJ = "adj", "Adjutant"
         TWO_IC = "2ic", "2IC"
 
@@ -242,14 +244,14 @@ class CaseBrief(models.Model):
         related_name="brief",
     )
     file = models.FileField(upload_to=case_brief_path)
-    summary = models.TextField(blank=True)
+    summary = EncryptedTextField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     forwarded_to_role = models.CharField(
         max_length=20,
         choices=ForwardRole.choices,
         blank=True,
     )
-    forwarded_note = models.TextField(blank=True)
+    forwarded_note = EncryptedTextField(blank=True)
     forwarded_at = models.DateTimeField(null=True, blank=True)
     forwarded_from_role = models.CharField(max_length=20, blank=True)
     forwarded_by = models.ForeignKey(
@@ -267,7 +269,7 @@ class CaseBrief(models.Model):
         related_name="approved_case_briefs",
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    approved_note = models.TextField(blank=True)
+    approved_note = EncryptedTextField(blank=True)
     revision = models.PositiveIntegerField(default=1)
     attached_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -302,7 +304,7 @@ class CaseBriefForward(models.Model):
         on_delete=models.SET_NULL,
         related_name="case_brief_forwards",
     )
-    note = models.TextField(blank=True)
+    note = EncryptedTextField(blank=True)
     revision = models.PositiveIntegerField(default=1)
     forwarded_at = models.DateTimeField(default=timezone.now)
 
@@ -327,7 +329,7 @@ class CaseBackBrief(models.Model):
         related_name="back_brief",
     )
     file = models.FileField(upload_to=case_back_brief_path)
-    note = models.TextField(blank=True)
+    note = EncryptedTextField(blank=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -348,7 +350,7 @@ class CaseBackBrief(models.Model):
 
 class ExhibitStorageRequest(models.Model):
     class StorageScope(models.TextChoices):
-        DETACHMENT = "detachment", "Detachment"
+        DETACHMENT = "detachment", "Company"
         BATTALION = "battalion", "Battalion"
         SPECIAL_BATTALION = "special_battalion", "Special Battalion"
 
@@ -382,7 +384,7 @@ class ExhibitStorageRequest(models.Model):
         related_name="additional_requests",
     )
     exhibit_name = models.CharField(max_length=150)
-    description = models.TextField(blank=True)
+    description = EncryptedTextField(blank=True)
     quantity = models.PositiveIntegerField(default=1)
     photo = models.FileField(upload_to=exhibit_photo_path, null=True, blank=True)
     storage_scope = models.CharField(max_length=25, choices=StorageScope.choices)
@@ -421,12 +423,12 @@ class ExhibitStorageRequest(models.Model):
         on_delete=models.SET_NULL,
         related_name="stored_exhibit_storage_requests",
     )
-    reviewer_comments = models.TextField(blank=True)
-    decline_reason = models.TextField(blank=True)
+    reviewer_comments = EncryptedTextField(blank=True)
+    decline_reason = EncryptedTextField(blank=True)
     storage_reference = models.CharField(max_length=100, blank=True)
     physical_location = models.CharField(max_length=200, blank=True)
     lifecycle_action = models.CharField(max_length=25, choices=LifecycleAction.choices, blank=True)
-    lifecycle_reason = models.TextField(blank=True)
+    lifecycle_reason = EncryptedTextField(blank=True)
     lifecycle_recipient_name = models.CharField(max_length=150, blank=True)
     lifecycle_recipient_identifier = models.CharField(max_length=100, blank=True)
     lifecycle_authority = models.CharField(max_length=150, blank=True)
@@ -446,8 +448,8 @@ class ExhibitStorageRequest(models.Model):
         on_delete=models.SET_NULL,
         related_name="reviewed_exhibit_lifecycle_actions",
     )
-    lifecycle_review_comments = models.TextField(blank=True)
-    lifecycle_decline_reason = models.TextField(blank=True)
+    lifecycle_review_comments = EncryptedTextField(blank=True)
+    lifecycle_decline_reason = EncryptedTextField(blank=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
     stored_at = models.DateTimeField(null=True, blank=True)
     lifecycle_requested_at = models.DateTimeField(null=True, blank=True)
@@ -466,7 +468,7 @@ class ExhibitStorageRequest(models.Model):
 class CaseCourtMartialHearing(models.Model):
     case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_hearings")
     hearing_date = models.DateField()
-    remarks = models.TextField(blank=True)
+    remarks = EncryptedTextField(blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
@@ -492,8 +494,8 @@ class CaseCourtMartialMilestone(models.Model):
     case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_milestones")
     milestone_type = models.CharField(max_length=20, choices=MilestoneType.choices)
     scheduled_date = models.DateField()
-    planning_comment = models.TextField(blank=True)
-    action_remarks = models.TextField(blank=True)
+    planning_comment = EncryptedTextField(blank=True)
+    action_remarks = EncryptedTextField(blank=True)
     action_recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -534,7 +536,7 @@ class CaseActivityLog(models.Model):
         ATTACHMENT_DELETED = "attachment_deleted", "Attachment Deleted"
         TEAM_ASSIGNED = "team_assigned", "Team Assigned"
         BATTALION_TASKED = "battalion_tasked", "Battalion Tasked"
-        DETACHMENT_TASKED = "detachment_tasked", "Detachment Tasked"
+        DETACHMENT_TASKED = "detachment_tasked", "Company Tasked"
         CASE_UPDATED = "case_updated", "Case Updated"
         BRIEF_ATTACHED = "brief_attached", "Brief Attached"
         BRIEF_UPDATED = "brief_updated", "Brief Updated"
@@ -545,7 +547,7 @@ class CaseActivityLog(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
     action = models.CharField(max_length=30, choices=Action.choices)
-    detail = models.CharField(max_length=255, blank=True)
+    detail = EncryptedTextField(blank=True)
     reference_pdf = models.FileField(upload_to=case_activity_reference_path, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

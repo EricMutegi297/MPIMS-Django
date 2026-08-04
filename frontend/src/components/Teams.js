@@ -9,7 +9,7 @@ function toArray(data) {
 const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
-  detachment:   "IC Det",
+  detachment:   "IC COY",
 };
 
 function displayUser(u) {
@@ -67,6 +67,11 @@ function MembersModal({ teamName, members, onClose }) {
 
 // Shared form for Create/Edit outside Teams so React never remounts it
 function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligibleMems, error, detUsers, workloadMap }) {
+  const loadFor = (u) => workloadMap[u.id] ?? 0;
+  const sortedIcs = [...detUsers].sort(
+    (a, b) => loadFor(a) - loadFor(b) || displayUser(a).localeCompare(displayUser(b))
+  );
+
   return (
     <div className="space-y-4">
       {error && (
@@ -94,11 +99,14 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
           className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">-- Select Team IC --</option>
-          {detUsers.map((u) => (
+          {sortedIcs.map((u) => {
+            const load = loadFor(u);
+            return (
             <option key={u.id} value={u.id}>
-              {u.rank ? `${u.rank} ` : ""}{u.name} - {ROLE_LABELS[u.role] || u.role} ({u.service_number})
+              {displayUser(u)} - {ROLE_LABELS[u.role] || u.role} ({u.service_number || "--"}) - {load} active case{load !== 1 ? "s" : ""}
             </option>
-          ))}
+            );
+          })}
         </select>
       </div>
       <div>
@@ -139,7 +147,7 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
                   <span className="text-xs text-indigo-400">{ROLE_LABELS[u.role] || u.role}</span>
                   <span className="text-xs text-gray-500">{u.service_number}</span>
                   <span
-                    title={`${load} case${load !== 1 ? "s" : ""} under investigation`}
+                    title={`${load} active case${load !== 1 ? "s" : ""}`}
                     className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${badge}`}
                   >{load}</span>
                 </label>
@@ -173,7 +181,7 @@ export default function Teams({ user, scope = "detachment" }) {
   const [workload, setWorkload]           = useState([]);
   const [loadingWorkload, setLoadingWorkload] = useState(false);
   // map userId → total_engagement for badge display in form
-  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement]));
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
 
   const loadWorkload = useCallback(() => {
     setLoadingWorkload(true);
@@ -239,7 +247,9 @@ export default function Teams({ user, scope = "detachment" }) {
 
   // â”€â”€ Create helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sort least-engaged first using workload data
-  const byLoad = (a, b) => (workloadMap[a.id] ?? 0) - (workloadMap[b.id] ?? 0);
+  const byLoad = (a, b) =>
+    (workloadMap[a.id] ?? 0) - (workloadMap[b.id] ?? 0) ||
+    displayUser(a).localeCompare(displayUser(b));
   const eligibleCreateMembers = detUsers
     .filter((u) => String(u.id) !== String(teamIC))
     .sort(byLoad);
@@ -266,6 +276,7 @@ export default function Teams({ user, scope = "detachment" }) {
       await teamService.create({ name: teamName.trim(), team_ic: teamIC, members });
       setShowCreate(false);
       loadTeams();
+      loadWorkload();
     } catch (e) {
       const d = e?.response?.data;
       setCreateError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to create team.");
@@ -310,6 +321,7 @@ export default function Teams({ user, scope = "detachment" }) {
       });
       setEditingTeam(null);
       loadTeams();
+      loadWorkload();
     } catch (e) {
       const d = e?.response?.data;
       setEditError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to update team.");
@@ -325,6 +337,7 @@ export default function Teams({ user, scope = "detachment" }) {
       await teamService.delete(id);
       setConfirmDeleteId(null);
       loadTeams();
+      loadWorkload();
     } catch {
       // ignore
     } finally {
@@ -344,12 +357,12 @@ export default function Teams({ user, scope = "detachment" }) {
           <p className="text-sm text-gray-500 mt-0.5">
             {isBattalionScope
               ? (user?.battalion_name ? `${user.battalion_name} Teams` : "Battalion Teams")
-              : (user?.detachment_name ? `${user.detachment_name} Detachment` : "Detachment Teams")}
+              : (user?.detachment_name ? `${user.detachment_name} Company` : "Company Teams")}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <button
-            onClick={(e) => { e.stopPropagation(); loadTeams(); }}
+            onClick={(e) => { e.stopPropagation(); loadTeams(); loadWorkload(); }}
             className="flex items-center gap-2 text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -387,7 +400,7 @@ export default function Teams({ user, scope = "detachment" }) {
       {activeTab === "workload" && (
         <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-300">Personnel Engagement (Cases Under Investigation)</h3>
+            <h3 className="text-sm font-semibold text-gray-300">Personnel Engagement (Active Cases)</h3>
             {loadingWorkload && <span className="text-xs text-gray-500 animate-pulse">Loading...</span>}
           </div>
           {workload.length === 0 && !loadingWorkload ? (
@@ -400,6 +413,7 @@ export default function Teams({ user, scope = "detachment" }) {
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider w-10">#</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Name</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As IO</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As IC</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As Member</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">Total</th>
@@ -419,6 +433,7 @@ export default function Teams({ user, scope = "detachment" }) {
                           <div className="text-xs text-gray-500">{w.service_number}</div>
                         </td>
                         <td className="px-4 py-3 text-xs text-indigo-400">{ROLE_LABELS[w.role] || w.role}</td>
+                        <td className="px-4 py-3 text-center text-xs text-gray-300">{w.direct_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center text-xs text-gray-300">{w.ic_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center text-xs text-gray-300">{w.member_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center">

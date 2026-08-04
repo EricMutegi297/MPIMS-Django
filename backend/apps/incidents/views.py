@@ -28,7 +28,7 @@ class IncidentViewSet(viewsets.ModelViewSet):
     queryset = Incident.objects.all()
     serializer_class = IncidentSerializer
     filterset_fields = ["status", "severity", "unit", "battalion", "is_belated"]
-    search_fields = ["incident_number", "incident_type", "description", "location"]
+    search_fields = ["incident_number", "incident_type", "location"]
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)

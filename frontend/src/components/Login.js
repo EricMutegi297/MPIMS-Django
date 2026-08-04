@@ -9,23 +9,71 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [totpStep, setTotpStep] = useState(null);
+  const [totpCode, setTotpCode] = useState("");
   useAutoDismiss(error, setError);
 
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
+  const handleTotpChange = (e) => {
+    setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+    setError("");
+  };
+
+  const navigateAfterAuth = (data) => {
+    const user = data.user;
+    if (user?.must_change_password || data.mustChangePassword) {
+      navigate("/dashboard/change-password");
+    } else if (data.totpSetupRequired) {
+      navigate("/dashboard/authenticator");
+    } else {
+      navigate("/dashboard");
+    }
+  };
+
+  const handleTotpSubmit = async (e) => {
+    e.preventDefault();
+    if (!totpStep?.challenge_id) {
+      setError("Sign in again to request a new authenticator challenge.");
+      return;
+    }
+    if (totpCode.length !== 6) {
+      setError("Enter the 6-digit code from Google Authenticator.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await authService.verifyTotpLogin(totpStep.challenge_id, totpCode);
+      navigateAfterAuth(res.data);
+    } catch (err) {
+      setError(
+        err.response?.data?.detail ||
+          "Authenticator verification failed."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    setTotpStep(null);
+    setTotpCode("");
     setLoading(true);
     try {
       const res = await authService.login(form.service_number, form.password);
-      const user = res.data.user;
-      if (user.must_change_password) {
-        navigate("/dashboard/change-password");
-      } else {
-        navigate("/dashboard");
+      if (res.data.totpSetupRequired) {
+        navigateAfterAuth(res.data);
+        return;
       }
+      if (res.data.requiresTotp && res.data.totpChallenge) {
+        setTotpStep(res.data.totpChallenge);
+        return;
+      }
+      navigateAfterAuth(res.data);
     } catch (err) {
       setError(
         err.response?.data?.detail ||
@@ -55,7 +103,7 @@ export default function Login() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={totpStep ? handleTotpSubmit : handleSubmit} className="space-y-5">
           <div>
             <label className="block text-gray-300 text-sm font-medium mb-1">
               Service Number
@@ -66,6 +114,7 @@ export default function Login() {
               value={form.service_number}
               onChange={handleChange}
               required
+              disabled={!!totpStep}
               className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="e.g. 151297"
             />
@@ -82,6 +131,7 @@ export default function Login() {
                 value={form.password}
                 onChange={handleChange}
                 required
+                disabled={!!totpStep}
                 className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2.5 pr-11 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Enter your password"
               />
@@ -113,12 +163,41 @@ export default function Login() {
             </div>
           </div>
 
+          {totpStep && (
+            <div className="rounded-lg border border-blue-500/40 bg-blue-950/40 p-4">
+              <label className="block text-blue-100 text-sm font-semibold mb-2">
+                Google Authenticator Code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={totpCode}
+                onChange={handleTotpChange}
+                autoFocus
+                required
+                className="w-full rounded-lg border border-blue-500/50 bg-gray-900 px-4 py-3 text-center text-2xl font-bold tracking-[0.35em] text-white outline-none focus:ring-2 focus:ring-blue-400"
+                placeholder="000000"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setTotpStep(null);
+                  setTotpCode("");
+                }}
+                className="mt-2 text-xs text-blue-300 hover:text-blue-200"
+              >
+                Use different credentials
+              </button>
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors"
           >
-            {loading ? "Signing in..." : "Sign In"}
+            {loading ? "Signing in..." : totpStep ? "Verify Code" : "Sign In"}
           </button>
         </form>
       </div>

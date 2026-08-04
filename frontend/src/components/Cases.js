@@ -1,10 +1,59 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService } from "../services/api";
+import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function userLabel(user) {
+  if (!user) return "";
+  const name = [user.rank, user.name].filter(Boolean).join(" ").trim();
+  const serviceNumber = user.service_number ? ` (${user.service_number})` : "";
+  return `${name || user.service_number || "Unknown"}${name ? serviceNumber : ""}`;
+}
+
+function userWorkload(user, workloadMap) {
+  return workloadMap[user?.id] ?? 0;
+}
+
+function userLabelWithWorkload(user, workloadMap) {
+  const load = userWorkload(user, workloadMap);
+  return `${userLabel(user)} - ${load} active case${load !== 1 ? "s" : ""}`;
+}
+
+function sortUsersByWorkload(workloadMap) {
+  return (a, b) =>
+    userWorkload(a, workloadMap) - userWorkload(b, workloadMap) ||
+    userLabel(a).localeCompare(userLabel(b));
+}
+
+function caseAssignmentLabel(caseObj) {
+  return caseObj?.assigned_to_name || caseObj?.assigned_team_name || "";
+}
+
+function accusedUnitLabel(caseObj) {
+  const units = [
+    caseObj?.accused_unit_name,
+    ...toArray(caseObj?.accused_entries).map((entry) => entry?.unit_name || entry?.unit),
+  ].filter(Boolean);
+  return [...new Set(units)].join("; ");
+}
+
+function taskedBattalionCompanyLabel(caseObj) {
+  if (caseObj?.tasked_detachment_name) {
+    return [caseObj?.tasked_battalion_name, caseObj.tasked_detachment_name].filter(Boolean).join(" / ");
+  }
+  return caseObj?.tasked_battalion_name || "";
+}
+
+function latestCaseUpdateText(caseObj) {
+  return caseObj?.latest_update || caseObj?.action_taken || caseObj?.mentioning_remarks || caseObj?.remarks || "";
+}
+
+function latestCaseUpdateDate(caseObj) {
+  return caseObj?.latest_update_at || caseObj?.mentioning_date || caseObj?.updated_at || "";
 }
 
 function normalizeDateForApi(value) {
@@ -22,6 +71,119 @@ function normalizeDateForDisplay(value) {
   if (normalized) return normalized;
   if (!value) return "";
   return String(value);
+}
+
+function formatDateTimeForReport(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return normalizeDateForDisplay(value);
+  return date.toLocaleString("en-GB");
+}
+
+function caseDateValues(caseObj) {
+  return [
+    caseObj?.date_of_offence,
+    caseObj?.created_at,
+    caseObj?.updated_at,
+    caseObj?.tasking_date,
+    caseObj?.team_assigned_at,
+    caseObj?.served_at,
+    caseObj?.closed_at,
+    caseObj?.mentioning_date,
+    caseObj?.rfi_date,
+    caseObj?.investigation_deadline,
+  ].map(normalizeDateForApi).filter(Boolean);
+}
+
+function caseMatchesDateRange(caseObj, dateFrom, dateTo) {
+  if (!dateFrom && !dateTo) return true;
+  return caseDateValues(caseObj).some((dateValue) =>
+    (!dateFrom || dateValue >= dateFrom) && (!dateTo || dateValue <= dateTo)
+  );
+}
+
+function caseUnitLabel(caseObj) {
+  const accusedEntryUnits = toArray(caseObj?.accused_entries)
+    .map((entry) => entry?.unit_name || entry?.unit)
+    .filter(Boolean);
+  const taskedTo = [caseObj?.tasked_battalion_name, caseObj?.tasked_detachment_name].filter(Boolean).join(" / ");
+  return [
+    caseObj?.accused_unit_name,
+    ...accusedEntryUnits,
+    caseObj?.submitting_unit_name,
+    taskedTo,
+    caseObj?.assigned_team_name,
+    caseObj?.assigned_to_name,
+  ].filter(Boolean).join("; ");
+}
+
+function caseSearchText(caseObj) {
+  const accusedEntries = toArray(caseObj?.accused_entries).flatMap((entry) => [
+    entry?.name,
+    entry?.rank,
+    entry?.service_number,
+    entry?.service,
+    entry?.unit_name,
+    entry?.unit,
+  ]);
+  return [
+    caseObj?.case_number,
+    caseObj?.status,
+    STATUS_CHIP_META[caseObj?.status]?.label,
+    caseObj?.title,
+    caseObj?.offence,
+    caseObj?.offence_name,
+    caseObj?.description,
+    caseObj?.place_of_offence,
+    caseObj?.police_station,
+    caseObj?.accused_name,
+    caseObj?.accused_rank,
+    caseObj?.accused_service_number,
+    caseObj?.accused_service,
+    caseObj?.accused_unit_name,
+    accusedUnitLabel(caseObj),
+    caseObj?.submitting_unit_name,
+    caseObj?.tasked_battalion_name,
+    caseObj?.tasked_detachment_name,
+    caseObj?.assigned_team_name,
+    caseObj?.assigned_to_name,
+    caseObj?.remarks,
+    caseObj?.action_taken,
+    caseObj?.mentioning_remarks,
+    caseObj?.latest_update,
+    caseObj?.reason_for_pending,
+    caseObj?.rfi_no,
+    ...caseDateValues(caseObj),
+    ...accusedEntries,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function csvEscape(value) {
+  const text = String(value ?? "");
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function htmlEscape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function downloadTextFile(filename, content, type = "text/csv;charset=utf-8") {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function formatActorLine(item) {
@@ -200,9 +362,9 @@ function ActionLabel({ action }) {
     status_changed: "Status Changed",
     attachment_uploaded: "Attachment Uploaded",
     attachment_deleted: "Attachment Deleted",
-    team_assigned: "Team Assigned",
+    team_assigned: "Investigation Assigned",
     battalion_tasked: "Battalion Tasked",
-    detachment_tasked: "Detachment Tasked",
+    detachment_tasked: "Company Tasked",
     case_updated: "Case Updated",
   };
   return labels[action] || (action || "Update").replace(/_/g, " ");
@@ -358,7 +520,7 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
 }
 
 const BRIEF_FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC Det" },
+  { value: "detachment", label: "IC COY" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -450,17 +612,22 @@ export default function Cases({ user, criminalTypeFilter }) {
   const initialStatus = searchParams.get("status");
   const initialFilter = ALL_STATUSES.includes(initialStatus) ? initialStatus : "all";
   const placeOfOffenceFilter = searchParams.get("place_of_offence") || "";
-  const accusedUnitFilter = searchParams.get("accused_unit") || "";
+  const accusedUnitQueryFilter = searchParams.get("accused_unit") || "";
   const accusedServiceFilter = searchParams.get("accused_service") || "";
   const offenceFilter = searchParams.get("offence") || "";
   const criminalTypeQueryFilter = searchParams.get("criminal_offence_type") || "";
   const createdFromFilter = searchParams.get("created_from") || "";
   const createdToFilter = searchParams.get("created_to") || "";
+  const taskedBattalionFilter = searchParams.get("tasked_battalion") || "";
+  const taskedDetachmentFilter = searchParams.get("tasked_detachment") || "";
   const activeCriminalTypeFilter = criminalTypeFilter || criminalTypeQueryFilter;
   const [cases, setCases]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [filter, setFilter]     = useState(initialFilter);
   const [search, setSearch]     = useState("");
+  const [accusedUnitFilter, setAccusedUnitFilter] = useState(accusedUnitQueryFilter);
+  const [dateFrom, setDateFrom] = useState(createdFromFilter);
+  const [dateTo, setDateTo]     = useState(createdToFilter);
   const [selected, setSelected] = useState(null);
   const selectedId = selected?.id || null;
   const [expandedDesc, setExpandedDesc] = useState({});
@@ -487,9 +654,11 @@ export default function Cases({ user, criminalTypeFilter }) {
     setToastVariant(variant);
   }
 
-  // Assign team form
+  // Assignment form
   const [showTeam, setShowTeam]       = useState(false);
+  const [assignmentMode, setAssignmentMode] = useState("io");
   const [teamId, setTeamId]           = useState("");
+  const [ioId, setIoId]               = useState("");
   const [teamDeadline, setTeamDeadline] = useState("");
   const [teamSaving, setTeamSaving]   = useState(false);
   const [teamErr, setTeamErr]         = useState("");
@@ -552,6 +721,8 @@ export default function Cases({ user, criminalTypeFilter }) {
   // Remote data for forms
   const [battalions, setBattalions]   = useState([]);
   const [teams, setTeams]             = useState([]);
+  const [investigators, setInvestigators] = useState([]);
+  const [workload, setWorkload]       = useState([]);
   const [offences, setOffences]       = useState([]);
   const [units, setUnits]             = useState([]);
 
@@ -565,6 +736,8 @@ export default function Cases({ user, criminalTypeFilter }) {
     (user?.role === "admin" || user?.role === "co");
   const isInvestigator = user?.role === "investigator";
   const briefForwardOptions = getBriefForwardOptions(user, selected);
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
+  const sortedInvestigators = [...investigators].sort(sortUsersByWorkload(workloadMap));
   useAutoDismiss(createErr, setCreateErr);
   useAutoDismiss(taskErr, setTaskErr);
   useAutoDismiss(toastMessage, setToastMessage, 4000);
@@ -581,14 +754,20 @@ export default function Cases({ user, criminalTypeFilter }) {
   // ── Load cases ────────────────────────────────────────────────────
   function loadCases() {
     setLoading(true);
+    const params = { page_size: 200 };
+    if (taskedDetachmentFilter) {
+      params.tasked_detachment = taskedDetachmentFilter;
+    } else if (taskedBattalionFilter) {
+      params.tasked_battalion = taskedBattalionFilter;
+    }
     caseService
-      .list({ page_size: 200 })
+      .list(params)
       .then((res) => setCases(toArray(res.data)))
       .catch(() => {})
       .finally(() => setLoading(false));
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadCases(); }, []);
+  useEffect(() => { loadCases(); }, [taskedBattalionFilter, taskedDetachmentFilter]);
 
   // Load offences for dropdown
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -623,7 +802,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       .catch(() => {});
   }, []);
 
-  // Load teams when a case is selected
+  // Load assignment targets when a case is selected
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!selectedId) return;
@@ -631,13 +810,39 @@ export default function Cases({ user, criminalTypeFilter }) {
       .list()
       .then((res) => setTeams(toArray(res.data)))
       .catch(() => {});
-  }, [selectedId]);
+    teamService
+      .workload()
+      .then((res) => setWorkload(toArray(res.data)))
+      .catch(() => setWorkload([]));
+
+    const params = { role: "investigator", page_size: 200 };
+    const selectedDetachment = selected?.tasked_detachment || user?.detachment_id || user?.detachment;
+    const selectedBattalion = selected?.tasked_battalion || user?.battalion_id || user?.battalion;
+    if (selectedDetachment) {
+      params.detachment = selectedDetachment;
+    } else if (selectedBattalion) {
+      params.battalion = selectedBattalion;
+    }
+    userService
+      .list(params)
+      .then((res) => setInvestigators(toArray(res.data).filter((u) => u.role === "investigator" && u.is_active !== false)))
+      .catch(() => setInvestigators([]));
+  }, [selectedId, selected?.tasked_detachment, selected?.tasked_battalion, user?.detachment_id, user?.detachment, user?.battalion_id, user?.battalion]);
 
   // Keep table status in sync with dashboard card links (?status=...)
   useEffect(() => {
     const status = searchParams.get("status");
     setFilter(ALL_STATUSES.includes(status) ? status : "all");
   }, [searchParams]);
+
+  useEffect(() => {
+    setDateFrom(createdFromFilter);
+    setDateTo(createdToFilter);
+  }, [createdFromFilter, createdToFilter]);
+
+  useEffect(() => {
+    setAccusedUnitFilter(accusedUnitQueryFilter);
+  }, [accusedUnitQueryFilter]);
 
   // ── Helpers ───────────────────────────────────────────────────────
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -651,6 +856,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     setShowTask(false);
     setTaskModalMode(false);
     setShowTeam(false);
+    setAssignmentMode(c?.assigned_team ? "team" : "io");
+    setTeamId(c?.assigned_team ? String(c.assigned_team) : "");
+    setIoId(c?.assigned_to ? String(c.assigned_to) : "");
+    setTeamDeadline(normalizeDateForApi(c?.investigation_deadline));
     setTaskErr("");
     setTeamErr("");
     setStatusErr("");
@@ -1129,27 +1338,43 @@ export default function Cases({ user, criminalTypeFilter }) {
   // ── Assign team ───────────────────────────────────────────────────
   async function handleAssignTeam(e) {
     e.preventDefault();
-    if (!teamId) { setTeamErr("Select a team."); return; }
+    if (assignmentMode === "team" && !teamId) { setTeamErr("Select a team."); return; }
+    if (assignmentMode === "io" && !ioId) { setTeamErr("Select an IO."); return; }
     if (!teamDeadline) { setTeamErr("Investigation deadline is required."); return; }
     setTeamSaving(true);
     setTeamErr("");
     try {
-      const res = await caseService.update(selected.id, {
-        assigned_team: parseInt(teamId),
+      const payload = {
         investigation_deadline: teamDeadline,
-      });
+      };
+      if (assignmentMode === "io") {
+        payload.assigned_to = parseInt(ioId, 10);
+        payload.assigned_team = null;
+      } else {
+        payload.assigned_team = parseInt(teamId, 10);
+        payload.assigned_to = null;
+      }
+      const res = await caseService.update(selected.id, payload);
       refreshSelected(res.data);
       setShowTeam(false);
       setTeamId("");
+      setIoId("");
       setTeamDeadline("");
-      showToast("Investigation team assigned and case moved to Under Investigation.", "success");
+      teamService
+        .workload()
+        .then((res) => setWorkload(toArray(res.data)))
+        .catch(() => setWorkload([]));
+      showToast("Case assigned for investigation.", "success");
     } catch (err) {
       const d = err?.response?.data;
       setTeamErr(
         d?.detail ||
         d?.non_field_errors?.[0] ||
+        d?.assignment?.[0] ||
+        d?.assigned_to?.[0] ||
+        d?.assigned_team?.[0] ||
         d?.investigation_deadline?.[0] ||
-        "Failed to assign team."
+        "Failed to assign case."
       );
     } finally {
       setTeamSaving(false);
@@ -1226,6 +1451,7 @@ export default function Cases({ user, criminalTypeFilter }) {
 
   async function handleDocumentUpload(e) {
     e.preventDefault();
+    if (selected?.status === "closed") { setDocUploadErr("Closed cases do not allow further uploads or attachment changes."); return; }
     if (!docFile) { setDocUploadErr("Select a document to upload."); return; }
     if (!docLabel.trim()) { setDocUploadErr("Enter a document label."); return; }
     setDocUploading(true);
@@ -1234,7 +1460,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       const fd = new FormData();
       fd.append("label", docLabel.trim());
       fd.append("file", docFile);
-      const res = await attachmentService.upload(selected.id, fd);
+      await attachmentService.upload(selected.id, fd);
       refreshSelected(await caseService.get(selected.id).then((r) => r.data));
       setDocLabel("");
       setDocFile(null);
@@ -1259,6 +1485,7 @@ export default function Cases({ user, criminalTypeFilter }) {
 
   async function handleBriefUpload(e) {
     e.preventDefault();
+    if (selected?.status === "closed") { setBriefUploadErr("Closed cases do not allow further uploads or attachment changes."); return; }
     if (!briefFile) { setBriefUploadErr("Select a brief document to upload."); return; }
     setBriefUploading(true);
     setBriefUploadErr("");
@@ -1371,8 +1598,8 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   // ── Filter / search ───────────────────────────────────────────────
-  const filtered = cases.filter((c) => {
-    const matchStatus = filter === "all" || c.status === filter;
+  const caseMatchesFilters = (c, { includeStatus = true } = {}) => {
+    const matchStatus = !includeStatus || filter === "all" || c.status === filter;
     const matchCriminalType = !activeCriminalTypeFilter || c.criminal_offence_type === activeCriminalTypeFilter;
     const matchPlace =
       !placeOfOffenceFilter ||
@@ -1388,18 +1615,13 @@ export default function Cases({ user, criminalTypeFilter }) {
       !accusedServiceFilter ||
       String(c.accused_service || "") === String(accusedServiceFilter) ||
       (Array.isArray(c.accused_entries) && c.accused_entries.some((entry) => String(entry.service || "") === String(accusedServiceFilter)));
-    const createdDate = c.created_at ? String(c.created_at).slice(0, 10) : "";
-    const matchCreatedFrom = !createdFromFilter || (createdDate && createdDate >= createdFromFilter);
-    const matchCreatedTo = !createdToFilter || (createdDate && createdDate <= createdToFilter);
-    const q = search.toLowerCase();
-    const matchSearch =
-      !q ||
-      (c.case_number || "").toLowerCase().includes(q) ||
-      (c.title || "").toLowerCase().includes(q) ||
-      (c.offence || "").toLowerCase().includes(q) ||
-      (c.place_of_offence || "").toLowerCase().includes(q) ||
-      (c.accused_name || "").toLowerCase().includes(q) ||
-      (c.accused_rank || "").toLowerCase().includes(q);
+    const matchTaskedBattalion =
+      !taskedBattalionFilter || String(c.tasked_battalion || "") === String(taskedBattalionFilter);
+    const matchTaskedDetachment =
+      !taskedDetachmentFilter || String(c.tasked_detachment || "") === String(taskedDetachmentFilter);
+    const q = search.trim().toLowerCase();
+    const matchSearch = !q || caseSearchText(c).includes(q);
+    const matchDateRange = caseMatchesDateRange(c, dateFrom, dateTo);
     return (
       matchStatus &&
       matchSearch &&
@@ -1408,13 +1630,17 @@ export default function Cases({ user, criminalTypeFilter }) {
       matchOffence &&
       matchAccusedUnit &&
       matchAccusedService &&
-      matchCreatedFrom &&
-      matchCreatedTo
+      matchTaskedBattalion &&
+      matchTaskedDetachment &&
+      matchDateRange
     );
-  });
+  };
+
+  const statusCountCases = cases.filter((c) => caseMatchesFilters(c, { includeStatus: false }));
+  const filtered = cases.filter((c) => caseMatchesFilters(c));
 
   const counts = ALL_STATUSES.reduce((acc, s) => {
-    acc[s] = cases.filter((c) => c.status === s).length;
+    acc[s] = statusCountCases.filter((c) => c.status === s).length;
     return acc;
   }, {});
 
@@ -1441,6 +1667,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isTaskedFilter = filter === "tasked";
   const isUnderInvestigationFilter = filter === "under_investigation";
   const showDciUpdateColumns = isDciFilter && isUnderInvestigationFilter;
+  const showDciActionColumn = isDciFilter && (isAllFilter || isUnderInvestigationFilter);
   const primaryStatusChips = isDciFilter
     ? PRIMARY_STATUS_CHIPS.filter((s) => s !== "pending" && s !== "served")
     : PRIMARY_STATUS_CHIPS;
@@ -1448,6 +1675,133 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
   const canCloseServedCases = isHqsAdmin || isSuperuser;
+  const defaultCaseExportColumns = [
+    "Case #",
+    "Status",
+    "Service No",
+    "Rank",
+    "Accused",
+    "Offence",
+    "Unit",
+    "Place",
+    "Assignment",
+    "Date of Offence",
+    "Created",
+    "Tasking Date",
+    "Served Date",
+    "Closed Date",
+    "Description",
+  ];
+  const dciCaseExportColumns = [
+    "Case #",
+    "Service No",
+    "Rank",
+    "Accused",
+    "Unit",
+    "Offence",
+    "Description",
+    "Police Station",
+    "Battalion/Coy",
+    "Update",
+    "Status",
+  ];
+  const caseExportColumns = isDciFilter ? dciCaseExportColumns : defaultCaseExportColumns;
+
+  function caseViewTitle() {
+    if (activeCriminalTypeFilter === "court_martial") return "Court Martial Cases";
+    if (activeCriminalTypeFilter === "dci_civ_police") return "DCI / Civ Police Cases";
+    return "Cases";
+  }
+
+  function caseFilterSummary() {
+    const statusLabel = filter === "all"
+      ? "All statuses"
+      : STATUS_CHIP_META[filter]?.label || filter.replace(/_/g, " ");
+    const rangeLabel = dateFrom || dateTo
+      ? `Date range: ${dateFrom || "Start"} to ${dateTo || "End"}`
+      : "Date range: All";
+    const searchLabel = search.trim() ? `Search: ${search.trim()}` : "Search: All";
+    return `${statusLabel} | ${rangeLabel} | ${searchLabel} | ${filtered.length} case${filtered.length !== 1 ? "s" : ""}`;
+  }
+
+  function caseExportRow(caseObj) {
+    return {
+      "Case #": caseObj.case_number || "",
+      Status: STATUS_CHIP_META[caseObj.status]?.label || caseObj.status || "",
+      "Service No": caseObj.accused_service_number || "",
+      Rank: caseObj.accused_rank || "",
+      Accused: caseObj.accused_name || "",
+      Offence: caseObj.offence_name || caseObj.offence || "",
+      Unit: isDciFilter ? accusedUnitLabel(caseObj) : caseUnitLabel(caseObj),
+      Place: caseObj.place_of_offence || "",
+      Assignment: caseAssignmentLabel(caseObj),
+      "Police Station": caseObj.police_station || "",
+      "Battalion/Coy": taskedBattalionCompanyLabel(caseObj),
+      Update: formatUpdateFlowDetail(latestCaseUpdateText(caseObj)),
+      "Date of Offence": normalizeDateForDisplay(caseObj.date_of_offence),
+      Created: formatDateTimeForReport(caseObj.created_at),
+      "Tasking Date": formatDateTimeForReport(caseObj.tasking_date),
+      "Served Date": formatDateTimeForReport(caseObj.served_at),
+      "Closed Date": formatDateTimeForReport(caseObj.closed_at),
+      Description: caseObj.description || "",
+    };
+  }
+
+  function exportFilteredCases() {
+    if (!filtered.length) {
+      showToast("No cases to export.", "error");
+      return;
+    }
+    const rows = filtered.map(caseExportRow);
+    const csv = [
+      caseExportColumns.map(csvEscape).join(","),
+      ...rows.map((row) => caseExportColumns.map((column) => csvEscape(row[column])).join(",")),
+    ].join("\r\n");
+    const filename = `${caseViewTitle().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadTextFile(filename, csv);
+  }
+
+  function printFilteredCases() {
+    if (!filtered.length) {
+      showToast("No cases to print.", "error");
+      return;
+    }
+    const rows = filtered.map(caseExportRow);
+    const tableHead = caseExportColumns.map((column) => `<th>${htmlEscape(column)}</th>`).join("");
+    const tableBody = rows
+      .map((row) => `<tr>${caseExportColumns.map((column) => `<td>${htmlEscape(row[column] || "--")}</td>`).join("")}</tr>`)
+      .join("");
+    const printWindow = window.open("", "_blank", "noopener,noreferrer");
+    if (!printWindow) {
+      showToast("Allow pop-ups to print cases.", "error");
+      return;
+    }
+    printWindow.document.write(`<!doctype html>
+<html>
+<head>
+  <title>${htmlEscape(caseViewTitle())}</title>
+  <style>
+    body { font-family: Arial, sans-serif; color: #111827; margin: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top; text-align: left; }
+    th { background: #f3f4f6; text-transform: uppercase; letter-spacing: 0.04em; }
+    td { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>${htmlEscape(caseViewTitle())}</h1>
+  <p>${htmlEscape(caseFilterSummary())}</p>
+  <table>
+    <thead><tr>${tableHead}</tr></thead>
+    <tbody>${tableBody}</tbody>
+  </table>
+  <script>window.onload = function () { window.print(); };</script>
+</body>
+</html>`);
+    printWindow.document.close();
+  }
 
   useEffect(() => {
     if (isDciFilter && (filter === "pending" || filter === "served")) {
@@ -1483,6 +1837,9 @@ export default function Cases({ user, criminalTypeFilter }) {
     setShowCreate(false);
     const willShow = !showTeam;
     if (willShow) {
+      setAssignmentMode(selected?.assigned_team ? "team" : "io");
+      setTeamId(selected?.assigned_team ? String(selected.assigned_team) : "");
+      setIoId(selected?.assigned_to ? String(selected.assigned_to) : "");
       setTeamDeadline(normalizeDateForApi(selected?.investigation_deadline));
     }
     setShowTeam((prev) => !prev);
@@ -1575,7 +1932,7 @@ export default function Cases({ user, criminalTypeFilter }) {
               Filtered: {criminalTypeFilter === "court_martial" ? "Court Martial" : "DCI / Civ Police"}
             </span>
           )}
-          <p className="text-sm text-gray-500 mt-0.5">{filtered.length} of {cases.length} case{cases.length !== 1 ? "s" : ""}</p>
+          <p className="text-sm text-gray-500 mt-0.5">{filtered.length} of {statusCountCases.length} case{statusCountCases.length !== 1 ? "s" : ""}</p>
         </div>
         {canCreate && (
           <button
@@ -1604,7 +1961,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             <span className={`h-1.5 w-1.5 rounded-full ${STATUS_CHIP_META.all.dot}`} />
             <span>{STATUS_CHIP_META.all.label}</span>
             <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[11px] leading-none text-gray-200">
-              {cases.length}
+              {statusCountCases.length}
             </span>
           </button>
 
@@ -1657,14 +2014,87 @@ export default function Cases({ user, criminalTypeFilter }) {
         </div>
       </div>
 
-      {/* Search */}
-      <input
-        type="text"
-        placeholder="Search by case #, title, offence, accused..."
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="w-full md:w-96 bg-gray-800 border border-gray-700 text-white text-sm rounded-lg px-4 py-2 placeholder-gray-500 focus:outline-none focus:border-blue-500"
-      />
+      {/* Search / actions */}
+      <div className="rounded-xl border border-gray-700/70 bg-gray-800/40 p-3">
+        <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_220px_160px_160px_auto_auto_auto]">
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-400">Search</span>
+            <input
+              type="text"
+              placeholder="Case #, title, offence, accused, description, police station, unit..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-400">Accused Unit</span>
+            <select
+              value={accusedUnitFilter}
+              onChange={(e) => setAccusedUnitFilter(e.target.value)}
+              className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            >
+              <option value="">All units</option>
+              {accusedUnitFilter && !units.some((unit) => String(unit.id) === String(accusedUnitFilter)) && (
+                <option value={accusedUnitFilter}>Selected unit</option>
+              )}
+              {units.map((unit) => (
+                <option key={unit.id} value={unit.id}>
+                  {unit.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-400">Date From</span>
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-gray-400">Date To</span>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => {
+              setSearch("");
+              setAccusedUnitFilter("");
+              setDateFrom("");
+              setDateTo("");
+            }}
+            className="self-end rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-300 transition-colors hover:bg-gray-700"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            onClick={printFilteredCases}
+            disabled={loading || !filtered.length}
+            className="self-end rounded-lg border border-emerald-500/40 bg-emerald-600/20 px-3 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-600/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Print
+          </button>
+          <button
+            type="button"
+            onClick={exportFilteredCases}
+            disabled={loading || !filtered.length}
+            className="self-end rounded-lg border border-sky-500/40 bg-sky-600/20 px-3 py-2 text-xs font-semibold text-sky-300 transition-colors hover:bg-sky-600/30 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Export CSV
+          </button>
+        </div>
+      </div>
 
       {/* Main content: list + optional detail panel */}
       <div className="space-y-4">
@@ -1687,64 +2117,79 @@ export default function Cases({ user, criminalTypeFilter }) {
             <p className="p-6 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-            <table className="sticky-head w-full min-w-[1380px] text-sm">
+            <table className={`sticky-head w-full ${isDciFilter ? "min-w-[1760px]" : "min-w-[1380px]"} text-sm`}>
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-4 py-3 font-medium">Case #</th>
                   <th className="text-left px-4 py-3 font-medium">Service No</th>
                   <th className="text-left px-4 py-3 font-medium">Rank</th>
                   <th className="text-left px-4 py-3 font-medium">Accused</th>
+                  {isDciFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Unit</th>
+                  )}
                   <th className="text-left px-4 py-3 font-medium">Offence</th>
                   <th className="text-left px-4 py-3 font-medium">Description</th>
-                  {isAllFilter && (
+                  {isDciFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Police Station</th>
+                  )}
+                  {isDciFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Battalion/Coy</th>
+                  )}
+                  {isDciFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Update</th>
+                  )}
+                  {isDciFilter && (
                     <th className="text-left px-4 py-3 font-medium">Status</th>
                   )}
-                  {isNewFilter && (
+                  {!isDciFilter && isAllFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Status</th>
+                  )}
+                  {!isDciFilter && isNewFilter && (
                     <th className="text-left px-4 py-3 font-medium">Action To Task</th>
                   )}
-                  {isTaskedFilter && (
+                  {!isDciFilter && isTaskedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Tasking Letter</th>
                   )}
-                  {isTaskedFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Tasked Battalion/Detachment</th>
+                  {!isDciFilter && isTaskedFilter && (
+                    <th className="text-left px-4 py-3 font-medium">Tasked Battalion/Company</th>
                   )}
-                  {isUnderInvestigationFilter && (
+                  {!isDciFilter && isUnderInvestigationFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
-                  {showDciUpdateColumns && (
+                  {!isDciFilter && showDciUpdateColumns && (
                     <th className="text-left px-4 py-3 font-medium">Date Updated</th>
                   )}
-                  {showDciUpdateColumns && (
+                  {!isDciFilter && showDciUpdateColumns && (
                     <th className="text-left px-4 py-3 font-medium">Case Updates</th>
                   )}
-                  {showDciUpdateColumns && (
+                  {!isDciFilter && showDciActionColumn && (
                     <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
-                  {isPendingFilter && (
+                  {!isDciFilter && isPendingFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
-                  {isPendingFilter && (
+                  {!isDciFilter && isPendingFilter && (
                     <th className="text-left px-4 py-3 font-medium">Reason For Pending</th>
                   )}
-                  {isServedFilter && (
+                  {!isDciFilter && isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
-                  {isServedFilter && (
+                  {!isDciFilter && isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Date Served</th>
                   )}
-                  {isServedFilter && (
+                  {!isDciFilter && isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Remarks</th>
                   )}
-                  {isServedFilter && canCloseServedCases && (
+                  {!isDciFilter && isServedFilter && canCloseServedCases && (
                     <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
-                  {isClosedFilter && (
+                  {!isDciFilter && isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
-                  {isClosedFilter && (
+                  {!isDciFilter && isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Date Closed</th>
                   )}
-                  {isClosedFilter && (
+                  {!isDciFilter && isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Action Taken</th>
                   )}
                 </tr>
@@ -1772,6 +2217,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_service_number || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_rank || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_name || "--"}</td>
+                    {isDciFilter && (
+                      <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
+                        <p className="line-clamp-2 break-words">{accusedUnitLabel(c) || "--"}</p>
+                      </td>
+                    )}
                     <td className="px-4 py-2.5 text-gray-200 whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 min-w-[260px] max-w-[420px]">
                       <p className="whitespace-pre-wrap break-words">{shownDesc}</p>
@@ -1785,7 +2235,37 @@ export default function Cases({ user, criminalTypeFilter }) {
                         </button>
                       )}
                     </td>
-                    {isAllFilter && (
+                    {isDciFilter && (
+                      <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
+                        <p className="line-clamp-2 break-words">{c.police_station || "--"}</p>
+                      </td>
+                    )}
+                    {isDciFilter && (
+                      <td className="px-4 py-2.5 text-gray-300 min-w-[180px] max-w-[280px]">
+                        <p className="line-clamp-2 break-words">{taskedBattalionCompanyLabel(c) || "--"}</p>
+                      </td>
+                    )}
+                    {isDciFilter && (
+                      <td className="px-4 py-2.5 text-gray-300 min-w-[240px] max-w-[340px]">
+                        <div className="space-y-1">
+                          <p className="line-clamp-3 whitespace-pre-wrap break-words">{formatUpdateFlowDetail(latestCaseUpdateText(c)) || "--"}</p>
+                          {latestCaseUpdateDate(c) && (
+                            <p className="text-[11px] text-gray-500">{formatDateTimeForReport(latestCaseUpdateDate(c))}</p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setUpdateFlowCase(c);
+                            }}
+                            className="text-xs text-blue-400 hover:underline"
+                          >
+                            View update flow
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                    {isDciFilter && (
                       <td className="px-4 py-2.5">
                         <Badge
                           label={c.status}
@@ -1793,7 +2273,15 @@ export default function Cases({ user, criminalTypeFilter }) {
                         />
                       </td>
                     )}
-                    {isNewFilter && (
+                    {!isDciFilter && isAllFilter && (
+                      <td className="px-4 py-2.5">
+                        <Badge
+                          label={c.status}
+                          style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
+                        />
+                      </td>
+                    )}
+                    {!isDciFilter && isNewFilter && (
                       <td className="px-4 py-2.5">
                         {canTask ? (
                           <button
@@ -1808,7 +2296,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                         )}
                       </td>
                     )}
-                    {isTaskedFilter && (
+                    {!isDciFilter && isTaskedFilter && (
                       <td className="px-4 py-2.5">
                         {c.tasking_letter ? (
                           <a
@@ -1825,22 +2313,22 @@ export default function Cases({ user, criminalTypeFilter }) {
                         )}
                       </td>
                     )}
-                    {isTaskedFilter && (
+                    {!isDciFilter && isTaskedFilter && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
                         {c.tasked_detachment_name
                           ? `${c.tasked_battalion_name || "--"} / ${c.tasked_detachment_name}`
                           : c.tasked_battalion_name || "--"}
-                      </td>
+                        </td>
                     )}
-                    {isUnderInvestigationFilter && (
+                    {!isDciFilter && isUnderInvestigationFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
-                    {showDciUpdateColumns && (
+                    {!isDciFilter && showDciUpdateColumns && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
                         {normalizeDateForDisplay(c.mentioning_date) || (c.updated_at ? new Date(c.updated_at).toLocaleDateString("en-GB") : "--")}
                       </td>
                     )}
-                    {showDciUpdateColumns && (
+                    {!isDciFilter && showDciUpdateColumns && (
                       <td className="px-4 py-2.5 text-gray-300 max-w-[280px]">
                         <div className="space-y-1">
                           <p className="line-clamp-2 break-words">{c.action_taken || "--"}</p>
@@ -1857,58 +2345,64 @@ export default function Cases({ user, criminalTypeFilter }) {
                         </div>
                       </td>
                     )}
-                    {showDciUpdateColumns && (
+                    {!isDciFilter && showDciActionColumn && (
                       <td className="px-4 py-2.5 whitespace-nowrap">
-                        <div className="flex flex-wrap items-center gap-2">
-                          {isInvestigator && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRequestClose(c);
-                              }}
-                              disabled={rowActionSavingId === c.id || c.close_requested}
-                              className="px-2.5 py-1 rounded text-xs font-medium bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white"
-                            >
-                              {c.close_requested ? "Requested" : rowActionSavingId === c.id ? "Requesting..." : "Request Close"}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleCloseFromRow(c);
-                            }}
-                            disabled={rowActionSavingId === c.id || !(c.close_requested && (isHqsAdmin || isSuperuser))}
-                            className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-                              c.close_requested && (isHqsAdmin || isSuperuser)
-                                ? "bg-green-700/80 hover:bg-green-600 text-white"
-                                : "bg-gray-700 text-gray-400 cursor-not-allowed"
-                            }`}
-                          >
-                            {rowActionSavingId === c.id ? "Closing..." : "Close"}
-                          </button>
-                        </div>
+                        {c.status === "under_investigation" ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isInvestigator && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRequestClose(c);
+                                }}
+                                disabled={rowActionSavingId === c.id || c.close_requested}
+                                className="px-2.5 py-1 rounded text-xs font-medium bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white"
+                              >
+                                {c.close_requested ? "Requested" : rowActionSavingId === c.id ? "Requesting..." : "Request Close"}
+                              </button>
+                            )}
+                            {(isHqsAdmin || isSuperuser) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCloseFromRow(c);
+                                }}
+                                disabled={rowActionSavingId === c.id || !c.close_requested}
+                                className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                                  c.close_requested
+                                    ? "bg-green-700/80 hover:bg-green-600 text-white"
+                                    : "bg-gray-700 text-gray-400 cursor-not-allowed"
+                                }`}
+                              >
+                                {rowActionSavingId === c.id ? "Closing..." : "Close Case"}
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-500">--</span>
+                        )}
                       </td>
                     )}
-                    {isPendingFilter && (
+                    {!isDciFilter && isPendingFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
-                    {isPendingFilter && (
+                    {!isDciFilter && isPendingFilter && (
                       <td className="px-4 py-2.5 text-gray-300">{c.reason_for_pending || c.action_taken || c.remarks || "--"}</td>
                     )}
-                    {isServedFilter && (
+                    {!isDciFilter && isServedFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
-                    {isServedFilter && (
+                    {!isDciFilter && isServedFilter && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
                         {c.served_at ? new Date(c.served_at).toLocaleDateString("en-GB") : "--"}
                       </td>
                     )}
-                    {isServedFilter && (
+                    {!isDciFilter && isServedFilter && (
                       <td className="px-4 py-2.5 text-gray-300">{c.remarks || "--"}</td>
                     )}
-                    {isServedFilter && canCloseServedCases && (
+                    {!isDciFilter && isServedFilter && canCloseServedCases && (
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         <button
                           type="button"
@@ -1922,10 +2416,10 @@ export default function Cases({ user, criminalTypeFilter }) {
                         </button>
                       </td>
                     )}
-                    {isClosedFilter && (
+                    {!isDciFilter && isClosedFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
-                    {isClosedFilter && (
+                    {!isDciFilter && isClosedFilter && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
                         {c.closed_at
                           ? new Date(c.closed_at).toLocaleDateString("en-GB")
@@ -1934,7 +2428,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                           : "--"}
                       </td>
                     )}
-                    {isClosedFilter && (
+                    {!isDciFilter && isClosedFilter && (
                       <td className="px-4 py-2.5 text-gray-300 min-w-[220px] max-w-[340px]">
                         <p className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</p>
                       </td>
@@ -2347,31 +2841,81 @@ export default function Cases({ user, criminalTypeFilter }) {
               </div>
             )}
 
-            {/* Battalion Admin/CO: Assign Investigation Team */}
+            {/* Battalion Admin/CO: Assign IO or Team */}
             {canAssignTeam && selected.status === "tasked" && (
               <div className="border-t border-gray-700 pt-4 space-y-3">
                 <button
                   onClick={toggleTeamPanel}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors"
                 >
-                  {showTeam ? "Cancel" : "Assign Investigation Team"}
+                  {showTeam ? "Cancel" : "Assign IO / Team"}
                 </button>
                 {showTeam && (
                   <form onSubmit={handleAssignTeam} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
+                    <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-800 p-1 border border-gray-700">
+                      <button
+                        type="button"
+                        onClick={() => setAssignmentMode("io")}
+                        className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                          assignmentMode === "io"
+                            ? "bg-indigo-600 text-white"
+                            : "text-gray-400 hover:text-white hover:bg-gray-700"
+                        }`}
+                      >
+                        Single IO
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAssignmentMode("team")}
+                        className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                          assignmentMode === "team"
+                            ? "bg-indigo-600 text-white"
+                            : "text-gray-400 hover:text-white hover:bg-gray-700"
+                        }`}
+                      >
+                        Team
+                      </button>
+                    </div>
                     <div>
+                      {assignmentMode === "io" ? (
+                        <>
+                          <label className="text-xs text-gray-400 block mb-1">Investigating Officer *</label>
+                          <select
+                            value={ioId}
+                            onChange={(e) => setIoId(e.target.value)}
+                            className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                          >
+                            <option value="">Select IO...</option>
+                            {sortedInvestigators.map((io) => (
+                              <option key={io.id} value={io.id}>
+                                {userLabelWithWorkload(io, workloadMap)}
+                              </option>
+                            ))}
+                          </select>
+                          {investigators.length === 0 && (
+                            <p className="text-xs text-orange-400 mt-2">No investigators found in this scope.</p>
+                          )}
+                        </>
+                      ) : (
+                        <>
                       <label className="text-xs text-gray-400 block mb-1">Investigation Team *</label>
                       <select
                         value={teamId}
                         onChange={(e) => setTeamId(e.target.value)}
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       >
-                        <option value="">Select team…</option>
+                        <option value="">Select team...</option>
                         {teams.map((t) => (
                           <option key={t.id} value={t.id}>
                             {t.name}
                           </option>
                         ))}
                       </select>
+                          {teams.length === 0 && (
+                            <p className="text-xs text-orange-400 mt-2">No investigation teams found in this scope.</p>
+                          )}
+                        </>
+                      )}
                     </div>
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Investigation Deadline *</label>
@@ -2385,17 +2929,17 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <ErrMsg msg={teamErr} />
                     <button
                       type="submit"
-                      disabled={teamSaving || !teamDeadline}
+                      disabled={teamSaving || !teamDeadline || (assignmentMode === "io" ? !ioId : !teamId)}
                       className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-sm font-medium"
                     >
-                      {teamSaving ? "Assigning…" : "Assign Team"}
+                      {teamSaving ? "Assigning..." : "Assign Case"}
                     </button>
                   </form>
                 )}
               </div>
             )}
 
-            {(selected.status === "under_investigation" || selected.status === "pending" || selected.assigned_team_name) && (
+            {selected.status !== "closed" && (selected.status === "under_investigation" || selected.status === "pending" || selected.assigned_team_name || selected.assigned_to_name) && (
               <div className="border-t border-gray-700 pt-4 space-y-3">
                 <p className="text-sm text-gray-300">Investigation actions</p>
                 <div className="flex flex-wrap gap-2">

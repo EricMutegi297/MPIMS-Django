@@ -39,4 +39,4 @@ class OccurrenceBookAdmin(admin.ModelAdmin):
 class OccurrenceEntryAdmin(admin.ModelAdmin):
     list_display = ("book", "serial_no", "entry_type", "status", "recorded_by", "requires_investigation")
     list_filter = ("entry_type", "status", "requires_investigation")
-    search_fields = ("description", "action_taken", "recorded_by__name", "recorded_by__service_number")
+    search_fields = ("recorded_by__name", "recorded_by__service_number")

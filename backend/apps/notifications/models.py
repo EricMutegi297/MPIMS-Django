@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 
+from apps.common.fields import EncryptedTextField
+
 
 class Notification(models.Model):
     class Type(models.TextChoices):
@@ -15,7 +17,7 @@ class Notification(models.Model):
         on_delete=models.CASCADE,
         related_name="notifications",
     )
-    message = models.TextField()
+    message = EncryptedTextField()
     notification_type = models.CharField(max_length=20, choices=Type.choices, default=Type.SYSTEM)
     is_read = models.BooleanField(default=False)
     related_model = models.CharField(max_length=50, blank=True)

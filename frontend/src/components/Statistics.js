@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { caseService, incidentService, morningBriefService, userService } from "../services/api";
+import { caseService, dutyRoomService, incidentService, morningBriefService, userService } from "../services/api";
 
 const CASE_STATUSES = [
   { key: "new", label: "New", accent: "blue" },
@@ -98,12 +98,21 @@ function csvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function StatCard({ label, value, accent = "slate", sub }) {
+function StatCard({ label, value, accent = "slate", sub, to }) {
   const tone = ACCENT[accent] || ACCENT.slate;
   return (
     <div className={`rounded-lg border ${tone.border} ${tone.bg} p-4`}>
       <p className={`text-xs font-semibold uppercase tracking-wide ${tone.text}`}>{label}</p>
-      <p className="mt-1 text-3xl font-bold text-slate-950">{formatNumber(value)}</p>
+      {to ? (
+        <Link
+          to={to}
+          className="mt-1 inline-flex rounded-md text-3xl font-bold text-slate-950 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+        >
+          {formatNumber(value)}
+        </Link>
+      ) : (
+        <p className="mt-1 text-3xl font-bold text-slate-950">{formatNumber(value)}</p>
+      )}
       {sub && <p className="mt-1 text-xs text-slate-500">{sub}</p>}
     </div>
   );
@@ -139,6 +148,24 @@ function serviceCaseLink({ report, service, unitId, offence }) {
     qs.set("created_to", report.as_at);
   }
   return `/dashboard/cases?${qs.toString()}`;
+}
+
+function trafficEntryLink({ report, roadTrafficType, metric }) {
+  const qs = new URLSearchParams();
+  qs.set("entry_type", "road_traffic_accident");
+  if (roadTrafficType && roadTrafficType !== "not_recorded") {
+    qs.set("road_traffic_type", roadTrafficType);
+  }
+  if (metric) {
+    qs.set("metric", metric);
+  }
+  if (report?.period === "range") {
+    if (report.date_from) qs.set("date_from", report.date_from);
+    if (report.date_to) qs.set("date_to", report.date_to);
+  } else if (report?.as_at) {
+    qs.set("date_to", report.as_at);
+  }
+  return `/dashboard/duty-room?${qs.toString()}`;
 }
 
 function RankingPanel({ title, subtitle, items, emptyText, accent = "blue", filterParam, valueForLink }) {
@@ -274,6 +301,242 @@ function exportServiceReportCsv(report) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function printTrafficReport(report) {
+  if (!report) return;
+  const periodLabel = reportPeriodLabel(report);
+  const rows = [
+    ...(report.rows || []).map((row) => [
+      row.label,
+      row.reported || 0,
+      row.yankee || 0,
+      row.xray || 0,
+    ]),
+    [
+      "Total",
+      report.totals?.reported || 0,
+      report.totals?.yankee || 0,
+      report.totals?.xray || 0,
+    ],
+  ];
+  const html = `<!doctype html><html><head><title>Traffic Incidents Reported</title><style>
+    body{font-family:Arial,sans-serif;padding:24px;color:#0f172a;background:#fff}
+    h1{color:#075985;text-align:center;text-transform:uppercase;margin:0 0 6px;font-size:24px;letter-spacing:.02em}
+    p{text-align:center;color:#475569;font-size:11px;margin:0 0 16px}
+    table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden}
+    th,td{border-bottom:1px solid #e2e8f0;padding:8px;text-align:center}
+    th:first-child,td:first-child{text-align:left}
+    th{background:#e2e8f0;color:#334155;text-transform:uppercase;font-size:10px}
+    tr:nth-child(even){background:#f8fafc}
+    tr.total{background:#dbeafe;color:#0f172a;font-weight:bold}
+    tr.total td{border-top:2px solid #93c5fd;border-bottom:0}
+  </style></head><body>
+    <h1>Traffic Incidents Reported</h1>
+    <p>${escapeHtml(periodLabel)}</p>
+    <table>
+      <thead><tr><th>Road Traffic Accident Type</th><th>Reported</th><th>Yankee</th><th>X-ray</th></tr></thead>
+      <tbody>${rows.map((row, index) => `<tr class="${index === rows.length - 1 ? "total" : ""}">${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table>
+    <script>window.onload=function(){window.print();}</script>
+  </body></html>`;
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.write(html);
+  win.document.close();
+}
+
+function exportTrafficReportCsv(report) {
+  if (!report) return;
+  const lines = [
+    ["Traffic Incidents Reported"],
+    ["Period", reportPeriodLabel(report)],
+    ["Road Traffic Accident Type", "Reported", "Yankee", "X-ray"],
+  ];
+  (report.rows || []).forEach((row) => {
+    lines.push([row.label, row.reported || 0, row.yankee || 0, row.xray || 0]);
+  });
+  lines.push([
+    "Total",
+    report.totals?.reported || 0,
+    report.totals?.yankee || 0,
+    report.totals?.xray || 0,
+  ]);
+  const csv = lines.map((row) => row.map(csvCell).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `traffic-incidents-${reportPeriodSlug(report)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+const TRAFFIC_COUNT_LINK_CLASS = {
+  reported: "bg-slate-50 text-slate-700 ring-slate-200 hover:bg-slate-100 hover:text-slate-900",
+  yankee: "bg-orange-50 text-orange-700 ring-orange-100 hover:bg-orange-100 hover:text-orange-800",
+  xray: "bg-rose-50 text-rose-700 ring-rose-100 hover:bg-rose-100 hover:text-rose-800",
+};
+
+function TrafficCountLink({ report, roadTrafficType, metric, value, total = false }) {
+  const tone = TRAFFIC_COUNT_LINK_CLASS[metric] || TRAFFIC_COUNT_LINK_CLASS.reported;
+  return (
+    <Link
+      to={trafficEntryLink({ report, roadTrafficType, metric })}
+      className={`inline-flex min-w-9 justify-center rounded-full px-2.5 py-1 text-xs font-bold ring-1 ${tone} ${
+        total ? "bg-white" : ""
+      }`}
+    >
+      {formatNumber(value)}
+    </Link>
+  );
+}
+
+function TrafficReportPanel({ report, filters, onFiltersChange, loading, error }) {
+  const rows = report?.rows || [];
+  const totals = report?.totals || { reported: 0, yankee: 0, xray: 0 };
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <SectionTitle
+            title="Traffic Incidents Reported"
+            subtitle="Road Traffic Accident statistics."
+          />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Period
+              <select
+                value={filters.period}
+                onChange={(event) => {
+                  const period = event.target.value;
+                  onFiltersChange({
+                    ...filters,
+                    period,
+                    date_from: filters.date_from || monthStartIso(),
+                    date_to: filters.date_to || filters.as_at || todayIso(),
+                  });
+                }}
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm normal-case tracking-normal text-slate-900"
+              >
+                <option value="range">Range</option>
+                <option value="as_at">As At</option>
+              </select>
+            </label>
+            {filters.period === "range" ? (
+              <>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  From
+                  <input
+                    type="date"
+                    value={filters.date_from}
+                    onChange={(event) => onFiltersChange({ ...filters, date_from: event.target.value || monthStartIso() })}
+                    className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm normal-case tracking-normal text-slate-900"
+                  />
+                </label>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  To
+                  <input
+                    type="date"
+                    value={filters.date_to}
+                    onChange={(event) => onFiltersChange({ ...filters, date_to: event.target.value || todayIso() })}
+                    className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm normal-case tracking-normal text-slate-900"
+                  />
+                </label>
+              </>
+            ) : (
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                As At
+                <input
+                  type="date"
+                  value={filters.as_at}
+                  onChange={(event) => onFiltersChange({ ...filters, as_at: event.target.value || todayIso() })}
+                  className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm normal-case tracking-normal text-slate-900"
+                />
+              </label>
+            )}
+            <button
+              type="button"
+              onClick={() => printTrafficReport(report)}
+              disabled={!report || loading}
+              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              Print
+            </button>
+            <button
+              type="button"
+              onClick={() => exportTrafficReportCsv(report)}
+              disabled={!report || loading}
+              className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+            >
+              Export CSV
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 bg-slate-50/60 p-4">
+        {loading ? (
+          <p className="text-sm text-slate-500">Loading traffic incident statistics...</p>
+        ) : error ? (
+          <p className="text-sm text-red-600">{error}</p>
+        ) : !report ? (
+          <p className="text-sm text-slate-500">No traffic incident report data found.</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <StatCard label="Traffic Incidents Reported" value={totals.reported} accent="blue" to={trafficEntryLink({ report, metric: "reported" })} />
+              <StatCard label="Yankee" value={totals.yankee} accent="orange" to={trafficEntryLink({ report, metric: "yankee" })} />
+              <StatCard label="X-ray" value={totals.xray} accent="rose" to={trafficEntryLink({ report, metric: "xray" })} />
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+              <table className="min-w-full text-sm">
+                <thead className="border-b border-slate-200 bg-slate-100 text-xs uppercase text-slate-600">
+                  <tr>
+                    <th className="min-w-72 px-4 py-3 text-left font-bold">Road Traffic Accident Type</th>
+                    <th className="w-28 px-4 py-3 text-center font-bold">Reported</th>
+                    <th className="w-28 px-4 py-3 text-center font-bold">Yankee</th>
+                    <th className="w-28 px-4 py-3 text-center font-bold">X-ray</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {rows.map((row) => (
+                    <tr key={row.key} className="odd:bg-white even:bg-slate-50/70 hover:bg-blue-50/40">
+                      <td className="px-4 py-3 font-semibold text-slate-900">{row.label}</td>
+                      <td className="px-4 py-3 text-center">
+                        <TrafficCountLink report={report} roadTrafficType={row.key} metric="reported" value={row.reported} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <TrafficCountLink report={report} roadTrafficType={row.key} metric="yankee" value={row.yankee} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <TrafficCountLink report={report} roadTrafficType={row.key} metric="xray" value={row.xray} />
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-blue-200 bg-blue-50 font-bold text-slate-950">
+                    <td className="px-4 py-3">Total</td>
+                    <td className="px-4 py-3 text-center">
+                      <TrafficCountLink report={report} metric="reported" value={totals.reported} total />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <TrafficCountLink report={report} metric="yankee" value={totals.yankee} total />
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <TrafficCountLink report={report} metric="xray" value={totals.xray} total />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function ServiceReportPanel({ report, filters, onFiltersChange, loading, error }) {
@@ -504,10 +767,19 @@ export default function Statistics({ user }) {
   const [serviceReport, setServiceReport] = useState(null);
   const [serviceReportLoading, setServiceReportLoading] = useState(false);
   const [serviceReportError, setServiceReportError] = useState(null);
+  const [trafficReport, setTrafficReport] = useState(null);
+  const [trafficReportLoading, setTrafficReportLoading] = useState(false);
+  const [trafficReportError, setTrafficReportError] = useState(null);
   const [serviceFilters, setServiceFilters] = useState({
     service: "",
     status: "pending",
     period: "as_at",
+    as_at: todayIso(),
+    date_from: monthStartIso(),
+    date_to: todayIso(),
+  });
+  const [trafficFilters, setTrafficFilters] = useState({
+    period: "range",
     as_at: todayIso(),
     date_from: monthStartIso(),
     date_to: todayIso(),
@@ -584,6 +856,24 @@ export default function Statistics({ user }) {
       .finally(() => setServiceReportLoading(false));
   }, [serviceFilters]);
 
+  useEffect(() => {
+    setTrafficReportLoading(true);
+    setTrafficReportError(null);
+    const reportParams = {
+      period: trafficFilters.period,
+    };
+    if (trafficFilters.period === "range") {
+      reportParams.date_from = trafficFilters.date_from || monthStartIso();
+      reportParams.date_to = trafficFilters.date_to || todayIso();
+    } else {
+      reportParams.as_at = trafficFilters.as_at || todayIso();
+    }
+    dutyRoomService.trafficStatistics(reportParams)
+      .then((res) => setTrafficReport(res.data || null))
+      .catch(() => setTrafficReportError("Failed to load traffic incident statistics."))
+      .finally(() => setTrafficReportLoading(false));
+  }, [trafficFilters]);
+
   if (loading) {
     return <div className="p-8 text-center text-slate-500">Loading statistics...</div>;
   }
@@ -605,7 +895,7 @@ export default function Statistics({ user }) {
         <p className="text-sm text-slate-600">Live counts and top ten rankings scoped to your access level.</p>
       </div>
 
-      <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
+      <div className="inline-flex flex-wrap rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
         <button
           type="button"
           onClick={() => setActiveView("overview")}
@@ -619,6 +909,13 @@ export default function Statistics({ user }) {
           className={`rounded-md px-3 py-2 text-sm font-semibold ${activeView === "service" ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
         >
           Service Reports
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveView("traffic")}
+          className={`rounded-md px-3 py-2 text-sm font-semibold ${activeView === "traffic" ? "bg-blue-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+        >
+          Traffic Incidents
         </button>
       </div>
 
@@ -719,13 +1016,21 @@ export default function Statistics({ user }) {
             </section>
           )}
         </>
-      ) : (
+      ) : activeView === "service" ? (
         <ServiceReportPanel
           report={serviceReport}
           filters={serviceFilters}
           onFiltersChange={setServiceFilters}
           loading={serviceReportLoading}
           error={serviceReportError}
+        />
+      ) : (
+        <TrafficReportPanel
+          report={trafficReport}
+          filters={trafficFilters}
+          onFiltersChange={setTrafficFilters}
+          loading={trafficReportLoading}
+          error={trafficReportError}
         />
       )}
     </div>

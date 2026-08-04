@@ -3,6 +3,24 @@ import api from "../axiosConfig";
 
 const USER_CACHE_KEY = "mpims_user_cache";
 
+function clearSession() {
+  sessionStorage.removeItem("access_token");
+  sessionStorage.removeItem("refresh_token");
+  sessionStorage.removeItem(USER_CACHE_KEY);
+}
+
+function storeAuthPayload(data = {}) {
+  if (data.access) {
+    sessionStorage.setItem("access_token", data.access);
+  }
+  if (data.refresh) {
+    sessionStorage.setItem("refresh_token", data.refresh);
+  }
+  if (data.user) {
+    sessionStorage.setItem(USER_CACHE_KEY, JSON.stringify(data.user));
+  }
+}
+
 export const offenceService = {
   list: () => api.get("/api/offences/"),
   get: (id) => api.get(`/api/offences/${id}/`),
@@ -13,37 +31,40 @@ export const offenceService = {
 
 export const authService = {
   login: async (service_number, password) => {
-    sessionStorage.removeItem("access_token");
-    sessionStorage.removeItem("refresh_token");
-    sessionStorage.removeItem(USER_CACHE_KEY);
+    clearSession();
     const res = await api.post("/api/auth/login/", { service_number, password });
-    sessionStorage.setItem("access_token", res.data.access);
-    sessionStorage.setItem("refresh_token", res.data.refresh);
-    if (res.data.user) {
-      sessionStorage.setItem(USER_CACHE_KEY, JSON.stringify(res.data.user));
-    }
+    storeAuthPayload(res.data);
+    return res;
+  },
+  verifyTotpLogin: async (challenge_id, code) => {
+    clearSession();
+    const res = await api.post("/api/auth/totp/login/verify/", { challenge_id, code });
+    storeAuthPayload(res.data);
     return res;
   },
   logout: async () => {
     try {
       return await api.post("/api/auth/logout/");
     } finally {
-      sessionStorage.removeItem("access_token");
-      sessionStorage.removeItem("refresh_token");
-      sessionStorage.removeItem(USER_CACHE_KEY);
+      clearSession();
     }
   },
   me: () => api.get("/api/auth/me/"),
   changePassword: async (data) => {
     const res = await api.post("/api/auth/change-password/", data);
-    if (res.data.access) {
-      sessionStorage.setItem("access_token", res.data.access);
-      sessionStorage.setItem("refresh_token", res.data.refresh);
-    }
+    storeAuthPayload(res.data);
     return res;
   },
   requestPasswordReset: (email) => api.post("/api/auth/password-reset/", { email }),
   confirmPasswordReset: (data) => api.post("/api/auth/password-reset/confirm/", data),
+  totpStatus: () => api.get("/api/auth/totp/status/"),
+  setupTotp: () => api.post("/api/auth/totp/setup/"),
+  confirmTotpSetup: async (code) => {
+    const res = await api.post("/api/auth/totp/setup/confirm/", { code });
+    storeAuthPayload(res.data);
+    return res;
+  },
+  resetUserTotp: (id) => api.post(`/api/auth/users/${id}/totp-reset/`),
 };
 
 export const caseService = {
@@ -121,6 +142,8 @@ export const dutyRoomService = {
   approvers: () => api.get("/api/dutyrooms/rosters/approvers/"),
   activeDutyRoom: () => api.get("/api/dutyrooms/rosters/active-duty-room/"),
   entries: (params) => api.get("/api/dutyrooms/entries/", { params }),
+  trafficStatistics: (params) => api.get("/api/dutyrooms/entries/traffic-statistics/", { params }),
+  unitOptions: (params) => api.get("/api/dutyrooms/entries/unit-options/", { params }),
   createEntry: (data) => api.post("/api/dutyrooms/entries/", data),
   createIncident: (entryId, data = {}) => api.post(`/api/dutyrooms/entries/${entryId}/create-incident/`, data),
 };
@@ -141,6 +164,11 @@ export const notificationService = {
           : [];
         return Promise.all(items.map((n) => api.delete(`/api/notifications/${n.id}/`)));
       }),
+};
+
+export const auditService = {
+  list: (params) => api.get("/api/audit/logs/", { params }),
+  get: (id) => api.get(`/api/audit/logs/${id}/`),
 };
 
 export const morningBriefService = {

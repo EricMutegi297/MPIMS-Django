@@ -95,7 +95,7 @@ function printTable(title, headers, rows) {
 }
 
 const FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC Det" },
+  { value: "detachment", label: "IC COY" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -106,7 +106,7 @@ const FORWARD_OPTIONS = [
 
 const BRIEF_STAGE_LABELS = {
   investigator: "Investigator",
-  detachment: "Det IC",
+  detachment: "IC COY",
   adj: "Adjutant",
   hod: "HOD",
   "2ic": "2IC",
@@ -123,7 +123,7 @@ function roleLabel(value) {
   const labels = {
     investigator: "Investigator",
     hod: "HOD",
-    detachment: "IC Det",
+    detachment: "IC COY",
     adj: "Adjutant",
     "2ic": "2IC",
     oc: "OC",
@@ -401,6 +401,10 @@ export default function Briefs({ user }) {
       setError("Attach a brief document.");
       return;
     }
+    if (selectedCase?.status === "closed") {
+      setError("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -448,6 +452,10 @@ export default function Briefs({ user }) {
   async function handleEditSubmit(event) {
     event.preventDefault();
     if (!activeCase) return;
+    if (activeCase.status === "closed" && editFile) {
+      setError("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
     setActionSubmitting(true);
     setError("");
     setNotice("");
@@ -561,7 +569,7 @@ export default function Briefs({ user }) {
 
             {selectedCase && (
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <Info label="Team" value={selectedCase.assigned_team_name || "--"} />
+                <Info label="Assignment" value={selectedCase.assigned_to_name || selectedCase.assigned_team_name || "--"} />
                 <Info label="Status" value={formatStatus(selectedCase.status)} />
                 <Info label="Offence" value={selectedCase.offence || selectedCase.offence_name || "--"} />
                 <Info label="Tasked By" value={selectedCase.tasked_battalion_name || "--"} />
@@ -619,7 +627,7 @@ export default function Briefs({ user }) {
             >
               <option value="all">All stages</option>
               <option value="investigator">Investigator</option>
-              <option value="detachment">Det IC</option>
+              <option value="detachment">IC COY</option>
               <option value="hod">HOD</option>
               <option value="adj">Adjutant</option>
               <option value="2ic">2IC</option>
@@ -810,9 +818,11 @@ export default function Briefs({ user }) {
                   <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Replace Brief File</label>
                   <input
                     type="file"
+                    disabled={activeCase.status === "closed"}
                     onChange={(event) => setEditFile(event.target.files?.[0] || null)}
-                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
+                    className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                   />
+                  {activeCase.status === "closed" && <p className="mt-2 text-xs text-slate-500">Closed cases are read-only for uploads and attachments.</p>}
                   {activeBrief.file && <p className="mt-2 text-xs text-slate-500">Current file: {fileName(activeBrief.file)}</p>}
                 </div>
                 <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">

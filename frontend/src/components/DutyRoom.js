@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import useAutoDismiss from "../hooks/useAutoDismiss";
-import { dutyRoomService, userService } from "../services/api";
+import { dutyRoomService, offenceService, userService } from "../services/api";
 import ActionModal from "./common/ActionModal";
 
 function toArray(data) {
@@ -25,6 +26,28 @@ function localDate(date = new Date()) {
 
 function localDateTime(date = new Date()) {
   return `${localDate(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function localTime(date = new Date()) {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function datePart(value) {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : localDate();
+}
+
+function timePart(value) {
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? text.slice(11, 16) : localTime();
+}
+
+function withDatePart(dateValue, dateTimeValue) {
+  return `${dateValue || localDate()}T${timePart(dateTimeValue)}`;
+}
+
+function withTimePart(timeValue, dateTimeValue) {
+  return `${datePart(dateTimeValue)}T${timeValue || localTime()}`;
 }
 
 function dutyStartToday() {
@@ -153,6 +176,10 @@ function userOptionLabel(user) {
   return `${rank}${user.name} (${user.service_number})`;
 }
 
+function userOriginatingSubUnitLabel(user, fallback = "") {
+  return user?.detachment_name || user?.battalion_name || fallback || "--";
+}
+
 function userLabelById(personnelById, id) {
   return userOptionLabel(personnelById.get(Number(id))) || `Personnel ${id}`;
 }
@@ -253,7 +280,6 @@ const STATUS_STYLE = {
 };
 
 const ROAD_TRAFFIC_ENTRY_TYPE = "road_traffic_accident";
-
 const ROAD_TRAFFIC_TYPES = [
   ["injury", "Injury Road Traffic Accident"],
   ["non_injury", "Non-Injury Road Traffic Accident"],
@@ -266,6 +292,28 @@ const INJURY_SEVERITIES = [
   ["minor", "Minor"],
   ["serious", "Serious"],
   ["critical", "Critical"],
+];
+
+const RANK_OPTIONS = [
+  "General",
+  "Lieutenant General",
+  "Major General",
+  "Brigadier",
+  "Colonel",
+  "Lieutenant Colonel",
+  "Major",
+  "Captain",
+  "Lieutenant",
+  "2nd Lieutenant",
+  "Warrant Officer Class 1",
+  "Warrant Officer Class 2",
+  "Senior Sergeant",
+  "Staff Sergeant",
+  "Sergeant",
+  "Corporal",
+  "Lance Corporal",
+  "Private",
+  "Recruit",
 ];
 
 function isRoadTrafficEntryType(value) {
@@ -288,11 +336,181 @@ function injurySeverityLabel(value) {
   return INJURY_SEVERITIES.find(([severity]) => severity === value)?.[1] || "";
 }
 
+function emptyRtaVehicle() {
+  return {
+    vehicle_type: "service",
+    vehicle_details: "",
+    driver_person_type: "service",
+    driver_unknown: false,
+    driver_identifier: "",
+    driver_rank: "",
+    driver_name: "",
+    driver_unit: "",
+  };
+}
+
+function emptyRtaCasualty(status = "injured") {
+  return {
+    casualty_status: status,
+    person_type: "service",
+    is_unknown: false,
+    identifier: "",
+    rank: "",
+    name: "",
+    unit: "",
+    injury_severity: "",
+  };
+}
+
+function cleanRtaVehicle(vehicle) {
+  const driverPersonType = vehicle.driver_person_type || "service";
+  const driverUnknown = driverPersonType === "civilian" && Boolean(vehicle.driver_unknown);
+  return {
+    vehicle_type: vehicle.vehicle_type || "service",
+    vehicle_details: String(vehicle.vehicle_details || "").trim(),
+    driver_person_type: driverPersonType,
+    driver_unknown: driverUnknown,
+    driver_identifier: driverUnknown ? "Unknown" : String(vehicle.driver_identifier || "").trim(),
+    driver_rank: driverPersonType === "civilian" ? "" : String(vehicle.driver_rank || "").trim(),
+    driver_name: driverUnknown ? "Unknown" : String(vehicle.driver_name || "").trim(),
+    driver_unit: driverPersonType === "civilian" ? "" : String(vehicle.driver_unit || "").trim(),
+  };
+}
+
+function cleanRtaCasualty(casualty) {
+  const status = casualty.casualty_status || "injured";
+  const personType = casualty.person_type || "service";
+  const isUnknown = personType === "civilian" && Boolean(casualty.is_unknown);
+  return {
+    casualty_status: status,
+    person_type: personType,
+    is_unknown: isUnknown,
+    identifier: isUnknown ? "Unknown" : String(casualty.identifier || "").trim(),
+    rank: personType === "civilian" ? "" : String(casualty.rank || "").trim(),
+    name: isUnknown ? "Unknown" : String(casualty.name || "").trim(),
+    unit: personType === "civilian" ? "" : String(casualty.unit || "").trim(),
+    injury_severity: status === "injured" ? String(casualty.injury_severity || "").trim() : "",
+  };
+}
+
+function hasVehicleData(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_rank", "driver_name", "driver_unit"]
+    .some((field) => String(cleaned[field] || "").trim());
+}
+
+function safeRtaCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function casualtyCountsForType(roadTrafficType, injured, dead) {
+  const injuredCount = roadTrafficType === "non_injury" ? 0 : safeRtaCount(injured);
+  const deadCount = ["non_injury", "injury"].includes(roadTrafficType) ? 0 : safeRtaCount(dead);
+  return { injuredCount, deadCount };
+}
+
+function syncRtaCasualtiesForCounts(casualties, roadTrafficType, injured, dead) {
+  const { injuredCount, deadCount } = casualtyCountsForType(roadTrafficType, injured, dead);
+  const existing = toArray(casualties);
+  const existingInjured = existing
+    .filter((casualty) => casualty?.casualty_status !== "dead")
+    .map((casualty) => ({ ...casualty, casualty_status: "injured" }));
+  const existingDead = existing
+    .filter((casualty) => casualty?.casualty_status === "dead")
+    .map((casualty) => ({ ...casualty, casualty_status: "dead", injury_severity: "" }));
+  return [
+    ...Array.from({ length: injuredCount }, (_, index) => existingInjured[index] || emptyRtaCasualty("injured")),
+    ...Array.from({ length: deadCount }, (_, index) => existingDead[index] || emptyRtaCasualty("dead")),
+  ];
+}
+
+function rtaCasualtiesMatchCounts(casualties, roadTrafficType, injured, dead) {
+  const { injuredCount, deadCount } = casualtyCountsForType(roadTrafficType, injured, dead);
+  const existing = toArray(casualties);
+  if (existing.length !== injuredCount + deadCount) return false;
+  const actualDead = existing.filter((casualty) => casualty?.casualty_status === "dead").length;
+  const actualInjured = existing.length - actualDead;
+  return actualInjured === injuredCount && actualDead === deadCount;
+}
+
+function countLabel(value) {
+  const number = Number(value || 0);
+  return number > 0 ? String(number) : "Nil";
+}
+
+function personLabel(person, identifierLabel = "Svc/ID") {
+  if (person.is_unknown || person.driver_unknown) return "Unknown civilian";
+  const parts = [
+    person.identifier ? `${identifierLabel}: ${person.identifier}` : "",
+    person.rank,
+    person.name,
+    person.unit ? `Unit: ${person.unit}` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+function serviceMemberSummary(form) {
+  return [
+    form.service_member_number ? `Service No: ${String(form.service_member_number).trim()}` : "",
+    form.service_member_rank,
+    form.service_member_name,
+  ]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function vehicleSummary(vehicle, index) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  const typeLabel = cleaned.vehicle_type === "civilian" ? "Civilian vehicle" : "Service vehicle";
+  const driverLabel = personLabel({
+    identifier: cleaned.driver_identifier,
+    rank: cleaned.driver_rank,
+    name: cleaned.driver_name,
+    unit: cleaned.driver_unit,
+    driver_unknown: cleaned.driver_unknown,
+  }, cleaned.driver_person_type === "civilian" ? "ID No" : "Svc No");
+  return `${index + 1}. ${typeLabel}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver: ${driverLabel}` : ""}`;
+}
+
+function casualtySummary(casualty, index) {
+  const cleaned = cleanRtaCasualty(casualty);
+  const statusLabel = cleaned.casualty_status === "dead" ? "Dead" : "Injured";
+  const person = personLabel(cleaned, cleaned.person_type === "civilian" ? "ID No" : "Svc No");
+  const severity = cleaned.casualty_status === "injured" && cleaned.injury_severity
+    ? `; Severity: ${injurySeverityLabel(cleaned.injury_severity)}`
+    : "";
+  return `${index + 1}. ${statusLabel}: ${person || "Details not specified"}${severity}`;
+}
+
+function buildRtaDescription(form) {
+  const vehicles = toArray(form.rta_vehicles).filter(hasVehicleData).map(cleanRtaVehicle);
+  const casualties = toArray(form.rta_casualties).map(cleanRtaCasualty);
+  const sections = [
+    `${roadTrafficTypeLabel(form.road_traffic_type) || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
+    `Personnel injured: ${countLabel(form.injured_count)}. Personnel dead: ${countLabel(form.dead_count)}.`,
+  ];
+  if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
+  if (vehicles.length) sections.push(`Vehicles / drivers:\n${vehicles.map(vehicleSummary).join("\n")}`);
+  if (casualties.length) sections.push(`Onboard personnel / casualties:\n${casualties.map(casualtySummary).join("\n")}`);
+  if (form.history) sections.push(`History: ${form.history}`);
+  if (form.damages) sections.push(`Damages: ${form.damages}`);
+  if (form.how_occurred) sections.push(`How the accident occurred: ${form.how_occurred}`);
+  return sections.filter(Boolean).join("\n");
+}
+
 function entryTypeLabel(value) {
-  return ENTRY_TYPES.find(([type]) => type === value)?.[1] || String(value || "").replace(/_/g, " ");
+  return ENTRY_TYPE_LABELS.find(([type]) => type === value)?.[1] || String(value || "").replace(/_/g, " ");
 }
 
 const ENTRY_TYPES = [
+  ["incident", "Incident"],
+  [ROAD_TRAFFIC_ENTRY_TYPE, "Road Traffic Accident"],
+  ["movement", "Movement"],
+];
+
+const ENTRY_TYPE_LABELS = [
   ["routine", "Routine"],
   ["incident", "Incident"],
   [ROAD_TRAFFIC_ENTRY_TYPE, "Road Traffic Accident"],
@@ -303,6 +521,37 @@ const ENTRY_TYPES = [
   ["guardroom", "Guardroom"],
   ["other", "Other"],
 ];
+
+const TRAFFIC_METRIC_LABELS = {
+  reported: "Reported",
+  yankee: "Yankee",
+  xray: "X-ray",
+};
+
+function occurrenceFilterParams(filters) {
+  const params = { page_size: 200 };
+  if (filters.entry_type) params.entry_type = filters.entry_type;
+  if (filters.road_traffic_type) params.road_traffic_type = filters.road_traffic_type;
+  if (filters.date_from) params.date_from = filters.date_from;
+  if (filters.date_to) params.date_to = filters.date_to;
+  if (filters.metric) params.metric = filters.metric;
+  return params;
+}
+
+function occurrenceFilterLabels(filters) {
+  const labels = [];
+  if (filters.entry_type) labels.push(entryTypeLabel(filters.entry_type));
+  if (filters.road_traffic_type) labels.push(roadTrafficTypeLabel(filters.road_traffic_type));
+  if (filters.metric) labels.push(TRAFFIC_METRIC_LABELS[filters.metric] || filters.metric);
+  if (filters.date_from && filters.date_to) {
+    labels.push(`${filters.date_from} to ${filters.date_to}`);
+  } else if (filters.date_from) {
+    labels.push(`From ${filters.date_from}`);
+  } else if (filters.date_to) {
+    labels.push(`To ${filters.date_to}`);
+  }
+  return labels;
+}
 
 const DUTY_TYPES = [
   ["12h", "12 Hours"],
@@ -335,23 +584,27 @@ function emptyRosterForm() {
 function emptyEntryForm() {
   return {
     occurred_at: localDateTime(),
-    entry_type: "routine",
+    entry_type: "incident",
     road_traffic_type: "",
-    injured_count: "",
-    dead_count: "",
+    injured_count: "0",
+    dead_count: "0",
     injury_severity: "",
+    rta_vehicles: [emptyRtaVehicle()],
+    rta_casualties: [],
     incident_title: "",
     place: "",
     service_vehicle: "",
     unit_involved: "",
     civilian: "",
     service_member: "",
+    service_member_number: "",
+    service_member_rank: "",
+    service_member_name: "",
     description: "",
     history: "",
     injuries: "",
     damages: "",
     how_occurred: "",
-    action_taken: "",
     police_ob_reference: "",
     requires_investigation: false,
   };
@@ -430,6 +683,105 @@ function Field({ label, children }) {
   );
 }
 
+function UnitAutocompleteInput({ value, onChange, disabled, options = [], placeholder = "Type to select unit...", required = false }) {
+  const listboxId = useId();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const query = String(value || "").trim().toLowerCase();
+  const suggestions = useMemo(() => {
+    const startsWith = [];
+    const contains = [];
+    options.forEach((option) => {
+      const name = String(option || "").trim();
+      if (!name) return;
+      const normalized = name.toLowerCase();
+      if (!query || normalized.startsWith(query)) {
+        startsWith.push(name);
+      } else if (normalized.includes(query)) {
+        contains.push(name);
+      }
+    });
+    return [...startsWith, ...contains].slice(0, 10);
+  }, [options, query]);
+  const showSuggestions = open && !disabled && suggestions.length > 0;
+
+  function chooseUnit(name) {
+    onChange(name);
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  return (
+    <div className="relative">
+      <input
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setOpen(true);
+          setActiveIndex(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && suggestions.length) {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.min(index + 1, suggestions.length - 1));
+          } else if (event.key === "ArrowUp" && suggestions.length) {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.max(index - 1, 0));
+          } else if (event.key === "Enter" && showSuggestions) {
+            event.preventDefault();
+            chooseUnit(suggestions[activeIndex] || suggestions[0]);
+          } else if (event.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={showSuggestions}
+        aria-controls={listboxId}
+        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+        disabled={disabled}
+        placeholder={placeholder}
+        autoComplete="off"
+        required={required}
+      />
+      {showSuggestions && (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-56 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg"
+        >
+          {suggestions.map((name, index) => (
+            <button
+              type="button"
+              key={name}
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                chooseUnit(name);
+              }}
+              className={`block w-full px-3 py-2 text-left ${
+                index === activeIndex ? "bg-blue-50 text-blue-900" : "text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function loadDutyRoomUnitOptions() {
+  return dutyRoomService.unitOptions();
+}
+
 function StatusBadge({ status }) {
   return (
     <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATUS_STYLE[status] || "bg-slate-100 text-slate-700"}`}>
@@ -439,10 +791,32 @@ function StatusBadge({ status }) {
 }
 
 export default function DutyRoom({ user }) {
-  const [activeTab, setActiveTab] = useState("rosters");
+  const [searchParams] = useSearchParams();
+  const occurrenceSearch = searchParams.toString();
+  const occurrenceFilters = useMemo(() => {
+    const params = new URLSearchParams(occurrenceSearch);
+    return {
+      entry_type: params.get("entry_type") || "",
+      road_traffic_type: params.get("road_traffic_type") || "",
+      date_from: params.get("date_from") || "",
+      date_to: params.get("date_to") || params.get("as_at") || "",
+      metric: params.get("metric") || "",
+    };
+  }, [occurrenceSearch]);
+  const hasOccurrenceFilters = useMemo(
+    () => ["entry_type", "road_traffic_type", "date_from", "date_to", "metric"].some((field) => Boolean(occurrenceFilters[field])),
+    [occurrenceFilters]
+  );
+  const occurrenceFilterSummary = useMemo(() => occurrenceFilterLabels(occurrenceFilters), [occurrenceFilters]);
+  const [activeTab, setActiveTab] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return ["entry_type", "road_traffic_type", "date_from", "date_to", "as_at", "metric"].some((field) => Boolean(params.get(field))) ? "ob" : "rosters";
+  });
   const [rosters, setRosters] = useState([]);
   const [entries, setEntries] = useState([]);
   const [personnel, setPersonnel] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [offences, setOffences] = useState([]);
   const [approvers, setApprovers] = useState([]);
   const [activeDuty, setActiveDuty] = useState(null);
   const [rosterForm, setRosterForm] = useState(emptyRosterForm());
@@ -482,10 +856,54 @@ export default function DutyRoom({ user }) {
 
   const personnelOptions = useMemo(() => personnel.filter((item) => item.is_active !== false), [personnel]);
   const personnelById = useMemo(() => new Map(personnel.map((person) => [Number(person.id), person])), [personnel]);
+  const unitNames = useMemo(() => {
+    const seen = new Set();
+    return units
+      .map((unit) => String(typeof unit === "string" ? unit : unit?.name || "").trim())
+      .filter((name) => {
+        const key = name.toLowerCase();
+        if (!name || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.localeCompare(b));
+  }, [units]);
+  const offenceNames = useMemo(() => {
+    const seen = new Set();
+    return offences
+      .map((offence) => String(typeof offence === "string" ? offence : offence?.name || "").trim())
+      .filter((name) => {
+        const key = name.toLowerCase();
+        if (!name || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => a.localeCompare(b));
+  }, [offences]);
   const previewGroups = useMemo(() => partOneOrderGroups(previewRoster, personnelById), [previewRoster, personnelById]);
   const previewCanPrint = previewRoster ? canPrintRoster(previewRoster) : false;
   const mobilePartOneOrdersBlocked = activeTab === "rosters" && isMobileClient;
   const entryIsRoadTraffic = isRoadTrafficEntryType(entryForm.entry_type);
+  const entryIsIncident = entryForm.entry_type === "incident";
+  const entryIsMovement = entryForm.entry_type === "movement";
+  const showManualDateTime = !entryIsIncident && !entryIsMovement;
+  const originatingSubUnitLabel = userOriginatingSubUnitLabel(user, activeDuty?.post?.unit_label);
+  const rtaType = entryForm.road_traffic_type;
+  const showRtaInjuredCount = entryIsRoadTraffic && rtaType && rtaType !== "non_injury";
+  const showRtaDeadCount = entryIsRoadTraffic && rtaType && !["non_injury", "injury"].includes(rtaType);
+
+  useEffect(() => {
+    if (!entryIsRoadTraffic || !entryForm.road_traffic_type) return;
+    if (rtaCasualtiesMatchCounts(entryForm.rta_casualties, entryForm.road_traffic_type, entryForm.injured_count, entryForm.dead_count)) return;
+    setEntryForm((prev) => {
+      if (!isRoadTrafficEntryType(prev.entry_type) || !prev.road_traffic_type) return prev;
+      if (rtaCasualtiesMatchCounts(prev.rta_casualties, prev.road_traffic_type, prev.injured_count, prev.dead_count)) return prev;
+      return {
+        ...prev,
+        rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, prev.injured_count, prev.dead_count),
+      };
+    });
+  }, [entryForm.dead_count, entryForm.injured_count, entryForm.road_traffic_type, entryForm.rta_casualties, entryIsRoadTraffic]);
 
   useEffect(() => {
     function refreshDevicePolicy() {
@@ -553,22 +971,93 @@ export default function DutyRoom({ user }) {
     window.print();
   }
 
+  function updateRtaVehicle(index, field, value) {
+    setEntryForm((prev) => ({
+      ...prev,
+      rta_vehicles: prev.rta_vehicles.map((vehicle, vehicleIndex) => {
+        if (vehicleIndex !== index) return vehicle;
+        const next = { ...vehicle, [field]: value };
+        if (field === "driver_person_type" && value === "civilian") {
+          next.driver_rank = "";
+          next.driver_unit = "";
+        }
+        if (field === "driver_person_type" && value === "service") {
+          next.driver_unknown = false;
+          if (next.driver_identifier === "Unknown") next.driver_identifier = "";
+          if (next.driver_name === "Unknown") next.driver_name = "";
+        }
+        if (field === "driver_unknown") {
+          next.driver_unknown = Boolean(value);
+          next.driver_rank = "";
+          next.driver_unit = "";
+          if (value) {
+            next.driver_identifier = "Unknown";
+            next.driver_name = "Unknown";
+          } else {
+            next.driver_identifier = "";
+            next.driver_name = "";
+          }
+        }
+        return next;
+      }),
+    }));
+  }
+
+  function updateRtaCasualty(index, field, value) {
+    setEntryForm((prev) => ({
+      ...prev,
+      rta_casualties: prev.rta_casualties.map((casualty, casualtyIndex) => {
+        if (casualtyIndex !== index) return casualty;
+        const next = { ...casualty, [field]: value };
+        if (field === "casualty_status" && value === "dead") {
+          next.injury_severity = "";
+        }
+        if (field === "person_type" && value === "civilian") {
+          next.rank = "";
+          next.unit = "";
+        }
+        if (field === "person_type" && value === "service") {
+          next.is_unknown = false;
+          if (next.identifier === "Unknown") next.identifier = "";
+          if (next.name === "Unknown") next.name = "";
+        }
+        if (field === "is_unknown") {
+          next.is_unknown = Boolean(value);
+          next.rank = "";
+          next.unit = "";
+          if (value) {
+            next.identifier = "Unknown";
+            next.name = "Unknown";
+          } else {
+            next.identifier = "";
+            next.name = "";
+          }
+        }
+        return next;
+      }),
+    }));
+  }
+
   function loadData() {
     setLoading(true);
     const shouldLoadPartOneOrders = !isMobilePartOneOrdersClient();
     Promise.allSettled([
       shouldLoadPartOneOrders ? dutyRoomService.rosters({ page_size: 200 }) : Promise.resolve({ data: [] }),
-      dutyRoomService.entries({ page_size: 200 }),
+      dutyRoomService.entries(occurrenceFilterParams(occurrenceFilters)),
       dutyRoomService.activeDutyRoom(),
       isOrderNco && shouldLoadPartOneOrders ? dutyRoomService.approvers() : Promise.resolve({ data: [] }),
       isOrderNco && shouldLoadPartOneOrders ? userService.list({ page_size: 300 }) : Promise.resolve({ data: [] }),
+      loadDutyRoomUnitOptions(),
+      offenceService.list(),
     ])
-      .then(([rosterRes, entryRes, activeRes, approverRes, userRes]) => {
+      .then(([rosterRes, entryRes, activeRes, approverRes, userRes, unitRes, offenceRes]) => {
         setRosters(toArray(settledData(rosterRes)));
         setEntries(toArray(settledData(entryRes)));
         setActiveDuty(settledData(activeRes) || null);
         setApprovers(toArray(settledData(approverRes)));
         setPersonnel(toArray(settledData(userRes)));
+        setUnits(toArray(settledData(unitRes)));
+        setOffences(toArray(settledData(offenceRes)));
 
         const failures = [
           settledError(rosterRes, "Failed to load Part 1 Orders."),
@@ -576,6 +1065,8 @@ export default function DutyRoom({ user }) {
           settledError(activeRes, "Failed to check current Duty Room assignment."),
           isOrderNco && shouldLoadPartOneOrders ? settledError(approverRes, "Failed to load Part 1 Orders approvers.") : "",
           isOrderNco && shouldLoadPartOneOrders ? settledError(userRes, "Failed to load personnel list.") : "",
+          settledError(unitRes, "Failed to load unit list."),
+          settledError(offenceRes, "Failed to load offence list."),
         ].filter(Boolean);
         setError(failures[0] || "");
       })
@@ -585,7 +1076,13 @@ export default function DutyRoom({ user }) {
   useEffect(() => {
     loadData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [occurrenceFilters]);
+
+  useEffect(() => {
+    if (hasOccurrenceFilters) {
+      setActiveTab("ob");
+    }
+  }, [hasOccurrenceFilters]);
 
   function updateRosterField(field, value) {
     setRosterForm((prev) => {
@@ -835,7 +1332,7 @@ export default function DutyRoom({ user }) {
       return;
     }
     if (!orderNcoHasUnit) {
-      setError("Order NCO account must be attached to a battalion or detachment before generating Part 1 Orders.");
+      setError("Order NCO account must be attached to a battalion or company before generating Part 1 Orders.");
       return;
     }
     setSavingRoster(true);
@@ -994,28 +1491,82 @@ export default function DutyRoom({ user }) {
         setError("Select the road traffic accident type before recording the OB entry.");
         return;
       }
-      if (isInjuryRoadTrafficType(payload.road_traffic_type)) {
-        if (!Number(payload.injured_count || 0)) {
-          setError("Enter the number of injured persons for an Injury Road Traffic Accident.");
-          return;
-        }
-        if (!payload.injury_severity) {
-          setError("Select injury severity for an Injury Road Traffic Accident.");
-          return;
-        }
-        payload.dead_count = null;
-      } else if (isFatalRoadTrafficType(payload.road_traffic_type)) {
-        if (!Number(payload.dead_count || 0)) {
-          setError("Enter the number of dead persons for a Fatal Road Traffic Accident.");
-          return;
-        }
-        payload.injured_count = null;
-        payload.injury_severity = "";
-      } else {
-        payload.injured_count = null;
-        payload.dead_count = null;
-        payload.injury_severity = "";
+      const { injuredCount, deadCount } = casualtyCountsForType(
+        payload.road_traffic_type,
+        payload.injured_count,
+        payload.dead_count
+      );
+      const cleanedVehicles = toArray(payload.rta_vehicles).filter(hasVehicleData).map(cleanRtaVehicle);
+      const cleanedCasualties = syncRtaCasualtiesForCounts(
+        payload.rta_casualties,
+        payload.road_traffic_type,
+        injuredCount,
+        deadCount
+      ).map(cleanRtaCasualty);
+      const casualtyMissingSeverity = cleanedCasualties.some((casualty) =>
+        casualty.casualty_status === "injured" && !casualty.injury_severity
+      );
+      if (cleanedVehicles.length === 0) {
+        setError("Add at least one vehicle and driver entry for the road traffic accident.");
+        return;
       }
+      if (
+        payload.road_traffic_type === "non_injury" &&
+        !cleanedVehicles.some((vehicle) => vehicle.driver_unknown || vehicle.driver_identifier || vehicle.driver_name)
+      ) {
+        setError("Capture driver details for a Non-Injury Road Traffic Accident.");
+        return;
+      }
+      if (isInjuryRoadTrafficType(payload.road_traffic_type) && injuredCount < 1) {
+        setError("Enter the number of injured personnel for an Injury Road Traffic Accident.");
+        return;
+      }
+      if (isFatalRoadTrafficType(payload.road_traffic_type) && deadCount < 1) {
+        setError("Enter the number of dead personnel for a Fatal Road Traffic Accident.");
+        return;
+      }
+      if (!String(payload.history || "").trim()) {
+        setError("Enter the history of the road traffic accident.");
+        return;
+      }
+      if (!String(payload.how_occurred || "").trim()) {
+        setError("Enter how the road traffic accident occurred.");
+        return;
+      }
+      if (casualtyMissingSeverity) {
+        setError("Select injury severity for every injured onboard person.");
+        return;
+      }
+      payload.injured_count = injuredCount;
+      payload.dead_count = deadCount;
+      payload.rta_vehicles = cleanedVehicles;
+      payload.rta_casualties = cleanedCasualties;
+      payload.injury_severity = cleanedCasualties.find((casualty) => casualty.casualty_status === "injured")?.injury_severity || "";
+      payload.service_vehicle = cleanedVehicles
+        .filter((vehicle) => vehicle.vehicle_type === "service")
+        .map((vehicle, index) => vehicleSummary(vehicle, index))
+        .join("\n");
+      payload.civilian = cleanedVehicles
+        .filter((vehicle) => vehicle.vehicle_type === "civilian")
+        .map((vehicle, index) => vehicleSummary(vehicle, index))
+        .join("\n");
+      payload.service_member = cleanedVehicles
+        .map((vehicle) => {
+          const driver = personLabel({
+            identifier: vehicle.driver_identifier,
+            rank: vehicle.driver_rank,
+            name: vehicle.driver_name,
+            unit: vehicle.driver_unit,
+            driver_unknown: vehicle.driver_unknown,
+          }, vehicle.driver_person_type === "civilian" ? "ID No" : "Svc No");
+          return driver ? `Driver: ${driver}` : "";
+        })
+        .filter(Boolean)
+        .join("\n");
+      payload.injuries = cleanedCasualties.length
+        ? cleanedCasualties.map(casualtySummary).join("\n")
+        : `Personnel injured: ${countLabel(payload.injured_count)}. Personnel dead: ${countLabel(payload.dead_count)}.`;
+      payload.description = buildRtaDescription(payload);
       payload.requires_investigation = true;
       payload.incident_title = roadTrafficTypeLabel(payload.road_traffic_type);
     } else {
@@ -1023,7 +1574,55 @@ export default function DutyRoom({ user }) {
       payload.injured_count = null;
       payload.dead_count = null;
       payload.injury_severity = "";
+      payload.rta_vehicles = [];
+      payload.rta_casualties = [];
+      if (payload.entry_type === "incident") {
+        payload.requires_investigation = true;
+        payload.incident_title = String(payload.incident_title || "").trim();
+        payload.service_member = serviceMemberSummary(payload);
+        payload.description = String(payload.history || "").trim();
+        if (!payload.occurred_at) {
+          payload.occurred_at = localDateTime();
+        }
+        if (!payload.incident_title) {
+          setError("Enter the incident.");
+          return;
+        }
+        if (!String(payload.place || "").trim()) {
+          setError("Enter the place of the incident.");
+          return;
+        }
+        if (!String(payload.unit_involved || "").trim()) {
+          setError("Select the unit involved in the incident.");
+          return;
+        }
+        if (!String(payload.history || "").trim()) {
+          setError("Enter the history of the incident.");
+          return;
+        }
+      } else if (payload.entry_type === "movement") {
+        payload.occurred_at = localDateTime();
+        payload.requires_investigation = false;
+        payload.incident_title = "";
+        payload.place = "";
+        payload.service_vehicle = "";
+        payload.unit_involved = "";
+        payload.civilian = "";
+        payload.service_member = "";
+        payload.history = "";
+        payload.injuries = "";
+        payload.damages = "";
+        payload.how_occurred = "";
+        if (!String(payload.description || "").trim()) {
+          setError("Enter the description of the movement.");
+          return;
+        }
+      }
     }
+    delete payload.action_taken;
+    delete payload.service_member_number;
+    delete payload.service_member_rank;
+    delete payload.service_member_name;
     setSavingEntry(true);
     setError("");
     try {
@@ -1143,7 +1742,7 @@ export default function DutyRoom({ user }) {
               <div className="space-y-4 p-4">
                 {!orderNcoHasUnit && (
                   <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    This Order NCO account must be attached to a battalion or detachment before it can generate Part 1 Orders.
+                    This Order NCO account must be attached to a battalion or company before it can generate Part 1 Orders.
                   </div>
                 )}
                 <div className="grid gap-3 md:grid-cols-3">
@@ -1528,16 +2127,18 @@ export default function DutyRoom({ user }) {
               <h3 className="text-sm font-bold uppercase tracking-wide text-slate-800">Record OB Entry</h3>
             </div>
             <div className="grid gap-3 p-4 md:grid-cols-2">
-              <Field label="Time">
-                <input
-                  type="datetime-local"
-                  value={entryForm.occurred_at}
-                  onChange={(event) => setEntryForm((prev) => ({ ...prev, occurred_at: event.target.value }))}
-                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  disabled={!activeDuty?.can_record_ob}
-                  required
-                />
-              </Field>
+              {showManualDateTime && (
+                <Field label="Time">
+                  <input
+                    type="datetime-local"
+                    value={entryForm.occurred_at}
+                    onChange={(event) => setEntryForm((prev) => ({ ...prev, occurred_at: event.target.value }))}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    disabled={!activeDuty?.can_record_ob}
+                    required
+                  />
+                </Field>
+              )}
               <Field label="OB Category">
                 <select
                   value={entryForm.entry_type}
@@ -1545,17 +2146,37 @@ export default function DutyRoom({ user }) {
                     const entryType = event.target.value;
                     setEntryForm((prev) => {
                       const isRoadTraffic = isRoadTrafficEntryType(entryType);
+                      const isIncident = entryType === "incident";
+                      const isMovement = entryType === "movement";
                       return {
                         ...prev,
                         entry_type: entryType,
                         road_traffic_type: isRoadTraffic ? prev.road_traffic_type : "",
-                        injured_count: isRoadTraffic ? prev.injured_count : "",
-                        dead_count: isRoadTraffic ? prev.dead_count : "",
+                        injured_count: isRoadTraffic ? (prev.injured_count || "0") : "0",
+                        dead_count: isRoadTraffic ? (prev.dead_count || "0") : "0",
                         injury_severity: isRoadTraffic ? prev.injury_severity : "",
+                        rta_vehicles: isRoadTraffic && prev.rta_vehicles.length ? prev.rta_vehicles : [emptyRtaVehicle()],
+                        rta_casualties: isRoadTraffic
+                          ? syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, prev.injured_count, prev.dead_count)
+                          : [],
                         incident_title: isRoadTraffic
                           ? roadTrafficTypeLabel(prev.road_traffic_type)
-                          : (isRoadTrafficEntryType(prev.entry_type) ? "" : prev.incident_title),
-                        requires_investigation: isRoadTraffic ? true : prev.requires_investigation,
+                          : (isIncident ? prev.incident_title : ""),
+                        place: isMovement ? "" : prev.place,
+                        unit_involved: isMovement ? "" : prev.unit_involved,
+                        service_vehicle: isMovement || isIncident ? "" : prev.service_vehicle,
+                        civilian: isMovement || isIncident ? "" : prev.civilian,
+                        service_member: isMovement ? "" : prev.service_member,
+                        service_member_number: isIncident ? prev.service_member_number : "",
+                        service_member_rank: isIncident ? prev.service_member_rank : "",
+                        service_member_name: isIncident ? prev.service_member_name : "",
+                        history: isMovement ? "" : prev.history,
+                        injuries: isRoadTraffic ? prev.injuries : "",
+                        damages: isRoadTraffic ? prev.damages : "",
+                        how_occurred: isRoadTraffic ? prev.how_occurred : "",
+                        description: isMovement ? prev.description : "",
+                        occurred_at: isMovement ? localDateTime() : (prev.occurred_at || localDateTime()),
+                        requires_investigation: isRoadTraffic || isIncident,
                       };
                     });
                   }}
@@ -1565,101 +2186,93 @@ export default function DutyRoom({ user }) {
                   {ENTRY_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
               </Field>
-              <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={entryIsRoadTraffic || entryForm.requires_investigation}
-                  onChange={(event) => setEntryForm((prev) => ({ ...prev, requires_investigation: event.target.checked }))}
-                  disabled={!activeDuty?.can_record_ob || entryIsRoadTraffic}
-                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                />
-                Requires investigation
-              </label>
-              {(entryIsRoadTraffic || entryForm.requires_investigation || entryForm.entry_type === "incident") && (
+              {!entryIsMovement && (
+                <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={entryIsRoadTraffic || entryIsIncident || entryForm.requires_investigation}
+                    onChange={(event) => setEntryForm((prev) => ({ ...prev, requires_investigation: event.target.checked }))}
+                    disabled={!activeDuty?.can_record_ob || entryIsRoadTraffic || entryIsIncident}
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                  />
+                  Requires investigation
+                </label>
+              )}
+              {entryIsRoadTraffic && (
                 <div className="grid gap-3 rounded-lg border border-blue-100 bg-blue-50/40 p-3 md:col-span-2 md:grid-cols-2">
                   <div className="md:col-span-2">
                     <h4 className="text-xs font-bold uppercase tracking-wide text-blue-900">Morning Brief Report Fields</h4>
                     <p className="mt-1 text-xs text-slate-600">Select the RTA type or type the incident heading as it should appear in the morning brief. Originating Unit is filled automatically from this Duty Room.</p>
                   </div>
-                  {entryIsRoadTraffic ? (
-                    <>
-                      <Field label="Road Traffic Accident Type">
-                        <select
-                          value={entryForm.road_traffic_type}
-                          onChange={(event) => {
-                            const roadTrafficType = event.target.value;
-                            setEntryForm((prev) => ({
-                              ...prev,
-                              road_traffic_type: roadTrafficType,
-                              injured_count: isInjuryRoadTrafficType(roadTrafficType) ? prev.injured_count : "",
-                              dead_count: isFatalRoadTrafficType(roadTrafficType) ? prev.dead_count : "",
-                              injury_severity: isInjuryRoadTrafficType(roadTrafficType) ? prev.injury_severity : "",
-                              incident_title: roadTrafficTypeLabel(roadTrafficType),
-                              requires_investigation: true,
-                            }));
-                          }}
-                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                          disabled={!activeDuty?.can_record_ob}
-                          required
-                        >
-                          <option value="">Select accident type...</option>
-                          {ROAD_TRAFFIC_TYPES.map(([value, label]) => (
-                            <option key={value} value={value}>{label}</option>
-                          ))}
-                        </select>
-                      </Field>
-                      {isInjuryRoadTrafficType(entryForm.road_traffic_type) && (
-                        <>
-                          <Field label="Number Injured">
-                            <input
-                              type="number"
-                              min="1"
-                              value={entryForm.injured_count}
-                              onChange={(event) => setEntryForm((prev) => ({ ...prev, injured_count: event.target.value }))}
-                              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                              disabled={!activeDuty?.can_record_ob}
-                              required
-                            />
-                          </Field>
-                          <Field label="Injury Severity">
-                            <select
-                              value={entryForm.injury_severity}
-                              onChange={(event) => setEntryForm((prev) => ({ ...prev, injury_severity: event.target.value }))}
-                              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                              disabled={!activeDuty?.can_record_ob}
-                              required
-                            >
-                              <option value="">Select severity...</option>
-                              {INJURY_SEVERITIES.map(([value, label]) => (
-                                <option key={value} value={value}>{label}</option>
-                              ))}
-                            </select>
-                          </Field>
-                        </>
-                      )}
-                      {isFatalRoadTrafficType(entryForm.road_traffic_type) && (
-                        <Field label="Number Dead">
-                          <input
-                            type="number"
-                            min="1"
-                            value={entryForm.dead_count}
-                            onChange={(event) => setEntryForm((prev) => ({ ...prev, dead_count: event.target.value }))}
-                            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                            disabled={!activeDuty?.can_record_ob}
-                            required
-                          />
-                        </Field>
-                      )}
-                    </>
-                  ) : (
-                    <Field label="Incident">
+                  <Field label="Road Traffic Accident Type">
+                    <select
+                      value={entryForm.road_traffic_type}
+                      onChange={(event) => {
+                        const roadTrafficType = event.target.value;
+                        setEntryForm((prev) => {
+                          const injured = roadTrafficType === "non_injury" ? "0" : prev.injured_count;
+                          const dead = ["non_injury", "injury"].includes(roadTrafficType) ? "0" : prev.dead_count;
+                          return {
+                            ...prev,
+                            road_traffic_type: roadTrafficType,
+                            injured_count: injured,
+                            dead_count: dead,
+                            injury_severity: "",
+                            rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, roadTrafficType, injured, dead),
+                            incident_title: roadTrafficTypeLabel(roadTrafficType),
+                            requires_investigation: true,
+                          };
+                        });
+                      }}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      required
+                    >
+                      <option value="">Select accident type...</option>
+                      {ROAD_TRAFFIC_TYPES.map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  {showRtaInjuredCount && (
+                    <Field label="Number Injured">
                       <input
-                        value={entryForm.incident_title}
-                        onChange={(event) => setEntryForm((prev) => ({ ...prev, incident_title: event.target.value }))}
+                        type="number"
+                        min={isInjuryRoadTrafficType(entryForm.road_traffic_type) ? "1" : "0"}
+                        value={entryForm.injured_count}
+                        onChange={(event) => {
+                          const injured = event.target.value;
+                          setEntryForm((prev) => ({
+                            ...prev,
+                            injured_count: injured,
+                            rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, injured, prev.dead_count),
+                          }));
+                        }}
                         className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         disabled={!activeDuty?.can_record_ob}
-                        placeholder="e.g. Impersonation, Alleged Theft"
-                        required={entryForm.requires_investigation}
+                        placeholder="0 means Nil"
+                        required={isInjuryRoadTrafficType(entryForm.road_traffic_type)}
+                      />
+                    </Field>
+                  )}
+                  {showRtaDeadCount && (
+                    <Field label="Number Dead">
+                      <input
+                        type="number"
+                        min={isFatalRoadTrafficType(entryForm.road_traffic_type) ? "1" : "0"}
+                        value={entryForm.dead_count}
+                        onChange={(event) => {
+                          const dead = event.target.value;
+                          setEntryForm((prev) => ({
+                            ...prev,
+                            dead_count: dead,
+                            rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, prev.injured_count, dead),
+                          }));
+                        }}
+                        className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                        disabled={!activeDuty?.can_record_ob}
+                        placeholder="0 means Nil"
+                        required={isFatalRoadTrafficType(entryForm.road_traffic_type)}
                       />
                     </Field>
                   )}
@@ -1674,68 +2287,24 @@ export default function DutyRoom({ user }) {
                     />
                   </Field>
                   <Field label="Unit">
-                    <input
+                    <UnitAutocompleteInput
                       value={entryForm.unit_involved}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, unit_involved: event.target.value }))}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      onChange={(value) => setEntryForm((prev) => ({ ...prev, unit_involved: value }))}
                       disabled={!activeDuty?.can_record_ob}
-                      placeholder="Unit involved"
-                    />
-                  </Field>
-                  <Field label="Svc Veh">
-                    <input
-                      value={entryForm.service_vehicle}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, service_vehicle: event.target.value }))}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      disabled={!activeDuty?.can_record_ob}
-                      placeholder="Service vehicle if any"
-                    />
-                  </Field>
-                  <Field label="Svc Member">
-                    <input
-                      value={entryForm.service_member}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, service_member: event.target.value }))}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      disabled={!activeDuty?.can_record_ob}
-                      placeholder="Service member details"
-                    />
-                  </Field>
-                  <Field label="Civ / Versus">
-                    <input
-                      value={entryForm.civilian}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, civilian: event.target.value }))}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      disabled={!activeDuty?.can_record_ob}
-                      placeholder="Civilian / opposite party"
-                    />
-                  </Field>
-                  <Field label="Police / External OB Ref">
-                    <input
-                      value={entryForm.police_ob_reference}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, police_ob_reference: event.target.value }))}
-                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      disabled={!activeDuty?.can_record_ob}
-                      placeholder="e.g. OB No. 57/13/07/2026"
+                      options={unitNames}
                     />
                   </Field>
                   <div className="md:col-span-2">
-                    <Field label="History of the Incident / Accident">
+                    <Field label="History of the Accident">
                       <textarea
                         value={entryForm.history}
                         onChange={(event) => setEntryForm((prev) => ({ ...prev, history: event.target.value }))}
                         className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         disabled={!activeDuty?.can_record_ob}
+                        required
                       />
                     </Field>
                   </div>
-                  <Field label="Injuries">
-                    <textarea
-                      value={entryForm.injuries}
-                      onChange={(event) => setEntryForm((prev) => ({ ...prev, injuries: event.target.value }))}
-                      className="min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                      disabled={!activeDuty?.can_record_ob}
-                    />
-                  </Field>
                   <Field label="Damages">
                     <textarea
                       value={entryForm.damages}
@@ -1745,38 +2314,416 @@ export default function DutyRoom({ user }) {
                     />
                   </Field>
                   <div className="md:col-span-2">
-                    <Field label="How It Occurred">
+                    <Field label="How the Accident Occurred">
                       <textarea
                         value={entryForm.how_occurred}
                         onChange={(event) => setEntryForm((prev) => ({ ...prev, how_occurred: event.target.value }))}
                         className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                         disabled={!activeDuty?.can_record_ob}
+                        required
+                      />
+                    </Field>
+                  </div>
+                  {!entryIsRoadTraffic && (
+                    <>
+                      <Field label="Svc Veh">
+                        <input
+                          value={entryForm.service_vehicle}
+                          onChange={(event) => setEntryForm((prev) => ({ ...prev, service_vehicle: event.target.value }))}
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                          disabled={!activeDuty?.can_record_ob}
+                          placeholder="Service vehicle if any"
+                        />
+                      </Field>
+                      <Field label="Svc Member">
+                        <input
+                          value={entryForm.service_member}
+                          onChange={(event) => setEntryForm((prev) => ({ ...prev, service_member: event.target.value }))}
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                          disabled={!activeDuty?.can_record_ob}
+                          placeholder="Service member details"
+                        />
+                      </Field>
+                      <Field label="Civ / Versus">
+                        <input
+                          value={entryForm.civilian}
+                          onChange={(event) => setEntryForm((prev) => ({ ...prev, civilian: event.target.value }))}
+                          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                          disabled={!activeDuty?.can_record_ob}
+                          placeholder="Civilian / opposite party"
+                        />
+                      </Field>
+                    </>
+                  )}
+                  {entryIsRoadTraffic && (
+                    <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 md:col-span-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Vehicles and Drivers</h4>
+                        <button
+                          type="button"
+                          onClick={() => setEntryForm((prev) => ({ ...prev, rta_vehicles: [...prev.rta_vehicles, emptyRtaVehicle()] }))}
+                          className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          disabled={!activeDuty?.can_record_ob}
+                        >
+                          Add Vehicle
+                        </button>
+                      </div>
+                      {entryForm.rta_vehicles.map((vehicle, index) => (
+                        <div key={index} className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Vehicle / Driver #{index + 1}</p>
+                            {entryForm.rta_vehicles.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setEntryForm((prev) => ({
+                                  ...prev,
+                                  rta_vehicles: prev.rta_vehicles.filter((_, vehicleIndex) => vehicleIndex !== index),
+                                }))}
+                                className="text-xs font-semibold text-red-600 hover:text-red-700"
+                                disabled={!activeDuty?.can_record_ob}
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <Field label="Vehicle Type">
+                              <select
+                                value={vehicle.vehicle_type}
+                                onChange={(event) => updateRtaVehicle(index, "vehicle_type", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob}
+                              >
+                                <option value="service">Service Vehicle</option>
+                                <option value="civilian">Civilian Vehicle</option>
+                              </select>
+                            </Field>
+                            <Field label="Vehicle Details">
+                              <input
+                                value={vehicle.vehicle_details}
+                                onChange={(event) => updateRtaVehicle(index, "vehicle_details", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob}
+                                placeholder="Reg no, make, call sign"
+                              />
+                            </Field>
+                            <Field label="Driver Type">
+                              <select
+                                value={vehicle.driver_person_type}
+                                onChange={(event) => updateRtaVehicle(index, "driver_person_type", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob}
+                              >
+                                <option value="service">Service Member</option>
+                                <option value="civilian">Civilian</option>
+                              </select>
+                            </Field>
+                            {vehicle.driver_person_type === "civilian" && (
+                              <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(vehicle.driver_unknown)}
+                                  onChange={(event) => updateRtaVehicle(index, "driver_unknown", event.target.checked)}
+                                  disabled={!activeDuty?.can_record_ob}
+                                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                                />
+                                Civilian driver unknown
+                              </label>
+                            )}
+                            <Field label={vehicle.driver_person_type === "civilian" ? "Driver ID No" : "Driver Service No"}>
+                              <input
+                                value={vehicle.driver_identifier}
+                                onChange={(event) => updateRtaVehicle(index, "driver_identifier", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob || Boolean(vehicle.driver_unknown)}
+                              />
+                            </Field>
+                            <Field label="Driver Rank">
+                              <select
+                                value={vehicle.driver_rank}
+                                onChange={(event) => updateRtaVehicle(index, "driver_rank", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob || vehicle.driver_person_type === "civilian"}
+                              >
+                                <option value="">{vehicle.driver_person_type === "civilian" ? "NIL" : "Select rank..."}</option>
+                                {RANK_OPTIONS.map((rank) => (
+                                  <option key={rank} value={rank}>{rank}</option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="Driver Name">
+                              <input
+                                value={vehicle.driver_name}
+                                onChange={(event) => updateRtaVehicle(index, "driver_name", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob || Boolean(vehicle.driver_unknown)}
+                              />
+                            </Field>
+                            <Field label="Driver Unit">
+                              <UnitAutocompleteInput
+                                value={vehicle.driver_unit}
+                                onChange={(value) => updateRtaVehicle(index, "driver_unit", value)}
+                                disabled={!activeDuty?.can_record_ob || vehicle.driver_person_type === "civilian"}
+                                options={unitNames}
+                                placeholder={vehicle.driver_person_type === "civilian" ? "Civilian / N/A" : "Type to select unit..."}
+                              />
+                            </Field>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {entryIsRoadTraffic && entryForm.road_traffic_type && entryForm.road_traffic_type !== "non_injury" && (
+                    <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 md:col-span-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Onboard Personnel / Casualties</h4>
+                          <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above. Mark unknown civilians where details are not available.</p>
+                        </div>
+                      </div>
+                      {entryForm.rta_casualties.length === 0 ? (
+                        <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                          No onboard personnel rows because injured and dead counts are Nil.
+                        </p>
+                      ) : entryForm.rta_casualties.map((casualty, index) => {
+                        const status = casualty.casualty_status === "dead" ? "dead" : "injured";
+                        return (
+                          <div key={index} className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                            <div className="mb-2 flex items-center justify-between">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                {status === "dead" ? "Dead person" : "Injured person"} #{index + 1}
+                              </p>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-3">
+                              <Field label="Status">
+                                <input
+                                  value={status === "dead" ? "Dead" : "Injured"}
+                                  readOnly
+                                  className="w-full rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-sm"
+                                />
+                              </Field>
+                              <Field label="Person Type">
+                                <select
+                                  value={casualty.person_type}
+                                  onChange={(event) => updateRtaCasualty(index, "person_type", event.target.value)}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                  disabled={!activeDuty?.can_record_ob}
+                                >
+                                  <option value="service">Service Member</option>
+                                  <option value="civilian">Civilian</option>
+                                </select>
+                              </Field>
+                              {casualty.person_type === "civilian" && (
+                                <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(casualty.is_unknown)}
+                                    onChange={(event) => updateRtaCasualty(index, "is_unknown", event.target.checked)}
+                                    disabled={!activeDuty?.can_record_ob}
+                                    className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                                  />
+                                  Civilian details unknown
+                                </label>
+                              )}
+                              <Field label={casualty.person_type === "civilian" ? "ID No" : "Service No"}>
+                                <input
+                                  value={casualty.identifier}
+                                  onChange={(event) => updateRtaCasualty(index, "identifier", event.target.value)}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                  disabled={!activeDuty?.can_record_ob || Boolean(casualty.is_unknown)}
+                                />
+                              </Field>
+                              <Field label="Rank">
+                                <select
+                                  value={casualty.rank}
+                                  onChange={(event) => updateRtaCasualty(index, "rank", event.target.value)}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                  disabled={!activeDuty?.can_record_ob || casualty.person_type === "civilian"}
+                                >
+                                  <option value="">{casualty.person_type === "civilian" ? "NIL" : "Select rank..."}</option>
+                                  {RANK_OPTIONS.map((rank) => (
+                                    <option key={rank} value={rank}>{rank}</option>
+                                  ))}
+                                </select>
+                              </Field>
+                              <Field label="Name">
+                                <input
+                                  value={casualty.name}
+                                  onChange={(event) => updateRtaCasualty(index, "name", event.target.value)}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                  disabled={!activeDuty?.can_record_ob || Boolean(casualty.is_unknown)}
+                                />
+                              </Field>
+                              <Field label="Unit">
+                                <UnitAutocompleteInput
+                                  value={casualty.unit}
+                                  onChange={(value) => updateRtaCasualty(index, "unit", value)}
+                                  disabled={!activeDuty?.can_record_ob || casualty.person_type === "civilian"}
+                                  options={unitNames}
+                                  placeholder={casualty.person_type === "civilian" ? "Civilian / N/A" : "Type to select unit..."}
+                                />
+                              </Field>
+                              {status === "injured" && (
+                                <Field label="Injury Severity">
+                                  <select
+                                    value={casualty.injury_severity}
+                                    onChange={(event) => updateRtaCasualty(index, "injury_severity", event.target.value)}
+                                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                    disabled={!activeDuty?.can_record_ob}
+                                    required
+                                  >
+                                    <option value="">Select severity...</option>
+                                    {INJURY_SEVERITIES.map(([value, label]) => (
+                                      <option key={value} value={value}>{label}</option>
+                                    ))}
+                                  </select>
+                                </Field>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <Field label="Police / External OB Ref">
+                    <input
+                      value={entryForm.police_ob_reference}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, police_ob_reference: event.target.value }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      placeholder="e.g. OB No. 57/13/07/2026"
+                    />
+                  </Field>
+                  {!entryIsRoadTraffic && (
+                    <Field label="Injuries">
+                      <textarea
+                        value={entryForm.injuries}
+                        onChange={(event) => setEntryForm((prev) => ({ ...prev, injuries: event.target.value }))}
+                        className="min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                        disabled={!activeDuty?.can_record_ob}
+                      />
+                    </Field>
+                  )}
+                </div>
+              )}
+              {entryIsIncident && (
+                <div className="grid gap-3 rounded-lg border border-blue-100 bg-blue-50/40 p-3 md:col-span-2 md:grid-cols-3">
+                  <div className="md:col-span-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wide text-blue-900">Incident Details</h4>
+                  </div>
+                  <div className="md:col-span-3">
+                    <Field label="Incident">
+                      <UnitAutocompleteInput
+                        value={entryForm.incident_title}
+                        onChange={(value) => setEntryForm((prev) => ({ ...prev, incident_title: value }))}
+                        disabled={!activeDuty?.can_record_ob}
+                        options={offenceNames}
+                        placeholder="Type incident..."
+                        required
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Date">
+                    <input
+                      type="date"
+                      value={datePart(entryForm.occurred_at)}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, occurred_at: withDatePart(event.target.value, prev.occurred_at) }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      required
+                    />
+                  </Field>
+                  <Field label="Time">
+                    <input
+                      type="time"
+                      value={timePart(entryForm.occurred_at)}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, occurred_at: withTimePart(event.target.value, prev.occurred_at) }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      required
+                    />
+                  </Field>
+                  <Field label="Place">
+                    <input
+                      value={entryForm.place}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, place: event.target.value }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      placeholder="e.g. Along Juja Farm Road Mastore Centre"
+                      required
+                    />
+                  </Field>
+                  <Field label="Service No">
+                    <input
+                      value={entryForm.service_member_number}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, service_member_number: event.target.value }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                    />
+                  </Field>
+                  <Field label="Rank">
+                    <select
+                      value={entryForm.service_member_rank}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, service_member_rank: event.target.value }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                    >
+                      <option value="">Select rank...</option>
+                      {RANK_OPTIONS.map((rank) => (
+                        <option key={rank} value={rank}>{rank}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Name">
+                    <input
+                      value={entryForm.service_member_name}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, service_member_name: event.target.value }))}
+                      className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                    />
+                  </Field>
+                  <Field label="Unit">
+                    <UnitAutocompleteInput
+                      value={entryForm.unit_involved}
+                      onChange={(value) => setEntryForm((prev) => ({ ...prev, unit_involved: value }))}
+                      disabled={!activeDuty?.can_record_ob}
+                      options={unitNames}
+                      required
+                    />
+                  </Field>
+                  <Field label="Originating Sub-Unit">
+                    <input
+                      value={originatingSubUnitLabel}
+                      readOnly
+                      className="w-full rounded-md border border-slate-300 bg-slate-100 px-3 py-2 text-sm"
+                    />
+                  </Field>
+                  <div className="md:col-span-3">
+                    <Field label="History of the Incident">
+                      <textarea
+                        value={entryForm.history}
+                        onChange={(event) => setEntryForm((prev) => ({ ...prev, history: event.target.value }))}
+                        className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                        disabled={!activeDuty?.can_record_ob}
+                        required
                       />
                     </Field>
                   </div>
                 </div>
               )}
-              <div className="md:col-span-2">
-                <Field label="Details">
-                  <textarea
-                    value={entryForm.description}
-                    onChange={(event) => setEntryForm((prev) => ({ ...prev, description: event.target.value }))}
-                    className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    disabled={!activeDuty?.can_record_ob}
-                    required
-                  />
-                </Field>
-              </div>
-              <div className="md:col-span-2">
-                <Field label="Action Taken">
-                  <textarea
-                    value={entryForm.action_taken}
-                    onChange={(event) => setEntryForm((prev) => ({ ...prev, action_taken: event.target.value }))}
-                    className="min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    disabled={!activeDuty?.can_record_ob}
-                  />
-                </Field>
-              </div>
+              {entryIsMovement && (
+                <div className="md:col-span-2">
+                  <Field label="Description of Movement">
+                    <textarea
+                      value={entryForm.description}
+                      onChange={(event) => setEntryForm((prev) => ({ ...prev, description: event.target.value }))}
+                      className="min-h-28 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                      disabled={!activeDuty?.can_record_ob}
+                      required
+                    />
+                  </Field>
+                </div>
+              )}
               <div className="flex justify-end md:col-span-2">
                 <button type="submit" disabled={!activeDuty?.can_record_ob || savingEntry} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">
                   {savingEntry ? "Recording..." : "Record OB Entry"}
@@ -1784,6 +2731,17 @@ export default function DutyRoom({ user }) {
               </div>
             </div>
           </form>
+
+          {hasOccurrenceFilters && (
+            <div className="flex flex-col gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <span className="font-semibold">
+                Filtered: {occurrenceFilterSummary.length ? occurrenceFilterSummary.join(" / ") : "Occurrence Book"}
+              </span>
+              <Link to="/dashboard/duty-room" className="text-xs font-bold uppercase tracking-wide text-blue-700 hover:text-blue-900">
+                Clear
+              </Link>
+            </div>
+          )}
 
           <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
@@ -1820,14 +2778,13 @@ export default function DutyRoom({ user }) {
                               {roadTrafficTypeLabel(entry.road_traffic_type)}
                             </p>
                           )}
-                          {entry.road_traffic_type === "injury" && (
+                          {entry.road_traffic_type && (
                             <p className="mt-1 text-xs text-slate-500">
-                              Injured: {entry.injured_count || "--"}
-                              {entry.injury_severity ? `, Severity: ${injurySeverityLabel(entry.injury_severity)}` : ""}
+                              Injured: {countLabel(entry.injured_count)}; Dead: {countLabel(entry.dead_count)}
+                              {toArray(entry.rta_vehicles).length ? `; Vehicles: ${toArray(entry.rta_vehicles).length}` : ""}
+                              {toArray(entry.rta_casualties).length ? `; Persons: ${toArray(entry.rta_casualties).length}` : ""}
+                              {entry.injury_severity ? `; First severity: ${injurySeverityLabel(entry.injury_severity)}` : ""}
                             </p>
-                          )}
-                          {entry.road_traffic_type === "fatal" && (
-                            <p className="mt-1 text-xs text-slate-500">Dead: {entry.dead_count || "--"}</p>
                           )}
                         </td>
                         <td className="px-4 py-3">
@@ -1842,7 +2799,6 @@ export default function DutyRoom({ user }) {
                               {entry.originating_unit && <>Originating Unit: {entry.originating_unit}.</>}
                             </p>
                           )}
-                          {entry.action_taken && <p className="mt-1 text-xs text-slate-500">Action: {entry.action_taken}</p>}
                           {entry.requires_investigation && <span className="mt-2 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-amber-200">Requires investigation</span>}
                         </td>
                         <td className="px-4 py-3 text-xs text-slate-600">{entry.recorded_by_name || "--"}</td>

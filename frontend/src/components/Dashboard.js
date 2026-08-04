@@ -17,16 +17,21 @@ const Briefs = lazy(() => import("./Briefs"));
 const BackBriefs = lazy(() => import("./BackBriefs"));
 const Users = lazy(() => import("./Users"));
 const Notifications = lazy(() => import("./Notifications"));
+const AuditLogs = lazy(() => import("./AuditLogs"));
 const Formations = lazy(() => import("./Formations"));
 const Offences = lazy(() => import("./Offences"));
 const OffenceModal = lazy(() => import("./OffenceModal"));
 const ChangePassword = lazy(() => import("./ChangePassword"));
+const Authenticator = lazy(() => import("./Authenticator"));
 const Teams = lazy(() => import("./Teams"));
 const Analytics = lazy(() => import("./Analytics"));
 const Statistics = lazy(() => import("./Statistics"));
+const Graphs = lazy(() => import("./Graphs"));
 const DetachmentOverview = lazy(() => import("./DetachmentOverview"));
 
 const USER_CACHE_KEY = "mpims_user_cache";
+const DASHBOARD_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const DASHBOARD_ACTIVITY_EVENTS = ["click", "keydown", "mousedown", "mousemove", "scroll", "touchstart", "wheel"];
 
 function readCachedUser() {
   try {
@@ -94,7 +99,7 @@ const ROLE_LABELS = {
   duty_officer: "Duty Officer",
   hod: "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment: "Detachment IC",
+  detachment: "IC COY",
   personnel: "Personnel",
   legal: "Legal Officer",
   order_nco: "Order NCO",
@@ -195,7 +200,7 @@ function getNavItems(user) {
     },
     {
       key: "battalion-detachments",
-      label: "Detachments",
+      label: "Companies",
       path: "/dashboard/battalion-detachments",
       show: (isBattalionCommand || isSuperuser) && !isHqsBnAdmin,
       icon: (
@@ -214,7 +219,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "formations", label: "Formations", path: "/dashboard/formations", show: ((["admin", "corps_cmd", "Superuser"].includes(user?.role) || isSuperuser) && !isHqsBnAdmin && !isBattalionAdmin),
+      key: "formations", label: "Formations", path: "/dashboard/formations", show: isSuperuser,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 01-8 0M12 3v4m0 0a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h1a4 4 0 014 4z" />
@@ -314,10 +319,32 @@ function getNavItems(user) {
       ),
     },
     {
+      key: "graphs",
+      label: "Graphs",
+      path: "/dashboard/graphs",
+      show: true,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 19V5m0 14h16M8 16l3-4 3 2 5-7m-1 0h-4m4 0v4" />
+        </svg>
+      ),
+    },
+    {
+      key: "logs",
+      label: "Logs",
+      path: "/dashboard/logs",
+      show: isSuperuser,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17h6M9 13h6m-7 8h8a2 2 0 002-2V7.8a2 2 0 00-.59-1.41l-3.8-3.8A2 2 0 0012.2 2H8a2 2 0 00-2 2v15a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+    {
       key: "analytics",
       label: "Analytics",
       path: "/dashboard/analytics",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "adj"].includes(user?.role),
+      show: false,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -338,6 +365,18 @@ function getNavItems(user) {
         ),
       },
     ] : []),
+    {
+      key: "security",
+      label: "Authenticator",
+      path: "/dashboard/authenticator",
+      show: false,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3l7 3v5c0 4.6-2.9 8.6-7 10-4.1-1.4-7-5.4-7-10V6l7-3z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l-4 4-2-2" />
+        </svg>
+      ),
+    },
     {
       key: "notifications", label: "Notifications", path: "/dashboard/notifications", show: true,
       icon: (
@@ -362,6 +401,8 @@ export default function Dashboard() {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [offenceModalOpen, setOffenceModalOpen] = useState(false);
+  const idleTimerRef = React.useRef(null);
+  const idleLogoutStartedRef = React.useRef(false);
 
   const closeAllModules = React.useCallback(() => {
     setMobileNavOpen(false);
@@ -385,6 +426,22 @@ export default function Dashboard() {
     setLogoutConfirmOpen(true);
   };
 
+  const completeIdleLogout = React.useCallback(async () => {
+    if (idleLogoutStartedRef.current) return;
+    idleLogoutStartedRef.current = true;
+    closeAllModules();
+    try {
+      await authService.logout();
+    } catch (_) {
+      clearCachedUser();
+    } finally {
+      setUser(null);
+      setUnreadCount(0);
+      setLoggingOut(false);
+      navigate("/login", { replace: true });
+    }
+  }, [closeAllModules, navigate]);
+
   const loadOffences = React.useCallback(() => {
     offenceService.list().then((r) => setOffences(Array.isArray(r.data) ? r.data : r.data?.results ?? [])).catch(() => {});
   }, []);
@@ -402,6 +459,58 @@ export default function Dashboard() {
       })
       .finally(() => setLoading(false));
   }, [navigate]);
+
+  useEffect(() => {
+    idleLogoutStartedRef.current = false;
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+
+    let lastActivityAt = Date.now();
+
+    const clearIdleTimer = () => {
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+
+    const scheduleIdleLogout = () => {
+      clearIdleTimer();
+      const remainingMs = Math.max(0, DASHBOARD_IDLE_TIMEOUT_MS - (Date.now() - lastActivityAt));
+      idleTimerRef.current = window.setTimeout(completeIdleLogout, remainingMs);
+    };
+
+    const markActive = () => {
+      if (idleLogoutStartedRef.current) return;
+      lastActivityAt = Date.now();
+      scheduleIdleLogout();
+    };
+
+    const checkIdleOnReturn = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastActivityAt >= DASHBOARD_IDLE_TIMEOUT_MS) {
+        completeIdleLogout();
+        return;
+      }
+      markActive();
+    };
+
+    scheduleIdleLogout();
+    DASHBOARD_ACTIVITY_EVENTS.forEach((eventName) => {
+      window.addEventListener(eventName, markActive, { passive: true });
+    });
+    document.addEventListener("visibilitychange", checkIdleOnReturn);
+
+    return () => {
+      clearIdleTimer();
+      DASHBOARD_ACTIVITY_EVENTS.forEach((eventName) => {
+        window.removeEventListener(eventName, markActive);
+      });
+      document.removeEventListener("visibilitychange", checkIdleOnReturn);
+    };
+  }, [user, completeIdleLogout]);
 
   const refreshUnreadCount = React.useCallback(() => {
     const access = sessionStorage.getItem("access_token");
@@ -426,6 +535,15 @@ export default function Dashboard() {
       clearInterval(id);
     };
   }, [user, refreshUnreadCount]);
+
+  useEffect(() => {
+    if (!user || user.must_change_password) return;
+    const setupRequired = user.totp_required && !user.totp_configured;
+    const allowedPath = ["/dashboard/authenticator", "/dashboard/change-password"].includes(location.pathname);
+    if (setupRequired && !allowedPath) {
+      navigate("/dashboard/authenticator", { replace: true });
+    }
+  }, [user, location.pathname, navigate]);
 
   const handleLogout = () => {
     openLogoutConfirm();
@@ -465,7 +583,7 @@ export default function Dashboard() {
   const isCorpsCommander = user?.role === "corps_cmd";
   const isInvestigator = user?.role === "investigator";
 
-  // Roles that are scoped to either a detachment or a battalion
+  // Roles that are scoped to either a company or a battalion
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
   const hasDetachment = !!user?.detachment;
@@ -483,7 +601,7 @@ export default function Dashboard() {
       ? `${user.battalion_name} Investigator Dashboard`
       : "Investigator Dashboard"
     : isDetachmentLevelRole && hasDetachment && user?.detachment_name
-    ? `${user.detachment_name} Detachment Dashboard`
+    ? `${user.detachment_name} Company Dashboard`
     : isCorpsCommander
     ? "Corps Command Dashboard"
     : user?.battalion_name && String(user?.battalion_type || "").toLowerCase() === "hqs"
@@ -495,7 +613,31 @@ export default function Dashboard() {
   if (location.pathname === "/dashboard/change-password") {
     return (
       <Suspense fallback={<ModuleFallback />}>
-        <ChangePassword user={user} />
+        <ChangePassword
+          user={user}
+          onPasswordChanged={(nextUser) => {
+            if (nextUser) {
+              setUser(nextUser);
+              cacheUser(nextUser);
+            }
+          }}
+        />
+      </Suspense>
+    );
+  }
+
+  if (location.pathname === "/dashboard/authenticator") {
+    return (
+      <Suspense fallback={<ModuleFallback />}>
+        <Authenticator
+          user={user}
+          onTotpChanged={(nextUser) => {
+            if (nextUser) {
+              setUser(nextUser);
+              cacheUser(nextUser);
+            }
+          }}
+        />
       </Suspense>
     );
   }
@@ -682,17 +824,46 @@ export default function Dashboard() {
             <Route path="/back-briefs" element={<BackBriefs user={user} />} />
             <Route path="/users/*" element={<Users user={user} />} />
             <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
-            <Route path="/Battalions" element={<Formations user={user} />} />
-            <Route path="/formations" element={<Formations user={user} />} />
+            <Route path="/Battalions" element={<Formations user={user} mode="battalions" />} />
+            <Route path="/formations" element={<Formations user={user} mode="formations" />} />
             <Route path="/formations-btn" element={<Offences user={user} />} />
             <Route
               path="/notifications"
               element={<Notifications onRead={refreshUnreadCount} />}
             />
-            <Route path="/change-password" element={<ChangePassword user={user} />} />
+            <Route
+              path="/change-password"
+              element={
+                <ChangePassword
+                  user={user}
+                  onPasswordChanged={(nextUser) => {
+                    if (nextUser) {
+                      setUser(nextUser);
+                      cacheUser(nextUser);
+                    }
+                  }}
+                />
+              }
+            />
+            <Route
+              path="/authenticator"
+              element={
+                <Authenticator
+                  user={user}
+                  onTotpChanged={(nextUser) => {
+                    if (nextUser) {
+                      setUser(nextUser);
+                      cacheUser(nextUser);
+                    }
+                  }}
+                />
+              }
+            />
             <Route path="/det-teams" element={<Teams user={user} />} />
             <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
             <Route path="/statistics" element={<Statistics user={user} />} />
+            <Route path="/graphs" element={<Graphs user={user} />} />
+            <Route path="/logs" element={<AuditLogs user={user} />} />
             <Route path="/analytics" element={<Analytics user={user} />} />
             <Route path="/battalion-detachments" element={<DetachmentOverview user={user} />} />
           </Routes>

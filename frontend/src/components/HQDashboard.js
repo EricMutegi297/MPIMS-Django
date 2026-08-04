@@ -97,15 +97,35 @@ function Footer() {
 
 function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
+  const [actionTaken, setActionTaken] = useState(caseObj?.action_taken || "");
+  const [chargesheetFile, setChargesheetFile] = useState(null);
+  const [partOneOrdersFile, setPartOneOrdersFile] = useState(null);
+  const [rfiFile, setRfiFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
-  const canClose = judgmentFiles.length > 0;
+  const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
+  const closureFileLabel = isDciCiv ? "Closure Files" : "Judgment Files";
+  const hasReport = Boolean(chargesheetFile || partOneOrdersFile || caseObj?.chargesheet || caseObj?.part_one_orders);
+  const hasRfi = Boolean(rfiFile || caseObj?.rfi_document);
+  const canClose = judgmentFiles.length > 0 && String(actionTaken).trim() && hasReport && hasRfi;
   useAutoDismiss(err, setErr);
 
   const handleCloseCase = async () => {
-    if (!canClose) {
-      setErr("Attach at least one judgment PDF before closing.");
+    if (!judgmentFiles.length) {
+      setErr(`Attach at least one ${closureFileLabel.toLowerCase()} PDF before closing.`);
+      return;
+    }
+    if (!String(actionTaken).trim()) {
+      setErr("Action taken is required before closing.");
+      return;
+    }
+    if (!hasReport) {
+      setErr("Attach a Chargesheet or report before closing.");
+      return;
+    }
+    if (!hasRfi) {
+      setErr("Upload the RFI document before closing.");
       return;
     }
     setSaving(true);
@@ -115,7 +135,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
       for (const file of judgmentFiles) {
         const fdUpload = new FormData();
         fdUpload.append("document_type", "judgment");
-        fdUpload.append("label", `Judgment - ${file.name}`);
+        fdUpload.append("label", `${isDciCiv ? "Closure" : "Judgment"} - ${file.name}`);
         fdUpload.append("file", file);
         await attachmentService.upload(caseObj.id, fdUpload);
       }
@@ -123,6 +143,10 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
 
       const fd = new FormData();
       fd.append("status", "closed");
+      fd.append("action_taken", actionTaken.trim());
+      if (chargesheetFile) fd.append("chargesheet", chargesheetFile);
+      if (partOneOrdersFile) fd.append("part_one_orders", partOneOrdersFile);
+      if (rfiFile) fd.append("rfi_document", rfiFile);
       await caseService.close(caseObj.id, fd);
       onClosed();
       onClose();
@@ -151,19 +175,60 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Judgment Files <span className="text-red-400">*</span></label>
+            <label className="block text-xs text-gray-400 mb-1.5">Action Taken <span className="text-red-400">*</span></label>
+            <textarea
+              rows={3}
+              value={actionTaken}
+              onChange={(e) => { setActionTaken(e.target.value); setErr(""); }}
+              placeholder="Describe final action taken before closing"
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500 resize-none"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Chargesheet / Report</label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setChargesheetFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Part One Orders</label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setPartOneOrdersFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+          </div>
+          {!caseObj.rfi_document && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">RFI Document <span className="text-red-400">*</span></label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setRfiFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+          )}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">{closureFileLabel} <span className="text-red-400">*</span></label>
             <label className="cursor-pointer block">
               <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
                 {judgmentFiles.length > 0 ? (
                   <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
                 ) : (
-                  <span className="text-gray-500">Click to select judgment files...</span>
+                  <span className="text-gray-500">Click to select PDF files...</span>
                 )}
               </div>
               <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
             </label>
           </div>
-          {!canClose && <p className="text-yellow-500 text-xs">Attach at least one judgment PDF to enable closing.</p>}
+          {!canClose && <p className="text-yellow-500 text-xs">Complete the required fields to enable closing.</p>}
           {uploading && <p className="text-cyan-400 text-xs">Uploading judgment files...</p>}
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
@@ -338,6 +403,12 @@ export default function HQDashboard({ user }) {
   const isTaskedFilter = activeFilter === "tasked";
   const isServedFilter = activeFilter === "served";
   const isClosedFilter = activeFilter === "closed";
+  const showCloseRequestActionColumn =
+    !isTaskedFilter &&
+    !isServedFilter &&
+    !isClosedFilter &&
+    cases.some((c) => c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested);
+  const showActionColumn = isServedFilter || showCloseRequestActionColumn;
   const handleClosedCase = () => {
     loadCases();
     loadCounts();
@@ -507,14 +578,14 @@ export default function HQDashboard({ user }) {
                   {isTaskedFilter ? (
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Tasking Letter</th>
-                      <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Detachment</th>
+                      <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Company</th>
                     </>
                   ) : (
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
                       {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Date Closed</th>}
                       {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action Taken</th>}
-                      {isServedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
+                      {showActionColumn && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
                     </>
                   )}
                 </tr>
@@ -601,14 +672,18 @@ export default function HQDashboard({ user }) {
                             <p className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</p>
                           </td>
                         )}
-                        {isServedFilter && (
+                        {showActionColumn && (
                           <td className="px-3 md:px-5 py-3">
-                            <button
-                              onClick={() => setClosingCase(c)}
-                              className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
-                            >
-                              Close Case
-                            </button>
+                            {isServedFilter || (c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested) ? (
+                              <button
+                                onClick={() => setClosingCase(c)}
+                                className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
+                              >
+                                Close Case
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-500">--</span>
+                            )}
                           </td>
                         )}
                       </>

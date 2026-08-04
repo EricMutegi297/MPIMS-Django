@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 
+from apps.common.fields import EncryptedTextField
+
 
 class MorningBrief(models.Model):
     class Status(models.TextChoices):
@@ -37,7 +39,7 @@ class MorningBrief(models.Model):
     sick = models.PositiveIntegerField(default=0)
     on_leave = models.PositiveIntegerField(default=0)
     on_duty = models.PositiveIntegerField(default=0)
-    remarks = models.TextField(blank=True)
+    remarks = EncryptedTextField(blank=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

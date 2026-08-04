@@ -53,7 +53,7 @@ function caseLabel(caseObj) {
 }
 
 function destinationLabel(row) {
-  if (row.storage_scope === "detachment") return row.target_detachment_name || "Detachment";
+  if (row.storage_scope === "detachment") return row.target_detachment_name || "Company";
   if (row.storage_scope === "special_battalion") return row.target_battalion_name || "Special Battalion";
   return row.target_battalion_name || "Battalion";
 }
@@ -74,7 +74,7 @@ function makeDestinationOptions(destinations) {
   if (detachment?.id) {
     options.push({
       value: `detachment:${detachment.id}`,
-      label: `${detachment.name || "My Detachment"} (Detachment)`,
+      label: `${detachment.name || "My Company"} (Company)`,
       storage_scope: "detachment",
       target_battalion: "",
     });
