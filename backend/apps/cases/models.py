@@ -140,7 +140,7 @@ class Case(models.Model):
     action_taken = EncryptedTextField(blank=True)
     remarks = EncryptedTextField(blank=True)
     chargesheet = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
-    part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    part_two_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
     mentioning_remarks = EncryptedTextField(blank=True)
     close_requested = models.BooleanField(default=False)

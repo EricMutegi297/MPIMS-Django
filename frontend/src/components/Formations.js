@@ -10,12 +10,26 @@ function toArr(data) {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SERVICES = [
-  { value: "KA",  label: "Kenya Army (KA)" },
-  { value: "KAF", label: "Kenya Air Force (KAF)" },
-  { value: "KN",  label: "Kenya Navy (KN)" },
+  { value: "KA",  label: "KA - Kenya Army" },
+  { value: "KAF", label: "KAF - Kenya Air Force" },
+  { value: "KN",  label: "KN - Kenya Navy" },
 ];
 const EMPTY_FORMATION = { name: "", location: "" };
 const EMPTY_UNIT = { name: "", code: "", formation: "", service: "KA", email: "", mobile_no: "", location_county: "" };
+
+function apiErrorMessage(err, fallback) {
+  const data = err.response?.data;
+  if (!data) return fallback;
+  if (typeof data === "string") return data;
+  if (data.detail) return Array.isArray(data.detail) ? data.detail.join(", ") : String(data.detail);
+  if (typeof data === "object") {
+    const message = Object.entries(data)
+      .map(([field, value]) => `${field}: ${Array.isArray(value) ? value.join(", ") : value}`)
+      .join(" | ");
+    if (message) return message;
+  }
+  return fallback;
+}
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function Formations({ user, mode = "formations" }) {
@@ -105,7 +119,10 @@ export default function Formations({ user, mode = "formations" }) {
   const saveUnit = async (form) => {
     setUnitSaving(true); setError(""); setMessage("");
     try {
-      const payload = { ...form, formation: form.formation ? Number(form.formation) : null };
+      const payload = {
+        ...form,
+        formation: form.service === "KA" && form.formation ? Number(form.formation) : null,
+      };
       if (unitModal.mode === "add") {
         await formationService.createUnit(payload);
         setMessage("Unit created.");
@@ -116,8 +133,7 @@ export default function Formations({ user, mode = "formations" }) {
       setUnitModal(null);
       await loadAll();
     } catch (err) {
-      const d = err.response?.data;
-      setError(d?.name?.[0] || d?.detail || "Failed to save unit.");
+      setError(apiErrorMessage(err, "Failed to save unit."));
     } finally {
       setUnitSaving(false);
     }
@@ -480,11 +496,31 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
 function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const isArmy = form.service === "KA";
+  const canSave = Boolean(form.name?.trim()) && (!isArmy || Boolean(form.formation));
+  const setService = (e) => {
+    const service = e.target.value;
+    setForm((f) => ({
+      ...f,
+      service,
+      formation: service === "KA" ? f.formation : "",
+    }));
+  };
   return (
     <ModalWrap title={mode === "add" ? "Add Unit" : "Edit Unit"} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        <div>
+          <label className="text-xs text-gray-400">Service</label>
+          <select value={form.service} onChange={setService}
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            {SERVICES.map((sv) => (
+              <option key={sv.value} value={sv.value}>{sv.label}</option>
+            ))}
+          </select>
+        </div>
         <FInput label="Unit Name *" value={form.name || ""} onChange={s("name")} required />
         <FInput label="Code"        value={form.code || ""} onChange={s("code")} />
+        {isArmy && (
         <div>
           <label className="text-xs text-gray-400">Formation *</label>
           <select value={form.formation} onChange={s("formation")} required
@@ -495,19 +531,11 @@ function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
             ))}
           </select>
         </div>
-        <div>
-          <label className="text-xs text-gray-400">Service</label>
-          <select value={form.service} onChange={s("service")}
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-            {SERVICES.map((sv) => (
-              <option key={sv.value} value={sv.value}>{sv.label}</option>
-            ))}
-          </select>
-        </div>
-        <FInput label="Mobile No"         value={form.mobile_no || ""}       onChange={s("mobile_no")} />
-        <FInput label="Email" type="email" value={form.email || ""}           onChange={s("email")} />
-        <FInput label="Location / County" value={form.location_county || ""} onChange={s("location_county")} />
-        <SaveCancel saving={saving} canSave={!!form.name?.trim() && !!form.formation} mode={mode} onClose={onClose} />
+        )}
+        <FInput label="Unit Mobile No (optional)" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+        <FInput label="Unit Email (optional)" type="email" value={form.email || ""} onChange={s("email")} />
+        <FInput label="Region/County (optional)" value={form.location_county || ""} onChange={s("location_county")} />
+        <SaveCancel saving={saving} canSave={canSave} mode={mode} onClose={onClose} />
       </form>
     </ModalWrap>
   );

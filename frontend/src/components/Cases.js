@@ -327,6 +327,120 @@ const INIT_CREATE = {
   accused_service: "", submitting_unit: "", date_of_offence: "", place_of_offence: "",
 };
 
+function unitMatchesService(unit, service) {
+  return Boolean(service) && unit?.service === service;
+}
+
+function unitName(unit) {
+  return String(unit?.name || "").trim();
+}
+
+function UnitAutocompleteSelect({ units, value, onChange, disabled = false, placeholder = "Type to select unit..." }) {
+  const listboxId = useRef(`case-unit-${Math.random().toString(36).slice(2)}`);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const normalizedQuery = query.trim().toLowerCase();
+
+  useEffect(() => {
+    const selected = units.find((unit) => String(unit.id) === String(value));
+    setQuery(selected ? unitName(selected) : "");
+  }, [units, value]);
+
+  const suggestions = (() => {
+    const startsWith = [];
+    const contains = [];
+    units.forEach((unit) => {
+      const name = unitName(unit);
+      if (!name) return;
+      const normalized = name.toLowerCase();
+      if (!normalizedQuery || normalized.startsWith(normalizedQuery)) {
+        startsWith.push(unit);
+      } else if (normalized.includes(normalizedQuery)) {
+        contains.push(unit);
+      }
+    });
+    return [...startsWith, ...contains].slice(0, 10);
+  })();
+  const showSuggestions = open && !disabled && suggestions.length > 0;
+
+  function chooseUnit(unit) {
+    setQuery(unitName(unit));
+    onChange(String(unit.id));
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  return (
+    <div className="relative">
+      <input
+        value={query}
+        onChange={(e) => {
+          const nextQuery = e.target.value;
+          setQuery(nextQuery);
+          setOpen(true);
+          setActiveIndex(0);
+          const exact = units.find((unit) => unitName(unit).toLowerCase() === nextQuery.trim().toLowerCase());
+          onChange(exact ? String(exact.id) : "");
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && suggestions.length) {
+            e.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.min(index + 1, suggestions.length - 1));
+          } else if (e.key === "ArrowUp" && suggestions.length) {
+            e.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.max(index - 1, 0));
+          } else if (e.key === "Enter" && showSuggestions) {
+            e.preventDefault();
+            chooseUnit(suggestions[activeIndex] || suggestions[0]);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={showSuggestions}
+        aria-controls={listboxId.current}
+        disabled={disabled}
+        placeholder={placeholder}
+        autoComplete="off"
+        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+      />
+      {showSuggestions && (
+        <div
+          id={listboxId.current}
+          role="listbox"
+          className="absolute left-0 right-0 z-40 mt-1 max-h-56 overflow-y-auto rounded border border-gray-600 bg-gray-800 py-1 text-sm shadow-xl"
+        >
+          {suggestions.map((unit, index) => (
+            <button
+              type="button"
+              key={unit.id}
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                chooseUnit(unit);
+              }}
+              className={`block w-full px-3 py-2 text-left ${
+                index === activeIndex ? "bg-blue-600 text-white" : "text-gray-200 hover:bg-gray-700"
+              }`}
+            >
+              <span className="font-medium">{unit.name}</span>
+              <span className="ml-2 text-xs text-gray-400">{unit.service || ""}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Badge({ label, style }) {
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${style}`}>
@@ -707,7 +821,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [courtCloseErr, setCourtCloseErr] = useState("");
   const [closeActionTaken, setCloseActionTaken] = useState("");
   const [closeChargesheetFile, setCloseChargesheetFile] = useState(null);
-  const [closePartOneOrdersFile, setClosePartOneOrdersFile] = useState(null);
+  const [closePartTwoOrdersFile, setClosePartTwoOrdersFile] = useState(null);
   const [closeRfiFile, setCloseRfiFile] = useState(null);
   const [dateFieldActive, setDateFieldActive] = useState(false);
   const [caseActivity, setCaseActivity] = useState([]);
@@ -874,7 +988,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       setJudgmentFileRows([]);
       setCloseActionTaken("");
       setCloseChargesheetFile(null);
-      setClosePartOneOrdersFile(null);
+      setClosePartTwoOrdersFile(null);
       setCloseRfiFile(null);
       setCourtCloseErr("");
     }
@@ -1070,7 +1184,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setJudgmentFileRows([]);
     setCloseActionTaken("");
     setCloseChargesheetFile(null);
-    setClosePartOneOrdersFile(null);
+    setClosePartTwoOrdersFile(null);
     setCloseRfiFile(null);
     setCourtCloseErr("");
   }
@@ -1084,7 +1198,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setCourtCloseErr("");
     setCloseActionTaken(caseObj.action_taken || "");
     setCloseChargesheetFile(null);
-    setClosePartOneOrdersFile(null);
+    setClosePartTwoOrdersFile(null);
     setCloseRfiFile(null);
     setJudgmentFileRows([newJudgmentFileRow()]);
     setShowCourtCloseModal(true);
@@ -1122,9 +1236,9 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
 
     const hasExistingChargesheet = Boolean(closeCase.chargesheet);
-    const hasExistingPartOneOrders = Boolean(closeCase.part_one_orders);
-    if (!closeChargesheetFile && !closePartOneOrdersFile && !hasExistingChargesheet && !hasExistingPartOneOrders) {
-      setCourtCloseErr("Attach a Chargesheet or report before closing this case.");
+    const hasExistingPartTwoOrders = Boolean(closeCase.part_two_orders);
+    if (!closeChargesheetFile && !closePartTwoOrdersFile && !hasExistingChargesheet && !hasExistingPartTwoOrders) {
+      setCourtCloseErr("Attach a Chargesheet, report, or Part Two Orders before closing this case.");
       return;
     }
 
@@ -1176,7 +1290,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       fd.append("status", "closed");
       fd.append("action_taken", closeActionTaken.trim());
       if (closeChargesheetFile) fd.append("chargesheet", closeChargesheetFile);
-      if (closePartOneOrdersFile) fd.append("part_one_orders", closePartOneOrdersFile);
+      if (closePartTwoOrdersFile) fd.append("part_two_orders", closePartTwoOrdersFile);
       if (closeRfiFile) fd.append("rfi_document", closeRfiFile);
 
       const res = await caseService.update(closeCase.id, fd);
@@ -1189,7 +1303,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       setJudgmentFileRows([]);
       setCloseActionTaken("");
       setCloseChargesheetFile(null);
-      setClosePartOneOrdersFile(null);
+      setClosePartTwoOrdersFile(null);
       setCloseRfiFile(null);
       setCourtCloseErr("");
       setStatusErr("");
@@ -3225,16 +3339,16 @@ export default function Cases({ user, criminalTypeFilter }) {
                     )}
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Part One Orders</label>
+                    <label className="text-xs text-gray-400 block mb-1">Part Two Orders</label>
                     <input
                       type="file"
                       accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                      onChange={(e) => setClosePartOneOrdersFile(e.target.files?.[0] || null)}
+                      onChange={(e) => setClosePartTwoOrdersFile(e.target.files?.[0] || null)}
                       disabled={courtCloseSaving}
                       className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
                     />
-                    {closePartOneOrdersFile && (
-                      <p className="mt-2 text-xs text-gray-300">Selected: {closePartOneOrdersFile.name}</p>
+                    {closePartTwoOrdersFile && (
+                      <p className="mt-2 text-xs text-gray-300">Selected: {closePartTwoOrdersFile.name}</p>
                     )}
                   </div>
                 </div>
@@ -3602,7 +3716,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                               onChange={(e) => setCreateForm((f) => ({
                                 ...f,
                                 accused_entries: f.accused_entries.map((entry, index) =>
-                                  index === idx ? { ...entry, service: e.target.value } : entry
+                                  index === idx ? { ...entry, service: e.target.value, unit: "" } : entry
                                 ),
                               }))}
                               className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
@@ -3625,9 +3739,10 @@ export default function Cases({ user, criminalTypeFilter }) {
                               ),
                             }))}
                             className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                            disabled={!accused.service}
                           >
                             <option value="">Select unit…</option>
-                            {units.map((u) => (
+                            {units.filter((u) => unitMatchesService(u, accused.service)).map((u) => (
                               <option key={u.id} value={u.id}>{u.name}</option>
                             ))}
                           </select>
@@ -3650,10 +3765,17 @@ export default function Cases({ user, criminalTypeFilter }) {
 
                 <div>
                   <label className="text-xs text-gray-400 block mb-1">Submitting Unit</label>
+                  <UnitAutocompleteSelect
+                    units={units}
+                    value={createForm.submitting_unit}
+                    onChange={(unitId) => setCreateForm((f) => ({ ...f, submitting_unit: unitId }))}
+                  />
                   <select
                     value={createForm.submitting_unit}
                     onChange={(e) => setCreateForm((f) => ({ ...f, submitting_unit: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                    className="hidden"
+                    aria-hidden="true"
+                    tabIndex={-1}
                   >
                     <option value="">Select unit…</option>
                     {units.map((u) => (
