@@ -20,6 +20,9 @@ import Teams from "./Teams";
 import Analytics from "./Analytics";
 import Statistics from "./Statistics";
 import DetachmentOverview from "./DetachmentOverview";
+import useInactivityLogout from "../hooks/useInactivityLogout";
+
+const INACTIVITY_LOGOUT_MS = 15 * 60 * 1000;
 
 const ROLE_LABELS = {
   admin: "Admin",
@@ -275,6 +278,22 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [user, refreshUnreadCount]);
 
+  const performLogout = React.useCallback(async () => {
+    try {
+      await authService.logout();
+    } catch {
+      // Still clear local credentials if the logout request cannot complete.
+    } finally {
+      sessionStorage.removeItem("access_token");
+      sessionStorage.removeItem("refresh_token");
+      setUser(null);
+      setUnreadCount(0);
+      navigate("/login", { replace: true });
+    }
+  }, [navigate]);
+
+  useInactivityLogout(performLogout, INACTIVITY_LOGOUT_MS, Boolean(user));
+
   const handleLogout = () => {
     openLogoutConfirm();
   };
@@ -282,8 +301,7 @@ export default function Dashboard() {
   const confirmLogout = async () => {
     setLoggingOut(true);
     try {
-      await authService.logout();
-      navigate("/login");
+      await performLogout();
     } finally {
       setLoggingOut(false);
       setLogoutConfirmOpen(false);
