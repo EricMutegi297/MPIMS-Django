@@ -30,7 +30,7 @@ class BattalionViewSet(viewsets.ModelViewSet):
 class UnitViewSet(viewsets.ModelViewSet):
     queryset = Unit.objects.select_related("formation").all()
     serializer_class = UnitSerializer
-    filterset_fields = ["formation"]
+    filterset_fields = ["formation", "service"]
     permission_classes = [IsSuperAdminOrReadOnly]
 
 

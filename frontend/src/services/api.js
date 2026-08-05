@@ -72,6 +72,17 @@ export const caseService = {
   delete: (id) => api.delete(`/api/cases/${id}/`),
 };
 
+export const caseBriefService = {
+  upload: (caseId, formData) =>
+    api.post(`/api/cases/${caseId}/brief/`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
+  update: (caseId, formData) =>
+    api.patch(`/api/cases/${caseId}/brief/`, formData, formData instanceof FormData ? {
+      headers: { "Content-Type": "multipart/form-data" },
+    } : undefined),
+};
+
 export const attachmentService = {
   list: (caseId) => api.get(`/api/cases/${caseId}/attachments/`),
   upload: (caseId, formData) =>

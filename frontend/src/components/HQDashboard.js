@@ -2,10 +2,28 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { attachmentService, caseService, guardroomService, incidentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
 }
 
 const PAGE_SIZE = 25;
@@ -27,18 +45,20 @@ function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <Tag
       onClick={onClick}
-      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
+      className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 w-full text-left ${
         onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""
       }`}
     >
       <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-gray-500 truncate">{label}</p>
-        {loading ? (
-          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
-        ) : (
-          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
-        )}
+        <div className="min-h-[30px] mt-0.5 flex items-center">
+          {loading ? (
+            <div className="h-7 w-12 bg-gray-700 rounded animate-pulse" />
+          ) : (
+            <p className="text-2xl font-bold text-white">{value ?? 0}</p>
+          )}
+        </div>
       </div>
     </Tag>
   );
@@ -77,14 +97,35 @@ function Footer() {
 
 function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
+  const [actionTaken, setActionTaken] = useState(caseObj?.action_taken || "");
+  const [chargesheetFile, setChargesheetFile] = useState(null);
+  const [partTwoOrdersFile, setPartTwoOrdersFile] = useState(null);
+  const [rfiFile, setRfiFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
-  const canClose = judgmentFiles.length > 0;
+  const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
+  const closureFileLabel = isDciCiv ? "Closure Files" : "Judgment Files";
+  const hasReport = Boolean(chargesheetFile || partTwoOrdersFile || caseObj?.chargesheet || caseObj?.part_two_orders);
+  const hasRfi = Boolean(rfiFile || caseObj?.rfi_document);
+  const canClose = judgmentFiles.length > 0 && String(actionTaken).trim() && hasReport && hasRfi;
+  useAutoDismiss(err, setErr);
 
   const handleCloseCase = async () => {
-    if (!canClose) {
-      setErr("Attach at least one judgment PDF before closing.");
+    if (!judgmentFiles.length) {
+      setErr(`Attach at least one ${closureFileLabel.toLowerCase()} PDF before closing.`);
+      return;
+    }
+    if (!String(actionTaken).trim()) {
+      setErr("Action taken is required before closing.");
+      return;
+    }
+    if (!hasReport) {
+      setErr("Attach a Chargesheet or report before closing.");
+      return;
+    }
+    if (!hasRfi) {
+      setErr("Upload the RFI document before closing.");
       return;
     }
     setSaving(true);
@@ -94,7 +135,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
       for (const file of judgmentFiles) {
         const fdUpload = new FormData();
         fdUpload.append("document_type", "judgment");
-        fdUpload.append("label", `Judgment - ${file.name}`);
+        fdUpload.append("label", `${isDciCiv ? "Closure" : "Judgment"} - ${file.name}`);
         fdUpload.append("file", file);
         await attachmentService.upload(caseObj.id, fdUpload);
       }
@@ -102,6 +143,10 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
 
       const fd = new FormData();
       fd.append("status", "closed");
+      fd.append("action_taken", actionTaken.trim());
+      if (chargesheetFile) fd.append("chargesheet", chargesheetFile);
+      if (partTwoOrdersFile) fd.append("part_two_orders", partTwoOrdersFile);
+      if (rfiFile) fd.append("rfi_document", rfiFile);
       await caseService.close(caseObj.id, fd);
       onClosed();
       onClose();
@@ -124,25 +169,66 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Close Case</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Judgment Files <span className="text-red-400">*</span></label>
+            <label className="block text-xs text-gray-400 mb-1.5">Action Taken <span className="text-red-400">*</span></label>
+            <textarea
+              rows={3}
+              value={actionTaken}
+              onChange={(e) => { setActionTaken(e.target.value); setErr(""); }}
+              placeholder="Describe final action taken before closing"
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500 resize-none"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Chargesheet / Report</label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setChargesheetFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Part Two Orders</label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setPartTwoOrdersFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+          </div>
+          {!caseObj.rfi_document && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">RFI Document <span className="text-red-400">*</span></label>
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+                onChange={(e) => { setRfiFile(e.target.files?.[0] || null); setErr(""); }}
+                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              />
+            </div>
+          )}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">{closureFileLabel} <span className="text-red-400">*</span></label>
             <label className="cursor-pointer block">
               <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
                 {judgmentFiles.length > 0 ? (
                   <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
                 ) : (
-                  <span className="text-gray-500">Click to select judgment files...</span>
+                  <span className="text-gray-500">Click to select PDF files...</span>
                 )}
               </div>
               <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
             </label>
           </div>
-          {!canClose && <p className="text-yellow-500 text-xs">Attach at least one judgment PDF to enable closing.</p>}
+          {!canClose && <p className="text-yellow-500 text-xs">Complete the required fields to enable closing.</p>}
           {uploading && <p className="text-cyan-400 text-xs">Uploading judgment files...</p>}
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
@@ -167,26 +253,26 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
     for (let i = 1; i <= totalPages; i++) pages.push(i);
   } else {
     pages.push(1);
-    if (page > 3) pages.push("...");
+    if (page > 3) pages.push("…");
     for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
-    if (page < totalPages - 2) pages.push("...");
+    if (page < totalPages - 2) pages.push("…");
     pages.push(totalPages);
   }
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
-      <span>Showing {start} - {end} of {totalCount} cases</span>
+      <span>Showing {start}–{end} of {totalCount} cases</span>
       <div className="flex items-center gap-1">
         <button
           onClick={() => onChange(page - 1)}
           disabled={page === 1}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          &lt;- Prev
+          ← Prev
         </button>
         {pages.map((p, i) =>
-          p === "..." ? (
-            <span key={`ellipsis-${i}`} className="px-1">...</span>
+          p === "…" ? (
+            <span key={`ellipsis-${i}`} className="px-1">…</span>
           ) : (
             <button
               key={p}
@@ -206,7 +292,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
           disabled={page === totalPages}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          Next ->
+          Next →
         </button>
       </div>
     </div>
@@ -216,6 +302,7 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 // ── HQDashboard ───────────────────────────────────────────────────────────────
 export default function HQDashboard({ user }) {
   const navigate = useNavigate();
+  const isCorpsCommander = user?.role === "corps_cmd";
 
   const [cases, setCases]             = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -292,14 +379,14 @@ export default function HQDashboard({ user }) {
     finally { setLoadingCases(false); }
   }, [page, activeFilter]);
 
-  useEffect(() => { loadCounts(); }, [loadCounts]);
-  useEffect(() => { loadCases();  }, [loadCases]);
+  useEffect(() => scheduleAfterPaint(loadCounts), [loadCounts]);
+  useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const displayName = user?.name?.split(" ")[0] || "Officer";
+  const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   const FILTERS = [
     { key: "all",                 label: "All",              style: "bg-gray-600 text-gray-200"   },
@@ -315,6 +402,13 @@ export default function HQDashboard({ user }) {
   const descLimit = 120;
   const isTaskedFilter = activeFilter === "tasked";
   const isServedFilter = activeFilter === "served";
+  const isClosedFilter = activeFilter === "closed";
+  const showCloseRequestActionColumn =
+    !isTaskedFilter &&
+    !isServedFilter &&
+    !isClosedFilter &&
+    cases.some((c) => c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested);
+  const showActionColumn = isServedFilter || showCloseRequestActionColumn;
   const handleClosedCase = () => {
     loadCases();
     loadCounts();
@@ -329,7 +423,9 @@ export default function HQDashboard({ user }) {
           <h2 className="text-2xl font-bold text-white">
             {greeting}, {displayName}
           </h2>
-          <p className="text-sm text-gray-400 mt-0.5">HQ Overview  -  All Battalions</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            {isCorpsCommander ? "Corps Command Overview" : "HQ Overview"} — All Battalions
+          </p>
         </div>
         <NotificationBell />
       </div>
@@ -455,7 +551,7 @@ export default function HQDashboard({ user }) {
             </button>
           ))}
           <span className="w-full sm:w-auto sm:ml-auto text-xs text-gray-500">
-            {loadingCounts ? "..." : `${totalCount} total`}
+            {loadingCounts ? "…" : `${totalCount} total`}
           </span>
         </div>
 
@@ -470,7 +566,7 @@ export default function HQDashboard({ user }) {
             <p className="p-5 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="sticky-head w-full min-w-[1180px] text-sm">
+              <table className="sticky-head w-full min-w-[1340px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
@@ -482,12 +578,14 @@ export default function HQDashboard({ user }) {
                   {isTaskedFilter ? (
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Tasking Letter</th>
-                      <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Detachment</th>
+                      <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Company</th>
                     </>
                   ) : (
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
-                      {isServedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
+                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Date Closed</th>}
+                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action Taken</th>}
+                      {showActionColumn && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
                     </>
                   )}
                 </tr>
@@ -560,14 +658,32 @@ export default function HQDashboard({ user }) {
                             style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
                           />
                         </td>
-                        {isServedFilter && (
+                        {isClosedFilter && (
+                          <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">
+                            {c.closed_at
+                              ? new Date(c.closed_at).toLocaleDateString("en-GB")
+                              : c.updated_at
+                              ? new Date(c.updated_at).toLocaleDateString("en-GB")
+                              : "--"}
+                          </td>
+                        )}
+                        {isClosedFilter && (
+                          <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[220px] max-w-[340px]">
+                            <p className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</p>
+                          </td>
+                        )}
+                        {showActionColumn && (
                           <td className="px-3 md:px-5 py-3">
-                            <button
-                              onClick={() => setClosingCase(c)}
-                              className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
-                            >
-                              Close Case
-                            </button>
+                            {isServedFilter || (c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested) ? (
+                              <button
+                                onClick={() => setClosingCase(c)}
+                                className="text-[10px] px-2.5 py-1 rounded bg-green-800/80 hover:bg-green-700 text-white transition-colors whitespace-nowrap"
+                              >
+                                Close Case
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-500">--</span>
+                            )}
                           </td>
                         )}
                       </>

@@ -26,6 +26,20 @@ class UnitSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "code", "formation", "formation_name",
                   "service", "email", "mobile_no", "location_county"]
 
+    def validate(self, attrs):
+        service = attrs.get("service", getattr(self.instance, "service", Unit.Service.KA))
+        formation = attrs.get("formation", getattr(self.instance, "formation", None))
+
+        if service == Unit.Service.KA and not formation:
+            raise serializers.ValidationError({
+                "formation": "Formation is required for Kenya Army units."
+            })
+
+        if service in {Unit.Service.KAF, Unit.Service.KN}:
+            attrs["formation"] = None
+
+        return attrs
+
 
 class BattalionSerializer(serializers.ModelSerializer):
     detachments = DetachmentSerializer(many=True, read_only=True)

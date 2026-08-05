@@ -13,6 +13,8 @@ from .models import (
     Case,
     CaseActivityLog,
     CaseAttachment,
+    CaseBrief,
+    CaseBriefForward,
     CaseCourtMartialAttachment,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
@@ -21,10 +23,12 @@ from .models import (
 from .serializers import (
     CaseActivityLogSerializer,
     CaseAttachmentSerializer,
+    CaseBriefSerializer,
     CaseCourtMartialAttachmentSerializer,
     CaseCourtMartialHearingSerializer,
     CaseCourtMartialMilestoneSerializer,
     CaseSerializer,
+    CLOSED_CASE_FILE_ERROR,
     InvestigationTeamSerializer,
 )
 from apps.formations.models import Battalion
@@ -111,8 +115,20 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
 
 
 class CaseViewSet(viewsets.ModelViewSet):
-    queryset = Case.objects.select_related("assigned_to", "created_by", "accused_unit").prefetch_related(
-        "extra_attachments", "court_martial_hearings", "court_martial_milestones"
+    queryset = Case.objects.select_related(
+        "assigned_to",
+        "created_by",
+        "accused_unit",
+        "brief",
+        "brief__attached_by",
+        "brief__forwarded_by",
+        "brief__approved_by",
+    ).prefetch_related(
+        "extra_attachments",
+        "court_martial_hearings",
+        "court_martial_milestones",
+        "accused_entries__unit",
+        "brief__forward_history__forwarded_by",
     ).all()
     serializer_class = CaseSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -158,10 +174,16 @@ class CaseViewSet(viewsets.ModelViewSet):
             "accused_unit",
             "tasked_battalion",
             "tasked_detachment",
+            "brief",
+            "brief__attached_by",
+            "brief__forwarded_by",
+            "brief__approved_by",
         ).prefetch_related(
             "extra_attachments",
             "court_martial_hearings",
             "court_martial_milestones",
+            "accused_entries__unit",
+            "brief__forward_history__forwarded_by",
         )
 
         if not user.is_authenticated:
@@ -297,6 +319,8 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _can_request_close(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
+        if case_obj.assigned_to_id and case_obj.assigned_to_id == user.id:
+            return True
         team = getattr(case_obj, "assigned_team", None)
         if not team:
             return False
@@ -305,11 +329,58 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _latest_court_milestone(self, case_obj):
         return case_obj.court_martial_milestones.order_by("-scheduled_date", "-created_at", "-id").first()
 
+    def _case_suffix(self, index):
+        letters = []
+        index += 1
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters.append(chr(65 + remainder))
+        return "".join(reversed(letters))
+
+    def _clone_case_for_accused(self, source, case_number, accused_entry):
+        clone_data = {}
+        skip_fields = {"id", "case_number", "created_at", "updated_at"}
+        for field in Case._meta.fields:
+            if field.name in skip_fields:
+                continue
+            clone_data[field.name] = getattr(source, field.name)
+
+        clone = Case.objects.create(**clone_data)
+        clone.case_number = case_number
+        clone.save(update_fields=["case_number"])
+        serializer = self.get_serializer(context=self.get_serializer_context())
+        serializer._create_or_update_accused_entries(clone, [accused_entry])
+        return clone
+
+    def _split_multi_accused_cases(self, instance, accused_entries):
+        if len(accused_entries) <= 1:
+            return [instance]
+
+        base_number = instance.case_number
+        instance.case_number = f"{base_number}{self._case_suffix(0)}"
+        instance.save(update_fields=["case_number"])
+        serializer = self.get_serializer(context=self.get_serializer_context())
+        serializer._create_or_update_accused_entries(instance, [accused_entries[0]])
+
+        cases = [instance]
+        for index, accused_entry in enumerate(accused_entries[1:], start=1):
+            cases.append(
+                self._clone_case_for_accused(
+                    instance,
+                    f"{base_number}{self._case_suffix(index)}",
+                    accused_entry,
+                )
+            )
+        return cases
+
     def perform_create(self, serializer):
+        accused_entries = list(serializer.validated_data.get("accused_entries") or [])
         instance = serializer.save(created_by=self.request.user, status=Case.Status.NEW)
-        self._send_tasking_notification(instance, created=True)
-        self._log_action(instance, self.request.user, CaseActivityLog.Action.CASE_CREATED,
-                         f"Case {instance.case_number} created")
+        created_cases = self._split_multi_accused_cases(instance, accused_entries)
+        for case in created_cases:
+            self._send_tasking_notification(case, created=True)
+            self._log_action(case, self.request.user, CaseActivityLog.Action.CASE_CREATED,
+                             f"Case {case.case_number} created")
 
     def perform_update(self, serializer):
         prev_instance = self.get_object()
@@ -478,7 +549,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         if not case.tasked_battalion_id:
             return
         users = User.objects.filter(
-            battalion_id=case.tasked_battalion_id,
+            Q(battalion_id=case.tasked_battalion_id) | Q(role=User.Role.CORPS_CMD),
             is_active=True,
         ).exclude(role="detachment")
         if not users.exists():
@@ -526,8 +597,8 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _send_served_notification(self, case, actor=None):
         """Notify all admin users in HQS battalions that a case has been served."""
         hqs_admins = User.objects.filter(
-            role="admin",
-            battalion__battalion_type=Battalion.BattalionType.HQS,
+            Q(role="admin", battalion__battalion_type=Battalion.BattalionType.HQS)
+            | Q(role=User.Role.CORPS_CMD),
             is_active=True,
         )
         if not hqs_admins.exists():
@@ -595,6 +666,8 @@ class CaseViewSet(viewsets.ModelViewSet):
                 is_active=True,
             ))
 
+        recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+
         if not recipients:
             return
 
@@ -607,6 +680,9 @@ class CaseViewSet(viewsets.ModelViewSet):
             f"Case #{case.case_number} — '{case.title}' (Offence: {offence_label}) "
             f"has been officially closed."
         )
+        action_taken = (case.action_taken or "").strip()
+        if action_taken:
+            msg = f"{msg} Action taken: {action_taken}"
         Notification.objects.bulk_create([
             Notification(
                 recipient=u,
@@ -928,6 +1004,92 @@ class CaseViewSet(viewsets.ModelViewSet):
 
     @action(
         detail=True,
+        methods=["post", "patch"],
+        url_path="brief",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def brief(self, request, pk=None):
+        case = self.get_object()
+        if case.status == Case.Status.CLOSED:
+            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
+        if not self._can_view_case_progress(request.user, case):
+            return Response(
+                {"detail": "You may not manage the brief for this case."},
+                status=http_status.HTTP_403_FORBIDDEN,
+            )
+
+        if request.method == "POST":
+            if hasattr(case, "brief"):
+                return Response(
+                    {"detail": "A brief has already been attached for this case."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            serializer = CaseBriefSerializer(data=request.data, context={"request": request})
+            serializer.is_valid(raise_exception=True)
+            brief = serializer.save(case=case, attached_by=request.user)
+            self._log_action(
+                case,
+                request.user,
+                CaseActivityLog.Action.BRIEF_ATTACHED,
+                "Brief attached.",
+            )
+            return Response(
+                CaseBriefSerializer(brief, context={"request": request}).data,
+                status=http_status.HTTP_201_CREATED,
+            )
+
+        try:
+            brief = case.brief
+        except CaseBrief.DoesNotExist:
+            return Response({"detail": "No brief has been attached for this case."}, status=http_status.HTTP_404_NOT_FOUND)
+
+        serializer = CaseBriefSerializer(brief, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        forwarded_to_role = serializer.validated_data.get("forwarded_to_role")
+        if forwarded_to_role:
+            duplicate = brief.forward_history.filter(
+                revision=brief.revision,
+                to_role=forwarded_to_role,
+            ).exists()
+            if duplicate:
+                return Response(
+                    {"forwarded_to_role": "This brief has already been forwarded to that role in the current revision."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            updated = serializer.save(
+                status=CaseBrief.Status.FORWARDED,
+                forwarded_at=timezone.now(),
+                forwarded_from_role=request.user.role,
+                forwarded_by=request.user,
+            )
+            CaseBriefForward.objects.create(
+                brief=updated,
+                from_role=request.user.role,
+                to_role=forwarded_to_role,
+                forwarded_by=request.user,
+                note=updated.forwarded_note,
+                revision=updated.revision,
+            )
+            self._log_action(
+                case,
+                request.user,
+                CaseActivityLog.Action.BRIEF_FORWARDED,
+                f"Brief forwarded to {forwarded_to_role}.",
+            )
+        else:
+            updated = serializer.save()
+            self._log_action(
+                case,
+                request.user,
+                CaseActivityLog.Action.BRIEF_UPDATED,
+                "Brief updated.",
+            )
+
+        return Response(CaseBriefSerializer(updated, context={"request": request}).data)
+
+    @action(
+        detail=True,
         methods=["get", "post"],
         url_path="attachments",
         parser_classes=[MultiPartParser, FormParser],
@@ -938,6 +1100,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             qs = case.extra_attachments.select_related("uploaded_by").all()
             serializer = CaseAttachmentSerializer(qs, many=True, context={"request": request})
             return Response(serializer.data)
+        if case.status == Case.Status.CLOSED:
+            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
         serializer = CaseAttachmentSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         att = serializer.save(case=case, uploaded_by=request.user)
@@ -963,6 +1127,8 @@ class CaseViewSet(viewsets.ModelViewSet):
     )
     def delete_attachment(self, request, pk=None, att_pk=None):
         case = self.get_object()
+        if case.status == Case.Status.CLOSED:
+            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
         try:
             att = case.extra_attachments.get(pk=att_pk)
             filename = att.file.name.split("/")[-1] if att.file else str(att_pk)
