@@ -17,7 +17,10 @@ const { Server } = require("socket.io");
 const { Client } = require("pg");
 
 const PORT = process.env.PORT || 4000;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
+const CORS_ORIGIN = (process.env.CORS_ORIGIN || "http://localhost:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 // --- Express + Socket.io setup ---
 const app = express();
