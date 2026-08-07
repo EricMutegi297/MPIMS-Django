@@ -50,11 +50,12 @@ export default function Statistics({ user }) {
 
   const canSeeUsers =
     user?.is_superuser || ["admin", "mpc_hqs", "personnel"].includes(user?.role);
-  const canSeeBriefs = ["admin", "co", "corps_cmd", "detachment", "mpc_hqs", "bsm"].includes(
-    user?.role
-  );
+  const canSeeBriefs = [
+    "admin", "co", "corps_cmd", "detachment", "mpc_hqs", "bsm", "so1_ops", "so2_ops",
+  ].includes(user?.role);
   const canSeeIncidents = [
     "admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop",
+    "so1_ops", "so2_ops",
   ].includes(user?.role) || user?.is_superuser;
 
   useEffect(() => {

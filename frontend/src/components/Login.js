@@ -43,7 +43,7 @@ export default function Login() {
             MPIMS
           </h1>
           <p className="text-gray-400 mt-1 text-sm">
-            Military Police Information Management System
+            Military Police Investigation Management System
           </p>
         </div>
 

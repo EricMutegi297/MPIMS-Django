@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
 
-export default function ChangePassword({ user }) {
+export default function ChangePassword({ user, onChanged }) {
   const navigate = useNavigate();
   const [form, setForm] = useState({
     old_password: "",
@@ -52,6 +52,7 @@ export default function ChangePassword({ user }) {
         old_password: form.old_password,
         new_password: form.new_password,
       });
+      onChanged?.();
       setSuccess(true);
       setTimeout(() => navigate("/dashboard"), 2000);
     } catch (err) {

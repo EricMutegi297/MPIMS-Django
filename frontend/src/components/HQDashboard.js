@@ -303,6 +303,11 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 export default function HQDashboard({ user }) {
   const navigate = useNavigate();
   const isCorpsCommander = user?.role === "corps_cmd";
+  const isHqsAdmin =
+    user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
+  const isMpcHqsAdmin =
+    user?.role === "mpc_hqs" && String(user?.battalion_type || "").toLowerCase() === "hqs";
+  const canCloseCases = Boolean(user?.is_superuser || isHqsAdmin || isMpcHqsAdmin);
 
   const [cases, setCases]             = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -404,11 +409,12 @@ export default function HQDashboard({ user }) {
   const isServedFilter = activeFilter === "served";
   const isClosedFilter = activeFilter === "closed";
   const showCloseRequestActionColumn =
+    canCloseCases &&
     !isTaskedFilter &&
     !isServedFilter &&
     !isClosedFilter &&
     cases.some((c) => c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested);
-  const showActionColumn = isServedFilter || showCloseRequestActionColumn;
+  const showActionColumn = canCloseCases && (isServedFilter || showCloseRequestActionColumn);
   const handleClosedCase = () => {
     loadCases();
     loadCounts();

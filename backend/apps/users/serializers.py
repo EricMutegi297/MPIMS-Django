@@ -47,7 +47,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, data):
-        exempt_roles = {"corps_cmd", "cop"}
+        exempt_roles = {"corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"}
         role = data.get("role", "")
         battalion = data.get("battalion")
         detachment = data.get("detachment")

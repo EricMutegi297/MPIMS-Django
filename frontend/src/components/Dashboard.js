@@ -38,13 +38,39 @@ const ROLE_LABELS = {
   mpc_hqs: "MPC HQS Admin",
   bsm: "BSM",
   cop: "COP",
+  adj: "Adjutant",
+  "2ic": "2nd in Command",
+  so1_legal: "SO 1 Legal",
+  so1_ops: "SO 1 OPs",
+  so2_ops: "SO 2 OPs",
 };
+
+const HQ_DASHBOARD_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"];
+const CASE_ACCESS_ROLES = [
+  "admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop",
+  "so1_legal", "so1_ops", "so2_ops",
+];
+const INCIDENT_ACCESS_ROLES = [
+  "admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop",
+  "so1_ops", "so2_ops",
+];
+const MORNING_BRIEF_ACCESS_ROLES = [
+  "admin", "co", "corps_cmd", "detachment", "mpc_hqs", "bsm", "so1_ops", "so2_ops",
+];
+const STATISTICS_ACCESS_ROLES = [
+  "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
+  "duty_officer", "so1_legal", "so1_ops", "so2_ops",
+];
+const ANALYTICS_ACCESS_ROLES = [
+  "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
+  "so1_legal", "so1_ops", "so2_ops",
+];
 
 // Navigation items in sidebar order
 function getNavItems(user) {
   const isSuperuser = !!user?.is_superuser;
   const isHqsBnAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
+  const isBattalionAdmin = !isSuperuser && user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
   const items = [
     {
@@ -56,7 +82,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "cases", label: "Cases", path: "/dashboard/cases", show: ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop"].includes(user?.role),
+      key: "cases", label: "Cases", path: "/dashboard/cases", show: CASE_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
@@ -64,7 +90,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: ["admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop"].includes(user?.role),
+      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: INCIDENT_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -72,7 +98,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "morning-briefs", label: "Morning Briefs", path: "/dashboard/morning-briefs", show: ["admin", "co", "corps_cmd", "detachment", "mpc_hqs", "bsm"].includes(user?.role),
+      key: "morning-briefs", label: "Morning Briefs", path: "/dashboard/morning-briefs", show: MORNING_BRIEF_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -80,7 +106,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs"].includes(user?.role),
+      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "so1_ops", "so2_ops"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -97,7 +123,7 @@ function getNavItems(user) {
     },
     {
       key: "battalion-detachments",
-      label: "Detachments",
+      label: "COY",
       path: "/dashboard/battalion-detachments",
       show: (user?.role === "admin" || isSuperuser) && !isHqsBnAdmin,
       icon: (
@@ -146,7 +172,7 @@ function getNavItems(user) {
       key: "court-martial",
       label: "Court Martial",
       path: "/dashboard/court-martial",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop"].includes(user?.role),
+      show: isSuperuser || CASE_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
@@ -157,7 +183,7 @@ function getNavItems(user) {
       key: "dci-civ-police",
       label: "DCI/Civ Police",
       path: "/dashboard/dci-civ-police",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop"].includes(user?.role),
+      show: isSuperuser || CASE_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -168,7 +194,7 @@ function getNavItems(user) {
       key: "statistics",
       label: "Statistics",
       path: "/dashboard/statistics",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer"].includes(user?.role),
+      show: isSuperuser || STATISTICS_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -179,7 +205,7 @@ function getNavItems(user) {
       key: "analytics",
       label: "Analytics",
       path: "/dashboard/analytics",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator"].includes(user?.role),
+      show: isSuperuser || ANALYTICS_ACCESS_ROLES.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -257,6 +283,18 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, [navigate]);
 
+  useEffect(() => {
+    if (user?.must_change_password && location.pathname !== "/dashboard/change-password") {
+      navigate("/dashboard/change-password", { replace: true });
+    }
+  }, [user, location.pathname, navigate]);
+
+  const handlePasswordChanged = React.useCallback(() => {
+    setUser((currentUser) =>
+      currentUser ? { ...currentUser, must_change_password: false } : currentUser
+    );
+  }, []);
+
   const refreshUnreadCount = React.useCallback(() => {
     const access = sessionStorage.getItem("access_token");
     const refresh = sessionStorage.getItem("refresh_token");
@@ -333,6 +371,7 @@ export default function Dashboard() {
 
   // Show HQDashboard for HQ battalion admins, Overview for others
   const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
+  const isHqStaffRole = HQ_DASHBOARD_ROLES.includes(user?.role);
 
   // Roles that are scoped to either a detachment or a battalion
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
@@ -356,7 +395,7 @@ export default function Dashboard() {
     : "General Dashboard";
 
   if (location.pathname === "/dashboard/change-password") {
-    return <ChangePassword user={user} />;
+    return <ChangePassword user={user} onChanged={handlePasswordChanged} />;
   }
 
   return (
@@ -522,6 +561,7 @@ export default function Dashboard() {
         <Routes>
           <Route path="/" element={
             isHqsAdmin ? <HQDashboard user={user} /> :
+            isHqStaffRole ? <HQDashboard user={user} /> :
             user?.role === "investigator" ? <InvestigatorDashboard user={user} /> :
             (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
             (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
@@ -543,7 +583,7 @@ export default function Dashboard() {
             path="/notifications"
             element={<Notifications onRead={refreshUnreadCount} />}
           />
-          <Route path="/change-password" element={<ChangePassword user={user} />} />
+          <Route path="/change-password" element={<ChangePassword user={user} onChanged={handlePasswordChanged} />} />
           <Route path="/det-teams" element={<Teams user={user} />} />
           <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
           <Route path="/statistics" element={<Statistics user={user} />} />

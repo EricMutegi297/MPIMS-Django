@@ -24,6 +24,9 @@ const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
   detachment:   "IC Det",
+  so1_legal:    "SO 1 Legal",
+  so1_ops:      "SO 1 OPs",
+  so2_ops:      "SO 2 OPs",
 };
 
 function displayUser(u) {

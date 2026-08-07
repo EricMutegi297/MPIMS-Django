@@ -197,7 +197,7 @@ export default function Formations({ user }) {
               <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
                 <tr>
                   <th className="text-left px-4 py-2">Battalion</th>
-                  <th className="text-left px-4 py-2">Detachments</th>
+                  <th className="text-left px-4 py-2">Companies</th>
                   <th className="text-left px-4 py-2">Case Count</th>
                 </tr>
               </thead>
@@ -235,14 +235,14 @@ export default function Formations({ user }) {
         </div>
 
         {detachmentView && (
-          <ModalWrap title={`${detachmentView.battalionName} Detachments`} onClose={() => setDetachmentView(null)}>
+          <ModalWrap title={`${detachmentView.battalionName} Companies`} onClose={() => setDetachmentView(null)}>
             {detachmentView.rows.length === 0 ? (
-              <p className="text-sm text-gray-400">No detachments found.</p>
+              <p className="text-sm text-gray-400">No companies found.</p>
             ) : (
               <div className="space-y-2">
                 {detachmentView.rows.map((d) => (
                   <div key={d.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
-                    <p className="text-sm text-white font-medium">{d.name || "Unnamed detachment"}</p>
+                    <p className="text-sm text-white font-medium">{d.name || "Unnamed company"}</p>
                     <p className="text-xs text-gray-400">Company: {d.company || " - "} | AOR: {d.aor || " - "}</p>
                   </div>
                 ))}

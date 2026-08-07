@@ -35,6 +35,9 @@ class User(AbstractBaseUser, PermissionsMixin):
         COP = "cop", "COP"
         ADJ = "adj", "Adjutant"
         TWO_IC = "2ic", "2nd in Command"
+        SO1_LEGAL = "so1_legal", "SO 1 Legal"
+        SO1_OPS = "so1_ops", "SO 1 OPs"
+        SO2_OPS = "so2_ops", "SO 2 OPs"
 
     service_number = models.CharField(max_length=20, unique=True)
     name = models.CharField(max_length=120)

@@ -36,6 +36,31 @@ from apps.notifications.models import Notification
 from apps.users.models import User
 
 
+GLOBAL_CASE_VIEW_ROLES = {
+    User.Role.CORPS_CMD,
+    User.Role.COP,
+    User.Role.SO1_LEGAL,
+    User.Role.SO1_OPS,
+    User.Role.SO2_OPS,
+}
+
+
+def _is_hqs_case_admin(user):
+    return (
+        user.role in {User.Role.ADMIN, User.Role.MPC_HQS}
+        and user.battalion
+        and str(user.battalion.battalion_type).lower() == "hqs"
+    )
+
+
+def _has_global_case_visibility(user):
+    return (
+        user
+        and user.is_authenticated
+        and (user.is_superuser or user.role in GLOBAL_CASE_VIEW_ROLES or _is_hqs_case_admin(user))
+    )
+
+
 class InvestigationTeamViewSet(viewsets.ModelViewSet):
     serializer_class = InvestigationTeamSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -146,13 +171,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _can_view_case_progress(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
-        if user.is_superuser:
-            return True
-        if (
-            user.role in {"admin", "mpc_hqs"}
-            and user.battalion
-            and str(user.battalion.battalion_type).lower() == "hqs"
-        ):
+        if _has_global_case_visibility(user):
             return True
         if case_obj.tasked_battalion_id and user.battalion_id == case_obj.tasked_battalion_id:
             return True
@@ -189,14 +208,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return base_qs.none()
 
-        if user.is_superuser:
-            return base_qs.all()
-
-        if (
-            user.role in {"admin", "mpc_hqs"}
-            and user.battalion
-            and str(user.battalion.battalion_type).lower() == "hqs"
-        ):
+        if _has_global_case_visibility(user):
             return base_qs.all()
 
         # Normal / Special battalion admin sees their battalion's cases
@@ -279,11 +291,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             return False
         if user.is_superuser:
             return True
-        return (
-            user.role in {"admin", "mpc_hqs"}
-            and user.battalion
-            and str(user.battalion.battalion_type).lower() == "hqs"
-        )
+        return _is_hqs_case_admin(user)
 
     def _can_manage_court_martial_progress(self, user, case_obj):
         if not user or not user.is_authenticated:
@@ -968,14 +976,7 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         # Per-battalion breakdown for superuser / HQ admin
         user = request.user
-        is_hq_admin = (
-            user.is_superuser or
-            (
-                user.role in {"admin", "mpc_hqs"}
-                and user.battalion
-                and str(user.battalion.battalion_type).lower() == "hqs"
-            )
-        )
+        is_hq_admin = _has_global_case_visibility(user)
         if is_hq_admin:
             from apps.formations.models import Battalion
             breakdown = []

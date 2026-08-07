@@ -387,9 +387,9 @@ export default function DetachmentOverview({ user }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">Detachments Overview</h2>
+          <h2 className="text-2xl font-bold text-white">COY Overview</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            Click any count or detachment name to drill into the cases
+            Click any count or company name to drill into the cases
           </p>
         </div>
         <button
@@ -406,7 +406,7 @@ export default function DetachmentOverview({ user }) {
       {!loading && !error && detachments.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <SummaryCard
-            label="Detachments"
+            label="Companies"
             value={detachments.length}
             accent="bg-blue-500/10"
             textColor="text-blue-400"
@@ -454,11 +454,11 @@ export default function DetachmentOverview({ user }) {
       <div className="bg-gray-800 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700/60">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            Detachment Case Summary
+            COY Case Summary
           </h3>
           {!loading && (
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-gray-700 text-gray-400">
-              {detachments.length} detachment{detachments.length !== 1 ? "s" : ""}
+              {detachments.length} compan{detachments.length !== 1 ? "ies" : "y"}
             </span>
           )}
         </div>
@@ -474,7 +474,7 @@ export default function DetachmentOverview({ user }) {
           </table>
         ) : !error && detachments.length === 0 ? (
           <p className="p-6 text-gray-500 text-sm text-center">
-            No detachments found under your battalion.
+            No companies found under your battalion.
           </p>
         ) : !error ? (
           <table className="w-full text-sm">
@@ -547,7 +547,7 @@ export default function DetachmentOverview({ user }) {
                     <button
                       onClick={() => openDrill(det, "all")}
                       className="text-white font-semibold hover:text-blue-400 transition-colors"
-                      title="View all cases for this detachment"
+                      title="View all cases for this company"
                     >
                       {det.total ?? 0}
                     </button>
@@ -594,7 +594,7 @@ export default function DetachmentOverview({ user }) {
 
       {!loading && !error && detachments.length > 0 && (
         <p className="text-xs text-gray-600 text-center">
-          Click any count or detachment name to drill down. Use the Print button inside the panel to export.
+          Click any count or company name to drill down. Use the Print button inside the panel to export.
         </p>
       )}
 

@@ -32,6 +32,9 @@ const ROLE_LABELS = {
   cop:          "COP",
   adj:          "Adjutant",
   "2ic":        "2nd in Command",
+  so1_legal:    "SO 1 Legal",
+  so1_ops:      "SO 1 OPs",
+  so2_ops:      "SO 2 OPs",
 };
 
 const ROLE_BADGE = {
@@ -50,7 +53,12 @@ const ROLE_BADGE = {
   cop:          "bg-rose-500/20 text-rose-400",
   adj:          "bg-violet-500/20 text-violet-400",
   "2ic":        "bg-sky-500/20 text-sky-400",
+  so1_legal:    "bg-fuchsia-500/20 text-fuchsia-400",
+  so1_ops:      "bg-lime-500/20 text-lime-400",
+  so2_ops:      "bg-emerald-500/20 text-emerald-400",
 };
+
+const GLOBAL_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"];
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -71,7 +79,7 @@ export default function Users({ user }) {
 
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
+    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","so1_legal","so1_ops","so2_ops"]
     : isBattalionAdmin
     ? ["co","detachment","personnel","investigator","adj","2ic"]
     : isDetachmentIC
@@ -126,7 +134,7 @@ export default function Users({ user }) {
   const ALL_ROLES = [
     "admin", "co", "corps_cmd", "investigator", "duty_officer",
     "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
-    "mpc_hqs", "bsm", "cop", "adj", "2ic",
+    "mpc_hqs", "bsm", "cop", "adj", "2ic", "so1_legal", "so1_ops", "so2_ops",
   ];
 
   const ALL_RANKS = [
@@ -227,6 +235,7 @@ export default function Users({ user }) {
     try {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
+      if (!payload.battalion) delete payload.battalion;
       // Ensure battalion is always included; backend enforce-assigns it for battalion admin/IC Det anyway
       if ((isBattalionAdmin || isDetachmentIC) && !payload.battalion) {
         payload.battalion = user?.battalion ?? payload.battalion;
@@ -534,10 +543,16 @@ export default function Users({ user }) {
                   required value={form.role}
                   onChange={(e) => {
                     const newRole = e.target.value;
+                    const clearOrg = GLOBAL_ROLES.includes(newRole);
                     const clearDet = !DETACHMENT_LEVEL_ROLES.includes(newRole);
-                    setForm({ ...form, role: newRole, detachment: clearDet ? "" : form.detachment });
+                    setForm({
+                      ...form,
+                      role: newRole,
+                      battalion: clearOrg ? "" : form.battalion,
+                      detachment: clearOrg || clearDet ? "" : form.detachment,
+                    });
                     // Load detachments when switching to a detachment-level role and battalion is known
-                    if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion) {
+                    if (!clearOrg && DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion) {
                       loadDetachments(form.battalion);
                     }
                   }}
@@ -550,10 +565,13 @@ export default function Users({ user }) {
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1">Battalion *</label>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Battalion {!GLOBAL_ROLES.includes(form.role) && "*"}
+                </label>
                 {isSuperuser || isHqsAdmin ? (
                   <select
-                    required value={form.battalion}
+                    required={!GLOBAL_ROLES.includes(form.role)}
+                    value={form.battalion}
                     onChange={(e) => {
                       const val = e.target.value;
                       setForm({ ...form, battalion: val, detachment: "" });
