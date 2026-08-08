@@ -4,10 +4,11 @@ import { authService } from "../services/api";
 
 export default function Login() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ service_number: "", password: "" });
+  const [form, setForm] = useState({ service_number: "", password: "", otp_code: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
 
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -17,7 +18,16 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      const res = await authService.login(form.service_number, form.password);
+      const res = await authService.login(
+        form.service_number,
+        form.password,
+        mfaRequired ? form.otp_code : ""
+      );
+      if (res.data.mfaRequired) {
+        setMfaRequired(true);
+        setError("");
+        return;
+      }
       const user = res.data.user;
       if (user.must_change_password) {
         navigate("/dashboard/change-password");
@@ -27,6 +37,7 @@ export default function Login() {
     } catch (err) {
       setError(
         err.response?.data?.detail ||
+          err.response?.data?.otp_code ||
           err.response?.data?.non_field_errors?.[0] ||
           "Login failed. Check your credentials."
       );
@@ -50,6 +61,12 @@ export default function Login() {
         {error && (
           <div className="mb-4 bg-red-900/40 border border-red-600 text-red-300 text-sm px-4 py-3 rounded">
             {error}
+          </div>
+        )}
+
+        {mfaRequired && (
+          <div className="mb-4 bg-blue-900/30 border border-blue-700 text-blue-200 text-sm px-4 py-3 rounded">
+            Enter the 6-digit code from Google Authenticator.
           </div>
         )}
 
@@ -106,12 +123,31 @@ export default function Login() {
             </div>
           </div>
 
+          {mfaRequired && (
+            <div>
+              <label className="block text-gray-300 text-sm font-medium mb-1">
+                Authenticator Code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                name="otp_code"
+                value={form.otp_code}
+                onChange={handleChange}
+                required
+                maxLength={6}
+                className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 tracking-widest"
+                placeholder="000000"
+              />
+            </div>
+          )}
+
           <button
             type="submit"
             disabled={loading}
             className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2.5 rounded-lg transition-colors"
           >
-            {loading ? "Signing in..." : "Sign In"}
+            {loading ? "Signing in..." : mfaRequired ? "Verify Code" : "Sign In"}
           </button>
         </form>
       </div>

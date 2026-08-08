@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User
+from .totp import verify_totp
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -15,9 +16,9 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
             "battalion_name", "battalion_type", "detachment_name",
-            "is_active", "is_superuser", "must_change_password", "created_at",
+            "is_active", "is_superuser", "must_change_password", "mfa_enabled", "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "mfa_enabled"]
 
     def get_battalion_name(self, obj):
         return obj.battalion.name if obj.battalion else None
@@ -68,6 +69,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     service_number = serializers.CharField()
     password = serializers.CharField(write_only=True)
+    otp_code = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     def validate(self, data):
         user = authenticate(username=data["service_number"], password=data["password"])
@@ -75,6 +77,12 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid service number or password.")
         if not user.is_active:
             raise serializers.ValidationError("Account is disabled.")
+        otp_code = data.get("otp_code", "")
+        if user.mfa_enabled:
+            if not otp_code:
+                data["mfa_required"] = True
+            elif not verify_totp(user.mfa_secret, otp_code):
+                raise serializers.ValidationError({"otp_code": "Invalid authentication code."})
         data["user"] = user
         return data
 

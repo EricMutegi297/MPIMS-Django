@@ -44,12 +44,16 @@ class UnitSerializer(serializers.ModelSerializer):
 class BattalionSerializer(serializers.ModelSerializer):
     detachments = DetachmentSerializer(many=True, read_only=True)
     case_count = serializers.IntegerField(read_only=True)
+    formation_name = serializers.SerializerMethodField()
+
+    def get_formation_name(self, obj):
+        return obj.formation.name if obj.formation else None
 
     class Meta:
         model = Battalion
         fields = [
             "id", "name", "email", "phone", "aor", "code",
-            "battalion_type", "formation", "detachments", "case_count",
+            "battalion_type", "formation", "formation_name", "detachments", "case_count",
         ]
         extra_kwargs = {
             "formation": {"required": False, "allow_null": True},

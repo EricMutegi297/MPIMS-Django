@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
 from .serializers import UserSerializer, UserCreateSerializer, LoginSerializer, ChangePasswordSerializer
+from .totp import ISSUER, generate_secret, provisioning_uri, verify_totp
 
 # Roles a battalion admin can assign
 BATTALION_ADMIN_ROLES = {"co", "detachment", "personnel", "investigator", "adj", "2ic"}
@@ -33,6 +34,11 @@ def _is_det_ic(user):
 def login_view(request):
     serializer = LoginSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    if serializer.validated_data.get("mfa_required"):
+        return Response({
+            "mfaRequired": True,
+            "detail": "Enter your Google Authenticator code.",
+        })
     user = serializer.validated_data["user"]
     refresh = RefreshToken.for_user(user)
     return Response(
@@ -69,6 +75,45 @@ def change_password(request):
         "detail": "Password changed successfully.",
         "access": str(refresh.access_token),
         "refresh": str(refresh),
+    })
+
+
+@api_view(["GET"])
+def mfa_setup(request):
+    user = request.user
+    if not user.mfa_secret:
+        user.mfa_secret = generate_secret()
+        user.save(update_fields=["mfa_secret"])
+
+    account = user.service_number
+    return Response({
+        "issuer": ISSUER,
+        "account": account,
+        "secret": user.mfa_secret,
+        "provisioning_uri": provisioning_uri(user.mfa_secret, account),
+        "mfa_enabled": user.mfa_enabled,
+    })
+
+
+@api_view(["POST"])
+def mfa_verify(request):
+    user = request.user
+    if not user.mfa_secret:
+        user.mfa_secret = generate_secret()
+        user.save(update_fields=["mfa_secret"])
+
+    otp_code = request.data.get("otp_code", "")
+    if not verify_totp(user.mfa_secret, otp_code):
+        return Response(
+            {"otp_code": "Invalid authentication code."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user.mfa_enabled = True
+    user.save(update_fields=["mfa_enabled", "mfa_secret"])
+    return Response({
+        "detail": "Google Authenticator enabled.",
+        "user": UserSerializer(user).data,
     })
 
 

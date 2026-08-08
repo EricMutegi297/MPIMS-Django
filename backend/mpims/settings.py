@@ -91,7 +91,7 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 # ── REST Framework ────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.users.authentication.MfaJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",  # keeps Django admin working
     ],
     "DEFAULT_PERMISSION_CLASSES": [

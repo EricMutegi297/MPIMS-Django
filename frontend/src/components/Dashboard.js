@@ -10,9 +10,11 @@ import Guardrooms from "./Guardrooms";
 import Users from "./Users";
 import Notifications from "./Notifications";
 import Formations from "./Formations";
+import Battalions from "./Battalions";
 import Offences from "./Offences";
 import OffenceModal from "./OffenceModal";
 import ChangePassword from "./ChangePassword";
+import MfaSetup from "./MfaSetup";
 import InvestigatorDashboard from "./InvestigatorDashboard";
 import BattalionDashboard from "./BattalionDashboard";
 import DetachmentDashboard from "./DetachmentDashboard";
@@ -289,10 +291,25 @@ export default function Dashboard() {
     }
   }, [user, location.pathname, navigate]);
 
+  useEffect(() => {
+    if (!user || user.must_change_password || user.mfa_enabled) return;
+    if (location.pathname !== "/dashboard/setup-mfa" && location.pathname !== "/dashboard/change-password") {
+      navigate("/dashboard/setup-mfa", { replace: true });
+    }
+  }, [user, location.pathname, navigate]);
+
   const handlePasswordChanged = React.useCallback(() => {
     setUser((currentUser) =>
       currentUser ? { ...currentUser, must_change_password: false } : currentUser
     );
+  }, []);
+
+  const handleMfaVerified = React.useCallback((updatedUser) => {
+    setUser((currentUser) => ({
+      ...(currentUser || {}),
+      ...(updatedUser || {}),
+      mfa_enabled: true,
+    }));
   }, []);
 
   const refreshUnreadCount = React.useCallback(() => {
@@ -310,7 +327,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.must_change_password || !user.mfa_enabled) return;
     refreshUnreadCount();
     const id = setInterval(refreshUnreadCount, 30000);
     return () => clearInterval(id);
@@ -354,7 +371,7 @@ export default function Dashboard() {
 
   // Load offences for all authenticated users
   React.useEffect(() => {
-    if (user) loadOffences();
+    if (user && !user.must_change_password && user.mfa_enabled) loadOffences();
   }, [user, loadOffences]);
 
   React.useEffect(() => {
@@ -396,6 +413,10 @@ export default function Dashboard() {
 
   if (location.pathname === "/dashboard/change-password") {
     return <ChangePassword user={user} onChanged={handlePasswordChanged} />;
+  }
+
+  if (location.pathname === "/dashboard/setup-mfa") {
+    return <MfaSetup user={user} onVerified={handleMfaVerified} />;
   }
 
   return (
@@ -576,7 +597,7 @@ export default function Dashboard() {
           <Route path="/guardrooms/*" element={<Guardrooms user={user} />} />
           <Route path="/users/*" element={<Users user={user} />} />
           <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
-          <Route path="/Battalions" element={<Formations user={user} />} />
+          <Route path="/Battalions" element={<Battalions user={user} />} />
           <Route path="/formations" element={<Formations user={user} />} />
           <Route path="/formations-btn" element={<Offences user={user} />} />
           <Route
@@ -584,6 +605,7 @@ export default function Dashboard() {
             element={<Notifications onRead={refreshUnreadCount} />}
           />
           <Route path="/change-password" element={<ChangePassword user={user} onChanged={handlePasswordChanged} />} />
+          <Route path="/setup-mfa" element={<MfaSetup user={user} onVerified={handleMfaVerified} />} />
           <Route path="/det-teams" element={<Teams user={user} />} />
           <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
           <Route path="/statistics" element={<Statistics user={user} />} />

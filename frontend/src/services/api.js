@@ -10,10 +10,14 @@ export const offenceService = {
 };
 
 export const authService = {
-  login: async (service_number, password) => {
-    const res = await api.post("/api/auth/login/", { service_number, password });
-    sessionStorage.setItem("access_token", res.data.access);
-    sessionStorage.setItem("refresh_token", res.data.refresh);
+  login: async (service_number, password, otp_code = "") => {
+    const payload = { service_number, password };
+    if (otp_code) payload.otp_code = otp_code;
+    const res = await api.post("/api/auth/login/", payload);
+    if (res.data.access) {
+      sessionStorage.setItem("access_token", res.data.access);
+      sessionStorage.setItem("refresh_token", res.data.refresh);
+    }
     return res;
   },
   logout: async () => {
@@ -31,6 +35,8 @@ export const authService = {
     }
     return res;
   },
+  mfaSetup: () => api.get("/api/auth/mfa/setup/"),
+  mfaVerify: (data) => api.post("/api/auth/mfa/verify/", data),
 };
 
 export const caseService = {
