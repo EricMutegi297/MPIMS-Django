@@ -607,18 +607,6 @@ export default function Users({ user }) {
                   </select>
                 </div>
               )}
-              <div className="col-span-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-3">
-                <label className="block text-xs text-blue-200 mb-1">Activation Email</label>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-white">{form.email || "Enter user email"}</span>
-                  <span className="rounded bg-blue-500/20 px-2 py-1 text-[11px] font-semibold uppercase text-blue-100">
-                    Set-password link
-                  </span>
-                </div>
-                <p className="mt-2 text-xs text-blue-100/80">
-                  The system will email a secure link for the user to create their own password.
-                </p>
-              </div>
             </div>
             <div className="flex justify-end gap-3 pt-2">
               <button
