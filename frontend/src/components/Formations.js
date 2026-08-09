@@ -14,8 +14,23 @@ const SERVICES = [
   { value: "KAF", label: "KAF - Kenya Air Force" },
   { value: "KN",  label: "KN - Kenya Navy" },
 ];
+const BATTALION_TYPES = [
+  { value: "normal", label: "Normal" },
+  { value: "special", label: "Special" },
+  { value: "hqs", label: "HQs" },
+  { value: "protection", label: "Protection" },
+];
 const EMPTY_FORMATION = { name: "", location: "" };
 const EMPTY_UNIT = { name: "", code: "", formation: "", service: "KA", email: "", mobile_no: "", location_county: "" };
+const EMPTY_BATTALION = {
+  name: "",
+  code: "",
+  battalion_type: "normal",
+  formation: "",
+  email: "",
+  phone: "",
+  aor: "",
+};
 
 function apiErrorMessage(err, fallback) {
   const data = err.response?.data;
@@ -46,6 +61,8 @@ export default function Formations({ user, mode = "formations" }) {
   const [fmModal,      setFmModal]      = useState(null);
   const [fmSaving,     setFmSaving]     = useState(false);
   const [fmDeleteId,   setFmDeleteId]   = useState(null);
+  const [bnModal,      setBnModal]      = useState(null);
+  const [bnSaving,     setBnSaving]     = useState(false);
 
   const [unitModal,    setUnitModal]    = useState(null);
   const [unitSaving,   setUnitSaving]   = useState(false);
@@ -60,7 +77,7 @@ export default function Formations({ user, mode = "formations" }) {
   const canViewBattalionSummary = isSuperAdmin || isHqsAdmin || isCorpsCommander;
   const showBattalionSummary = mode === "battalions" && canViewBattalionSummary;
   const visibleBattalions = battalions.filter(
-    (b) => String(b?.battalion_type || "").toLowerCase() !== "hqs"
+    (b) => isSuperAdmin || String(b?.battalion_type || "").toLowerCase() !== "hqs"
   );
 
   const loadAll = useCallback(async () => {
@@ -116,6 +133,28 @@ export default function Formations({ user, mode = "formations" }) {
   };
 
   // ── Unit CRUD ──
+  const saveBattalion = async (form) => {
+    setBnSaving(true); setError(""); setMessage("");
+    try {
+      const payload = { ...form, formation: form.formation ? Number(form.formation) : null };
+      await formationService.createBattalion(payload);
+      setBnModal(null);
+      setMessage("Battalion created.");
+      await loadAll();
+    } catch (err) {
+      const d = err.response?.data;
+      setError(
+        d?.name?.[0] ||
+        d?.formation?.[0] ||
+        d?.battalion_type?.[0] ||
+        d?.detail ||
+        "Failed to save battalion."
+      );
+    } finally {
+      setBnSaving(false);
+    }
+  };
+
   const saveUnit = async (form) => {
     setUnitSaving(true); setError(""); setMessage("");
     try {
@@ -206,30 +245,50 @@ export default function Formations({ user, mode = "formations" }) {
         </div>
 
         {error && <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-2 rounded">{error}</div>}
+        {message && <div className="bg-green-900/40 border border-green-700 text-green-300 text-sm px-4 py-2 rounded">{message}</div>}
 
         <div className="bg-gray-800 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700">
+          <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
             <span className="text-white font-medium">
               Battalions <span className="text-gray-400 text-xs">({visibleBattalions.length})</span>
             </span>
+            {isSuperAdmin && (
+              <button
+                onClick={() => setBnModal({ mode: "add", data: { ...EMPTY_BATTALION } })}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+              >
+                + Add Battalion
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
+            <table className="w-full min-w-[640px] text-sm">
               <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
                 <tr>
                   <th className="text-left px-4 py-2">Battalion</th>
+                  <th className="text-left px-4 py-2">Type</th>
                   <th className="text-left px-4 py-2">Companies</th>
                   <th className="text-left px-4 py-2">Case Count</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
+                  <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
                 ) : visibleBattalions.length === 0 ? (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
+                  <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
                 ) : visibleBattalions.map((b) => (
                   <tr key={b.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
-                    <td className="px-4 py-2 text-white font-medium">{b.name}</td>
+                    <td className="px-4 py-2 text-white font-medium">
+                      <div>{b.name}</div>
+                      {(b.code || b.email || b.phone) && (
+                        <div className="mt-0.5 text-xs text-gray-500">
+                          {[b.code, b.email, b.phone].filter(Boolean).join(" | ")}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-300 capitalize">
+                      {String(b.battalion_type || "normal").replace(/_/g, " ")}
+                    </td>
                     <td className="px-4 py-2 text-gray-300">
                       <button
                         type="button"
@@ -299,6 +358,16 @@ export default function Formations({ user, mode = "formations" }) {
               </div>
             )}
           </ModalWrap>
+        )}
+
+        {bnModal && (
+          <BattalionModal
+            initial={bnModal.data}
+            saving={bnSaving}
+            formations={formations}
+            onSave={saveBattalion}
+            onClose={() => setBnModal(null)}
+          />
         )}
       </div>
     );
@@ -488,6 +557,42 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
         <FInput label="Formation Name *" value={form.name || ""} onChange={s("name")} required />
         <FInput label="Location"         value={form.location || ""} onChange={s("location")} />
         <SaveCancel saving={saving} canSave={!!form.name?.trim()} mode={mode} onClose={onClose} />
+      </form>
+    </ModalWrap>
+  );
+}
+
+function BattalionModal({ initial, saving, formations, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <ModalWrap title="Add Battalion" onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        <FInput label="Battalion Name *" value={form.name || ""} onChange={s("name")} required />
+        <FInput label="Code" value={form.code || ""} onChange={s("code")} />
+        <div>
+          <label className="text-xs text-gray-400">Type</label>
+          <select value={form.battalion_type} onChange={s("battalion_type")}
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            {BATTALION_TYPES.map((type) => (
+              <option key={type.value} value={type.value}>{type.label}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-gray-400">Formation</label>
+          <select value={form.formation} onChange={s("formation")}
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            <option value="">No formation</option>
+            {formations.map((f) => (
+              <option key={f.id} value={String(f.id)}>{f.name}</option>
+            ))}
+          </select>
+        </div>
+        <FInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
+        <FInput label="Phone" value={form.phone || ""} onChange={s("phone")} />
+        <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+        <SaveCancel saving={saving} canSave={!!form.name?.trim()} mode="add" onClose={onClose} />
       </form>
     </ModalWrap>
   );
