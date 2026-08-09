@@ -26,7 +26,6 @@ const EMPTY_BATTALION = {
   name: "",
   code: "",
   battalion_type: "normal",
-  formation: "",
   email: "",
   phone: "",
   aor: "",
@@ -136,8 +135,7 @@ export default function Formations({ user, mode = "formations" }) {
   const saveBattalion = async (form) => {
     setBnSaving(true); setError(""); setMessage("");
     try {
-      const payload = { ...form, formation: form.formation ? Number(form.formation) : null };
-      await formationService.createBattalion(payload);
+      await formationService.createBattalion(form);
       setBnModal(null);
       setMessage("Battalion created.");
       await loadAll();
@@ -364,7 +362,6 @@ export default function Formations({ user, mode = "formations" }) {
           <BattalionModal
             initial={bnModal.data}
             saving={bnSaving}
-            formations={formations}
             onSave={saveBattalion}
             onClose={() => setBnModal(null)}
           />
@@ -562,7 +559,7 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
   );
 }
 
-function BattalionModal({ initial, saving, formations, onSave, onClose }) {
+function BattalionModal({ initial, saving, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
@@ -576,16 +573,6 @@ function BattalionModal({ initial, saving, formations, onSave, onClose }) {
             className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
             {BATTALION_TYPES.map((type) => (
               <option key={type.value} value={type.value}>{type.label}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="text-xs text-gray-400">Formation</label>
-          <select value={form.formation} onChange={s("formation")}
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-            <option value="">No formation</option>
-            {formations.map((f) => (
-              <option key={f.id} value={String(f.id)}>{f.name}</option>
             ))}
           </select>
         </div>
