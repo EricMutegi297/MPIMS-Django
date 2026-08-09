@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Login from "./components/Login";
 import LandingPage from "./components/LandingPage";
+import ForgotPassword from "./components/ForgotPassword";
 import SetPassword from "./components/SetPassword";
 
 const Dashboard = lazy(() => import("./components/Dashboard"));
@@ -12,6 +13,7 @@ function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/set-password/:uid/:token" element={<SetPassword />} />
         <Route
           path="/dashboard/*"

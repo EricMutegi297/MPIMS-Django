@@ -3,6 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+from django.db.models import Q
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -47,6 +48,24 @@ def _send_password_setup_email(user, actor, request=None):
     )
     send_mail(
         subject="[MPIMS] Set up your account password",
+        message=message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+
+
+def _send_password_reset_email(user, request=None):
+    setup_link = _password_setup_link(user, request=request)
+    message = (
+        f"Hello {user.name or user.service_number},\n\n"
+        "We received a request to reset your MPIMS password.\n\n"
+        "Use the secure link below to choose a new password:\n\n"
+        f"{setup_link}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+    send_mail(
+        subject="[MPIMS] Reset your password",
         message=message,
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[user.email],
@@ -126,6 +145,35 @@ def set_initial_password(request):
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response({"detail": "Password set successfully. You can now sign in."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def request_password_reset(request):
+    identifier = str(request.data.get("identifier", "") or "").strip()
+    if not identifier:
+        return Response(
+            {"identifier": "Enter your service number or email address."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = User.objects.filter(
+        Q(service_number__iexact=identifier) | Q(email__iexact=identifier),
+        is_active=True,
+    ).first()
+
+    if user and user.email:
+        try:
+            _send_password_reset_email(user, request=request)
+        except Exception:
+            return Response(
+                {"detail": "Password reset email could not be sent. Contact the system administrator."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+    return Response({
+        "detail": "If the account exists, a password reset link has been sent to the registered email."
+    })
 
 
 @api_view(["GET"])

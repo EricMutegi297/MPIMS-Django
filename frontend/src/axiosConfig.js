@@ -10,6 +10,7 @@ const api = axios.create({
 const AUTH_PATHS = [
   "/api/auth/login/",
   "/api/auth/logout/",
+  "/api/auth/password-reset/",
   "/api/auth/set-password/",
   "/api/auth/token/refresh/",
 ];
