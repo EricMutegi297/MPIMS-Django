@@ -164,13 +164,28 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ── Email ─────────────────────────────────────────────────────────────────────
-EMAIL_BACKEND      = config("EMAIL_BACKEND",      default="django.core.mail.backends.console.EmailBackend")
-EMAIL_HOST         = config("EMAIL_HOST",         default="")
-EMAIL_PORT         = config("EMAIL_PORT",         default=587, cast=int)
-EMAIL_USE_TLS      = config("EMAIL_USE_TLS",      default=True, cast=bool)
-EMAIL_HOST_USER    = config("EMAIL_HOST_USER",    default="")
-EMAIL_HOST_PASSWORD= config("EMAIL_HOST_PASSWORD",default="")
-DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="MPIMS <noreply@mpims.ke>")
+GMAIL_USER = config("GMAIL_USER", default="")
+GMAIL_APP_PASSWORD = config("GMAIL_APP_PASSWORD", default="")
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default=GMAIL_USER)
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default=GMAIL_APP_PASSWORD)
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.smtp.EmailBackend"
+        if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD
+        else "django.core.mail.backends.console.EmailBackend"
+    ),
+)
+EMAIL_HOST = config(
+    "EMAIL_HOST",
+    default="smtp.gmail.com" if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD else "",
+)
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+DEFAULT_FROM_EMAIL = config(
+    "DEFAULT_FROM_EMAIL",
+    default=f"MPIMS <{EMAIL_HOST_USER}>" if EMAIL_HOST_USER else "MPIMS <noreply@mpims.ke>",
+)
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 
 # Google Authenticator / TOTP MFA.
