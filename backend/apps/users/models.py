@@ -143,6 +143,10 @@ class LoginThrottle(models.Model):
         ACCOUNT = "account", "Account"
         IP = "ip", "IP Address"
         ACCOUNT_IP = "account_ip", "Account + IP"
+        PASSWORD_RESET_EMAIL = "password_reset_email", "Password Reset Email"
+        PASSWORD_RESET_IP = "password_reset_ip", "Password Reset IP"
+        PASSWORD_RESET_CONFIRM_IP = "reset_confirm_ip", "Password Reset Confirm IP"
+        PASSWORD_RESET_CONFIRM_UID = "reset_confirm_uid", "Password Reset Confirm UID"
 
     scope = models.CharField(max_length=20, choices=Scope.choices)
     key_hash = models.CharField(max_length=64)
@@ -171,4 +175,4 @@ class LoginThrottle(models.Model):
         return bool(self.locked_until and self.locked_until > timezone.now())
 
     def __str__(self):
-        return f"{self.scope} login throttle ({self.failed_attempts})"
+        return f"{self.scope} throttle ({self.failed_attempts})"
