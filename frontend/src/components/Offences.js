@@ -1,8 +1,6 @@
 import React from "react";
 
-export default function Offences({ user, offences = [], loading = false }) {
-  const isSuperuser = !!user?.is_superuser;
-
+export default function Offences({ offences = [], loading = false }) {
   return (
     <div className="p-4 max-w-2xl mx-auto">
       <h2 className="text-xl font-bold mb-4 text-white">Offences</h2>
