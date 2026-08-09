@@ -77,7 +77,7 @@ class DetachmentViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = Detachment.objects.select_related("battalion").annotate(
             case_count=Count("tasked_cases", distinct=True)
-        )
+        ).order_by("company", "name", "id")
         user = self.request.user
         if has_global_read_access(user):
             return qs
