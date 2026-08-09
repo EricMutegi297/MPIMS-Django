@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import api from "../axiosConfig";
-import { caseService } from "../services/api";
+import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
 /* ─────────────────────── constants ────────────────────────────── */
@@ -171,7 +171,7 @@ function DrilldownPanel({ drill, onClose }) {
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <script>window.onload=function(){window.print();}<\/script>
+  <script>window.onload=function(){window.print();}</script>
 </body>
 </html>`);
     win.document.close();
@@ -351,17 +351,54 @@ function CaseTableHead() {
 /* ─────────────────────── main export ──────────────────────────── */
 
 export default function DetachmentOverview({ user }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState("");
-  const [drill, setDrill]     = useState(null); // { detId, detName, company, status }
+  const isSuperuser = Boolean(user?.is_superuser);
+  const initialBattalion = String(user?.battalion ?? user?.battalion_id ?? "");
+  const [data, setData]                         = useState(null);
+  const [loading, setLoading]                   = useState(true);
+  const [error, setError]                       = useState("");
+  const [battalions, setBattalions]             = useState([]);
+  const [selectedBattalion, setSelectedBattalion] = useState(initialBattalion);
+  const [battalionLoading, setBattalionLoading] = useState(false);
+  const [drill, setDrill]                       = useState(null); // { detId, detName, company, status }
   useAutoDismiss(error, setError);
 
+  const selectedBattalionId = String(selectedBattalion || "");
+
+  useEffect(() => {
+    if (!isSuperuser) return;
+    let alive = true;
+    setBattalionLoading(true);
+    formationService.battalions({ page_size: 200 })
+      .then((res) => {
+        if (!alive) return;
+        const items = toArray(res.data);
+        setBattalions(items);
+        setSelectedBattalion((current) => {
+          if (current) return current;
+          const firstWithCompanies = items.find((b) => (b.detachments || []).length > 0);
+          return String((firstWithCompanies || items[0])?.id ?? "");
+        });
+      })
+      .catch(() => {
+        if (alive) setError("Failed to load battalions.");
+      })
+      .finally(() => {
+        if (alive) setBattalionLoading(false);
+      });
+    return () => { alive = false; };
+  }, [isSuperuser]);
+
   const load = useCallback(async () => {
+    if (isSuperuser && !selectedBattalionId) {
+      setData({ detachments: [] });
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const res = await api.get("/api/cases/detachment-summary/");
+      const params = isSuperuser ? { battalion: selectedBattalionId } : undefined;
+      const res = await api.get("/api/cases/detachment-summary/", { params });
       setData(res.data);
     } catch (e) {
       setError(
@@ -371,7 +408,7 @@ export default function DetachmentOverview({ user }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isSuperuser, selectedBattalionId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -396,14 +433,34 @@ export default function DetachmentOverview({ user }) {
             Click any count or company name to drill into the cases
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="p-2 rounded-lg bg-gray-800 border border-gray-700 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors disabled:opacity-40"
-          title="Refresh"
-        >
-          <RefreshIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
+        <div className="flex items-center gap-2">
+          {isSuperuser && (
+            <select
+              value={selectedBattalion}
+              onChange={(e) => {
+                setSelectedBattalion(e.target.value);
+                setDrill(null);
+              }}
+              disabled={battalionLoading}
+              className="h-9 max-w-[220px] rounded-lg border border-gray-700 bg-gray-800 px-3 text-sm text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50"
+            >
+              <option value="">{battalionLoading ? "Loading battalions..." : "Select battalion"}</option>
+              {battalions.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={load}
+            disabled={loading || (isSuperuser && !selectedBattalionId)}
+            className="p-2 rounded-lg bg-gray-800 border border-gray-700 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors disabled:opacity-40"
+            title="Refresh"
+          >
+            <RefreshIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}
