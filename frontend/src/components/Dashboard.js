@@ -51,6 +51,10 @@ function clearCachedUser() {
   sessionStorage.removeItem(USER_CACHE_KEY);
 }
 
+function needsTotpSetup(user) {
+  return Boolean(user?.totp_required && !user?.totp_configured);
+}
+
 function scheduleNonCritical(callback) {
   if (typeof window === "undefined") {
     callback();
@@ -528,6 +532,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user) return;
+    if (needsTotpSetup(user)) {
+      setUnreadCount(0);
+      return;
+    }
     const cancelInitial = scheduleNonCritical(refreshUnreadCount);
     const id = setInterval(refreshUnreadCount, 30000);
     return () => {
@@ -538,7 +546,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user || user.must_change_password) return;
-    const setupRequired = user.totp_required && !user.totp_configured;
+    const setupRequired = needsTotpSetup(user);
     const allowedPath = ["/dashboard/authenticator", "/dashboard/change-password"].includes(location.pathname);
     if (setupRequired && !allowedPath) {
       navigate("/dashboard/authenticator", { replace: true });

@@ -409,6 +409,21 @@ def totp_provisioning_uri(user, secret):
     return pyotp.TOTP(secret).provisioning_uri(name=account, issuer_name=totp_issuer_name())
 
 
+def truthy_request_value(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def totp_setup_payload(user, device):
+    uri = totp_provisioning_uri(user, device.secret)
+    return {
+        "issuer": totp_issuer_name(),
+        "account": f"{user.service_number} - {user.name}".strip(),
+        "secret": device.secret,
+        "provisioning_uri": uri,
+        "qr_code": qr_data_uri(uri),
+    }
+
+
 def qr_data_uri(text):
     image = qrcode.make(text)
     buffer = io.BytesIO()
@@ -595,6 +610,12 @@ def totp_setup(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    regenerate = truthy_request_value(request.data.get("regenerate")) or truthy_request_value(
+        request.query_params.get("regenerate")
+    )
+    if existing and not regenerate:
+        return Response(totp_setup_payload(request.user, existing))
+
     secret = pyotp.random_base32()
     device, _ = TOTPDevice.objects.update_or_create(
         user=request.user,
@@ -606,14 +627,7 @@ def totp_setup(request):
             "last_verified_counter": None,
         },
     )
-    uri = totp_provisioning_uri(request.user, device.secret)
-    return Response({
-        "issuer": totp_issuer_name(),
-        "account": f"{request.user.service_number} - {request.user.name}".strip(),
-        "secret": device.secret,
-        "provisioning_uri": uri,
-        "qr_code": qr_data_uri(uri),
-    })
+    return Response(totp_setup_payload(request.user, device))
 
 
 @api_view(["POST"])

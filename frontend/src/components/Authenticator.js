@@ -63,14 +63,17 @@ export default function Authenticator({ user, onTotpChanged }) {
     loadStatus();
   }, []);
 
-  const startSetup = useCallback(async () => {
+  const startSetup = useCallback(async ({ regenerate = false } = {}) => {
     setStarting(true);
     setError("");
     setNotice("");
     try {
-      const res = await authService.setupTotp();
+      const res = await authService.setupTotp(regenerate ? { regenerate: true } : {});
       setSetup(res.data);
       setCode("");
+      if (regenerate) {
+        setNotice("New authenticator QR code created.");
+      }
     } catch (err) {
       setError(err.response?.data?.detail || "Could not start authenticator setup.");
     } finally {
@@ -196,7 +199,7 @@ export default function Authenticator({ user, onTotpChanged }) {
                     <p className="text-sm font-semibold text-amber-900">Authenticator setup could not start.</p>
                     <button
                       type="button"
-                      onClick={startSetup}
+                      onClick={() => startSetup()}
                       className="mt-4 inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
                     >
                       <RefreshIcon />
@@ -208,7 +211,7 @@ export default function Authenticator({ user, onTotpChanged }) {
                 {!setup && !starting && !status?.required && (
                   <button
                     type="button"
-                    onClick={startSetup}
+                    onClick={() => startSetup()}
                     className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
                   >
                     <PhoneIcon />
@@ -249,7 +252,7 @@ export default function Authenticator({ user, onTotpChanged }) {
                       <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
                         <button
                           type="button"
-                          onClick={startSetup}
+                          onClick={() => startSetup({ regenerate: true })}
                           disabled={starting || confirming}
                           className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
                         >

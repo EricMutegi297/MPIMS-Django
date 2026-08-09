@@ -58,7 +58,7 @@ export const authService = {
   requestPasswordReset: (email) => api.post("/api/auth/password-reset/", { email }),
   confirmPasswordReset: (data) => api.post("/api/auth/password-reset/confirm/", data),
   totpStatus: () => api.get("/api/auth/totp/status/"),
-  setupTotp: () => api.post("/api/auth/totp/setup/"),
+  setupTotp: (data = {}) => api.post("/api/auth/totp/setup/", data),
   confirmTotpSetup: async (code) => {
     const res = await api.post("/api/auth/totp/setup/confirm/", { code });
     storeAuthPayload(res.data);
