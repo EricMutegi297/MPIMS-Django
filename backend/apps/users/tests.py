@@ -1,3 +1,4 @@
+import pyotp
 from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
@@ -5,7 +6,7 @@ from rest_framework.test import APITestCase
 
 from apps.notifications.models import Notification
 
-from .models import LoginThrottle, User
+from .models import LoginThrottle, TOTPDevice, User
 
 
 @override_settings(
@@ -81,3 +82,67 @@ class LoginThrottleTests(APITestCase):
 
         response = self.post_login("CorrectPass123!")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+@override_settings(
+    TOTP_REQUIRED=True,
+    TOTP_CODE_WINDOW=1,
+    TOTP_LOCKOUT_MINUTES=15,
+)
+class TOTPSetupTests(APITestCase):
+    def setUp(self):
+        self.login_url = reverse("login")
+        self.setup_url = reverse("totp-setup")
+        self.confirm_url = reverse("totp-setup-confirm")
+        self.user = User.objects.create_user(
+            service_number="000002",
+            password="CorrectPass123!",
+            name="MFA User",
+            rank="Cpl",
+            must_change_password=False,
+        )
+
+    def authenticate_for_setup(self):
+        response = self.client.post(
+            self.login_url,
+            {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["totpSetupRequired"])
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
+        return response
+
+    def test_pending_setup_reuses_secret_until_regenerated(self):
+        self.authenticate_for_setup()
+
+        first = self.client.post(self.setup_url, {}, format="json")
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+
+        second = self.client.post(self.setup_url, {}, format="json")
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.data["secret"], first.data["secret"])
+
+        regenerated = self.client.post(self.setup_url, {"regenerate": True}, format="json")
+        self.assertEqual(regenerated.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(regenerated.data["secret"], first.data["secret"])
+
+        device = TOTPDevice.objects.get(user=self.user)
+        self.assertFalse(device.confirmed)
+        self.assertEqual(device.failed_attempts, 0)
+
+    def test_current_setup_code_confirms_totp_and_issues_full_tokens(self):
+        self.authenticate_for_setup()
+        setup = self.client.post(self.setup_url, {}, format="json")
+        self.assertEqual(setup.status_code, status.HTTP_200_OK)
+
+        code = pyotp.TOTP(setup.data["secret"]).now()
+        response = self.client.post(self.confirm_url, {"code": code}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["totpSetupRequired"])
+        self.assertTrue(response.data["user"]["totp_configured"])
+
+        device = TOTPDevice.objects.get(user=self.user)
+        self.assertTrue(device.confirmed)
+        self.assertEqual(device.failed_attempts, 0)
