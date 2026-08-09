@@ -1,9 +1,13 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { authService } from "../services/api";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const timedOut = params.get("timeout") === "1";
+  const passwordSet = params.get("password-set") === "1";
   const [form, setForm] = useState({ service_number: "", password: "", otp_code: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -61,6 +65,18 @@ export default function Login() {
         {error && (
           <div className="mb-4 bg-red-900/40 border border-red-600 text-red-300 text-sm px-4 py-3 rounded">
             {error}
+          </div>
+        )}
+
+        {!error && timedOut && (
+          <div className="mb-4 bg-yellow-900/30 border border-yellow-700 text-yellow-100 text-sm px-4 py-3 rounded">
+            You were signed out after 15 minutes of inactivity.
+          </div>
+        )}
+
+        {!error && passwordSet && (
+          <div className="mb-4 bg-green-900/30 border border-green-700 text-green-100 text-sm px-4 py-3 rounded">
+            Password set successfully. Sign in to continue.
           </div>
         )}
 

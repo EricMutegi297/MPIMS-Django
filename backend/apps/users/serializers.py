@@ -1,5 +1,10 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_decode
 from .models import User
 from .totp import verify_totp
 
@@ -34,13 +39,11 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
-
     class Meta:
         model = User
         fields = [
             "service_number", "name", "rank", "email", "role",
-            "unit", "battalion", "formation", "detachment", "password",
+            "unit", "battalion", "formation", "detachment",
         ]
         extra_kwargs = {
             "rank":  {"required": True, "allow_blank": False},
@@ -48,7 +51,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         }
 
     def validate(self, data):
-        exempt_roles = {"corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"}
+        exempt_roles = {"corps_cmd", "cop", "so1_legal", "so1_ops", "so2_legal", "so2_ops"}
         role = data.get("role", "")
         battalion = data.get("battalion")
         detachment = data.get("detachment")
@@ -59,10 +62,45 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        password = validated_data.pop("password")
         user = User(**validated_data)
-        user.set_password(password)
+        user.set_unusable_password()
+        user.must_change_password = True
         user.save()
+        return user
+
+
+class InitialPasswordSetSerializer(serializers.Serializer):
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        if data["new_password"] != data["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+
+        try:
+            uid = force_str(urlsafe_base64_decode(data["uid"]))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            raise serializers.ValidationError({"token": "This password setup link is invalid."})
+
+        if not default_token_generator.check_token(user, data["token"]):
+            raise serializers.ValidationError({"token": "This password setup link is invalid or has expired."})
+
+        try:
+            validate_password(data["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
+
+        data["user"] = user
+        return data
+
+    def save(self, **kwargs):
+        user = self.validated_data["user"]
+        user.set_password(self.validated_data["new_password"])
+        user.must_change_password = False
+        user.save(update_fields=["password", "must_change_password", "updated_at"])
         return user
 
 

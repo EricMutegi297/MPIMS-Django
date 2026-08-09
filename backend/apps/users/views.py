@@ -1,16 +1,57 @@
 from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from django.conf import settings
+from django.contrib.auth.tokens import default_token_generator
+from django.core.mail import send_mail
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User
-from .serializers import UserSerializer, UserCreateSerializer, LoginSerializer, ChangePasswordSerializer
+from .serializers import (
+    UserSerializer,
+    UserCreateSerializer,
+    LoginSerializer,
+    ChangePasswordSerializer,
+    InitialPasswordSetSerializer,
+)
 from .totp import ISSUER, generate_secret, provisioning_uri, verify_totp
 
 # Roles a battalion admin can assign
 BATTALION_ADMIN_ROLES = {"co", "detachment", "personnel", "investigator", "adj", "2ic"}
 # Roles an IC Det can assign
 DET_IC_ROLES = {"personnel", "investigator"}
+
+
+def _password_setup_link(user, request=None):
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    frontend_url = getattr(settings, "FRONTEND_URL", "").rstrip("/")
+    if (not frontend_url or frontend_url == "http://localhost:3000") and request is not None:
+        frontend_url = (request.headers.get("Origin") or frontend_url).rstrip("/")
+    if not frontend_url:
+        frontend_url = "http://localhost:3000"
+    return f"{frontend_url}/set-password/{uid}/{token}"
+
+
+def _send_password_setup_email(user, actor, request=None):
+    actor_name = getattr(actor, "name", "") or getattr(actor, "service_number", "") or "an MPIMS administrator"
+    setup_link = _password_setup_link(user, request=request)
+    message = (
+        f"Hello {user.name or user.service_number},\n\n"
+        f"An MPIMS account has been created for you by {actor_name}.\n\n"
+        "Use the secure link below to choose your own password:\n\n"
+        f"{setup_link}\n\n"
+        "If you did not expect this account, contact MPIMS support immediately."
+    )
+    send_mail(
+        subject="[MPIMS] Set up your account password",
+        message=message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
 
 
 def _is_hqs_admin(user):
@@ -76,6 +117,15 @@ def change_password(request):
         "access": str(refresh.access_token),
         "refresh": str(refresh),
     })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def set_initial_password(request):
+    serializer = InitialPasswordSetSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response({"detail": "Password set successfully. You can now sign in."})
 
 
 @api_view(["GET"])
@@ -159,17 +209,25 @@ class UserListCreateView(generics.ListCreateAPIView):
         new_role = serializer.validated_data.get("role", "")
 
         if actor.is_superuser or _is_hqs_admin(actor):
-            serializer.save()
+            user = serializer.save()
         elif _is_battalion_admin(actor):
             if new_role not in BATTALION_ADMIN_ROLES:
                 raise PermissionDenied(f"Battalion admin cannot create users with role '{new_role}'.")
-            serializer.save(battalion=actor.battalion)
+            user = serializer.save(battalion=actor.battalion)
         elif _is_det_ic(actor):
             if new_role not in DET_IC_ROLES:
                 raise PermissionDenied(f"IC Det can only create personnel or investigator users.")
-            serializer.save(battalion=actor.battalion, detachment=actor.detachment)
+            user = serializer.save(battalion=actor.battalion, detachment=actor.detachment)
         else:
             raise PermissionDenied("You do not have permission to create users.")
+
+        try:
+            _send_password_setup_email(user, actor, request=self.request)
+        except Exception:
+            user.delete()
+            raise ValidationError({
+                "email": "Account was not created because the password setup email could not be sent."
+            })
 
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):

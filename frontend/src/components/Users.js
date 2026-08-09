@@ -34,6 +34,7 @@ const ROLE_LABELS = {
   "2ic":        "2nd in Command",
   so1_legal:    "SO 1 Legal",
   so1_ops:      "SO 1 OPs",
+  so2_legal:    "SO 2 Legal",
   so2_ops:      "SO 2 OPs",
 };
 
@@ -55,10 +56,11 @@ const ROLE_BADGE = {
   "2ic":        "bg-sky-500/20 text-sky-400",
   so1_legal:    "bg-fuchsia-500/20 text-fuchsia-400",
   so1_ops:      "bg-lime-500/20 text-lime-400",
+  so2_legal:    "bg-pink-500/20 text-pink-400",
   so2_ops:      "bg-emerald-500/20 text-emerald-400",
 };
 
-const GLOBAL_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"];
+const GLOBAL_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_legal", "so2_ops"];
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -79,7 +81,7 @@ export default function Users({ user }) {
 
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","so1_legal","so1_ops","so2_ops"]
+    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","so1_legal","so1_ops","so2_legal","so2_ops"]
     : isBattalionAdmin
     ? ["co","detachment","personnel","investigator","adj","2ic"]
     : isDetachmentIC
@@ -100,7 +102,7 @@ export default function Users({ user }) {
   // Create user modal state
   const BLANK_FORM = {
     service_number: "", name: "", rank: "", email: "", role: "",
-    password: "", battalion: "", detachment: "",
+    battalion: "", detachment: "",
   };
   const [showCreate, setShowCreate]     = useState(false);
   const [form, setForm]                 = useState(BLANK_FORM);
@@ -130,12 +132,6 @@ export default function Users({ user }) {
   // Delete confirm state
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleting, setDeleting]               = useState(false);
-
-  const ALL_ROLES = [
-    "admin", "co", "corps_cmd", "investigator", "duty_officer",
-    "guardroom_ic", "detachment", "personnel", "legal", "order_nco",
-    "mpc_hqs", "bsm", "cop", "adj", "2ic", "so1_legal", "so1_ops", "so2_ops",
-  ];
 
   const ALL_RANKS = [
     "General",
@@ -243,7 +239,7 @@ export default function Users({ user }) {
       await userService.create(payload);
       setShowCreate(false);
       loadUsers();
-      setSuccessMsg("User created successfully.");
+      setSuccessMsg("User created. A password setup link has been sent to their email.");
     } catch (err) {
       const data = err?.response?.data;
       if (data && typeof data === "object") {
@@ -273,7 +269,7 @@ export default function Users({ user }) {
       .then((res) => setUsers(toArray(res.data)))
       .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [isHqsAdmin, isSuperuser, user?.battalion]);
+  }, [isDetachmentIC, isHqsAdmin, isSuperuser, user?.battalion, user?.detachment]);
 
   useEffect(() => {
     loadUsers();
@@ -499,6 +495,9 @@ export default function Users({ user }) {
             {createError && (
               <p className="text-red-400 text-xs bg-red-900/30 rounded px-3 py-2">{createError}</p>
             )}
+            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
+              MPIMS will email this user a secure link to choose their own password.
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Service Number *</label>
@@ -608,14 +607,6 @@ export default function Users({ user }) {
                   </select>
                 </div>
               )}
-              <div className="col-span-2">
-                <label className="block text-xs text-gray-400 mb-1">Password *</label>
-                <input
-                  required type="password" value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
             </div>
             <div className="flex justify-end gap-3 pt-2">
               <button

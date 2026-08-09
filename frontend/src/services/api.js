@@ -35,6 +35,7 @@ export const authService = {
     }
     return res;
   },
+  setPassword: (data) => api.post("/api/auth/set-password/", data),
   mfaSetup: () => api.get("/api/auth/mfa/setup/"),
   mfaVerify: (data) => api.post("/api/auth/mfa/verify/", data),
 };

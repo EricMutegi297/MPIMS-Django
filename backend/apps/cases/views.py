@@ -41,6 +41,7 @@ GLOBAL_CASE_VIEW_ROLES = {
     User.Role.COP,
     User.Role.SO1_LEGAL,
     User.Role.SO1_OPS,
+    User.Role.SO2_LEGAL,
     User.Role.SO2_OPS,
 }
 

@@ -26,6 +26,7 @@ const ROLE_LABELS = {
   detachment:   "IC Det",
   so1_legal:    "SO 1 Legal",
   so1_ops:      "SO 1 OPs",
+  so2_legal:    "SO 2 Legal",
   so2_ops:      "SO 2 OPs",
 };
 

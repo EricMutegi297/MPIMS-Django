@@ -44,13 +44,14 @@ const ROLE_LABELS = {
   "2ic": "2nd in Command",
   so1_legal: "SO 1 Legal",
   so1_ops: "SO 1 OPs",
+  so2_legal: "SO 2 Legal",
   so2_ops: "SO 2 OPs",
 };
 
-const HQ_DASHBOARD_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_ops"];
+const HQ_DASHBOARD_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_legal", "so2_ops"];
 const CASE_ACCESS_ROLES = [
   "admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop",
-  "so1_legal", "so1_ops", "so2_ops",
+  "so1_legal", "so1_ops", "so2_legal", "so2_ops",
 ];
 const INCIDENT_ACCESS_ROLES = [
   "admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop",
@@ -61,11 +62,11 @@ const MORNING_BRIEF_ACCESS_ROLES = [
 ];
 const STATISTICS_ACCESS_ROLES = [
   "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
-  "duty_officer", "so1_legal", "so1_ops", "so2_ops",
+  "duty_officer", "so1_legal", "so1_ops", "so2_legal", "so2_ops",
 ];
 const ANALYTICS_ACCESS_ROLES = [
   "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
-  "so1_legal", "so1_ops", "so2_ops",
+  "so1_legal", "so1_ops", "so2_legal", "so2_ops",
 ];
 
 // Navigation items in sidebar order
@@ -333,7 +334,7 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [user, refreshUnreadCount]);
 
-  const performLogout = React.useCallback(async () => {
+  const performLogout = React.useCallback(async (reason = "manual") => {
     try {
       await authService.logout();
     } catch {
@@ -343,11 +344,11 @@ export default function Dashboard() {
       sessionStorage.removeItem("refresh_token");
       setUser(null);
       setUnreadCount(0);
-      navigate("/login", { replace: true });
+      navigate(reason === "inactive" ? "/login?timeout=1" : "/login", { replace: true });
     }
   }, [navigate]);
 
-  useInactivityLogout(performLogout, INACTIVITY_LOGOUT_MS, Boolean(user));
+  useInactivityLogout(() => performLogout("inactive"), INACTIVITY_LOGOUT_MS, Boolean(user));
 
   const handleLogout = () => {
     openLogoutConfirm();

@@ -8,6 +8,7 @@ class MfaJWTAuthentication(JWTAuthentication):
         "/api/auth/logout/",
         "/api/auth/me/",
         "/api/auth/change-password/",
+        "/api/auth/set-password/",
         "/api/auth/mfa/",
         "/api/auth/token/refresh/",
     )
