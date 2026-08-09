@@ -30,7 +30,13 @@ const Graphs = lazy(() => import("./Graphs"));
 const DetachmentOverview = lazy(() => import("./DetachmentOverview"));
 
 const USER_CACHE_KEY = "mpims_user_cache";
-const DASHBOARD_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_DASHBOARD_IDLE_TIMEOUT_MINUTES = 15;
+const configuredIdleTimeoutMinutes = Number(process.env.REACT_APP_DASHBOARD_IDLE_TIMEOUT_MINUTES);
+const DASHBOARD_IDLE_TIMEOUT_MS = (
+  Number.isFinite(configuredIdleTimeoutMinutes) && configuredIdleTimeoutMinutes > 0
+    ? configuredIdleTimeoutMinutes
+    : DEFAULT_DASHBOARD_IDLE_TIMEOUT_MINUTES
+) * 60 * 1000;
 const DASHBOARD_ACTIVITY_EVENTS = ["click", "keydown", "mousedown", "mousemove", "scroll", "touchstart", "wheel"];
 
 function readCachedUser() {

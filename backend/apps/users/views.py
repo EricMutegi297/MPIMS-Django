@@ -316,6 +316,211 @@ def reset_login_failures(service_number, ip_address):
         )
 
 
+def current_throttle_lockout(targets):
+    now = timezone.now()
+    locked_until = None
+    for target in targets:
+        try:
+            throttle = LoginThrottle.objects.get(scope=target["scope"], key_hash=target["key_hash"])
+        except LoginThrottle.DoesNotExist:
+            continue
+
+        if throttle.locked_until and throttle.locked_until <= now:
+            throttle.failed_attempts = 0
+            throttle.first_failed_at = None
+            throttle.locked_until = None
+            throttle.save(update_fields=["failed_attempts", "first_failed_at", "locked_until", "updated_at"])
+            continue
+
+        if throttle.locked_until and (locked_until is None or throttle.locked_until > locked_until):
+            locked_until = throttle.locked_until
+    return locked_until
+
+
+def record_throttle_attempt(targets, *, window, lockout_duration, lock_when_exceeded=False):
+    now = timezone.now()
+    window_start = now - window
+    newly_locked_until = None
+
+    with transaction.atomic():
+        for target in targets:
+            try:
+                throttle = LoginThrottle.objects.select_for_update().get(
+                    scope=target["scope"],
+                    key_hash=target["key_hash"],
+                )
+            except LoginThrottle.DoesNotExist:
+                throttle = LoginThrottle(scope=target["scope"], key_hash=target["key_hash"])
+
+            if throttle.locked_until and throttle.locked_until > now:
+                continue
+
+            throttle.label = target["label"]
+            if not throttle.first_failed_at or throttle.first_failed_at < window_start:
+                throttle.failed_attempts = 1
+                throttle.first_failed_at = now
+                throttle.locked_until = None
+            else:
+                throttle.failed_attempts = min(99, int(throttle.failed_attempts or 0) + 1)
+
+            throttle.last_failed_at = now
+            if lock_when_exceeded:
+                over_limit = throttle.failed_attempts > target["limit"]
+            else:
+                over_limit = throttle.failed_attempts >= target["limit"]
+            if over_limit:
+                throttle.locked_until = now + lockout_duration
+                if newly_locked_until is None or throttle.locked_until > newly_locked_until:
+                    newly_locked_until = throttle.locked_until
+            throttle.save()
+
+    return newly_locked_until
+
+
+def reset_throttle_attempts(targets):
+    now = timezone.now()
+    for target in targets:
+        LoginThrottle.objects.filter(
+            scope=target["scope"],
+            key_hash=target["key_hash"],
+        ).update(
+            failed_attempts=0,
+            first_failed_at=None,
+            locked_until=None,
+            last_success_at=now,
+            updated_at=now,
+        )
+
+
+def throttle_lockout_response(message, locked_until):
+    remaining_seconds = max(1, int((locked_until - timezone.now()).total_seconds())) if locked_until else 1
+    remaining_minutes = max(1, (remaining_seconds + 59) // 60)
+    response = Response(
+        {
+            "detail": f"{message} Try again after {remaining_minutes} minutes.",
+            "retry_after_seconds": remaining_seconds,
+        },
+        status=status.HTTP_429_TOO_MANY_REQUESTS,
+    )
+    response["Retry-After"] = str(remaining_seconds)
+    return response
+
+
+def normalize_password_reset_email(value):
+    return str(value or "").strip().lower()
+
+
+def password_reset_request_limit(scope):
+    if scope == LoginThrottle.Scope.PASSWORD_RESET_IP:
+        return positive_int_setting("PASSWORD_RESET_IP_RATE_LIMIT", 10)
+    return positive_int_setting("PASSWORD_RESET_RATE_LIMIT", 3)
+
+
+def password_reset_request_window():
+    return timedelta(minutes=positive_int_setting("PASSWORD_RESET_RATE_WINDOW_MINUTES", 15))
+
+
+def password_reset_request_lockout_duration():
+    return timedelta(minutes=positive_int_setting("PASSWORD_RESET_LOCKOUT_MINUTES", 15))
+
+
+def password_reset_request_targets(email, ip_address):
+    email_key = normalize_password_reset_email(email)
+    email_label = str(email or "").strip()
+    ip_label = str(ip_address or "").strip()
+    targets = []
+
+    if email_key:
+        targets.append({
+            "scope": LoginThrottle.Scope.PASSWORD_RESET_EMAIL,
+            "key": email_key,
+            "label": f"password reset email {email_label}",
+        })
+    if ip_label:
+        targets.append({
+            "scope": LoginThrottle.Scope.PASSWORD_RESET_IP,
+            "key": ip_label,
+            "label": f"password reset IP {ip_label}",
+        })
+
+    for target in targets:
+        target["key_hash"] = login_throttle_hash(target["scope"], target["key"])
+        target["limit"] = password_reset_request_limit(target["scope"])
+    return targets
+
+
+def current_password_reset_request_lockout(email, ip_address):
+    return current_throttle_lockout(password_reset_request_targets(email, ip_address))
+
+
+def record_password_reset_request(email, ip_address):
+    return record_throttle_attempt(
+        password_reset_request_targets(email, ip_address),
+        window=password_reset_request_window(),
+        lockout_duration=password_reset_request_lockout_duration(),
+        lock_when_exceeded=True,
+    )
+
+
+def password_reset_confirm_limit(scope):
+    if scope == LoginThrottle.Scope.PASSWORD_RESET_CONFIRM_IP:
+        return positive_int_setting("PASSWORD_RESET_CONFIRM_IP_FAILURE_LIMIT", 50)
+    return positive_int_setting("PASSWORD_RESET_CONFIRM_FAILURE_LIMIT", 10)
+
+
+def password_reset_confirm_window():
+    return timedelta(minutes=positive_int_setting("PASSWORD_RESET_CONFIRM_WINDOW_MINUTES", 15))
+
+
+def password_reset_confirm_lockout_duration():
+    return timedelta(minutes=positive_int_setting("PASSWORD_RESET_CONFIRM_LOCKOUT_MINUTES", 15))
+
+
+def normalize_password_reset_uid(value):
+    return str(value or "").strip().lower()
+
+
+def password_reset_confirm_targets(uid, ip_address):
+    uid_key = normalize_password_reset_uid(uid)
+    uid_label = str(uid or "").strip()[:120]
+    ip_label = str(ip_address or "").strip()
+    targets = []
+
+    if uid_key:
+        targets.append({
+            "scope": LoginThrottle.Scope.PASSWORD_RESET_CONFIRM_UID,
+            "key": uid_key,
+            "label": f"password reset UID {uid_label}",
+        })
+    if ip_label:
+        targets.append({
+            "scope": LoginThrottle.Scope.PASSWORD_RESET_CONFIRM_IP,
+            "key": ip_label,
+            "label": f"password reset confirm IP {ip_label}",
+        })
+
+    for target in targets:
+        target["key_hash"] = login_throttle_hash(target["scope"], target["key"])
+        target["limit"] = password_reset_confirm_limit(target["scope"])
+    return targets
+
+
+def current_password_reset_confirm_lockout(uid, ip_address):
+    return current_throttle_lockout(password_reset_confirm_targets(uid, ip_address))
+
+
+def record_password_reset_confirm_failure(uid, ip_address):
+    return record_throttle_attempt(
+        password_reset_confirm_targets(uid, ip_address),
+        window=password_reset_confirm_window(),
+        lockout_duration=password_reset_confirm_lockout_duration(),
+    )
+
+
+def reset_password_reset_confirm_failures(uid, ip_address):
+    reset_throttle_attempts(password_reset_confirm_targets(uid, ip_address))
+
+
 def security_alert_recipients():
     return User.objects.filter(is_active=True).filter(
         Q(is_superuser=True)
@@ -563,6 +768,15 @@ def password_reset_request(request):
     serializer.is_valid(raise_exception=True)
 
     email = serializer.validated_data["email"].strip()
+    ip_address = client_ip(request)
+    locked_until = current_password_reset_request_lockout(email, ip_address)
+    if locked_until:
+        return throttle_lockout_response("Too many password reset requests.", locked_until)
+
+    newly_locked_until = record_password_reset_request(email, ip_address)
+    if newly_locked_until:
+        return throttle_lockout_response("Too many password reset requests.", newly_locked_until)
+
     users = User.objects.filter(email__iexact=email, is_active=True)
     for user in users:
         send_password_setup_email(
@@ -580,12 +794,25 @@ def password_reset_request(request):
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def password_reset_confirm(request):
+    uid = str(request.data.get("uid") or "").strip()
+    ip_address = client_ip(request)
+    locked_until = current_password_reset_confirm_lockout(uid, ip_address)
+    if locked_until:
+        return throttle_lockout_response("Too many invalid password reset attempts.", locked_until)
+
     serializer = PasswordResetConfirmSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+    if not serializer.is_valid():
+        if "uid" in serializer.errors or "token" in serializer.errors:
+            newly_locked_until = record_password_reset_confirm_failure(uid, ip_address)
+            if newly_locked_until:
+                return throttle_lockout_response("Too many invalid password reset attempts.", newly_locked_until)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
     user = serializer.validated_data["user"]
     user.set_password(serializer.validated_data["new_password"])
     user.must_change_password = False
     user.save(update_fields=["password", "must_change_password"])
+    reset_password_reset_confirm_failures(uid, ip_address)
     return Response({"detail": "Password reset successfully. You can now sign in."})
 
 
