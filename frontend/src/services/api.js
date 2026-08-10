@@ -55,7 +55,7 @@ export const authService = {
     storeAuthPayload(res.data);
     return res;
   },
-  requestPasswordReset: (email) => api.post("/api/auth/password-reset/", { email }),
+  requestPasswordReset: (identifier) => api.post("/api/auth/password-reset/", { identifier }),
   confirmPasswordReset: (data) => api.post("/api/auth/password-reset/confirm/", data),
   totpStatus: () => api.get("/api/auth/totp/status/"),
   setupTotp: (data = {}) => api.post("/api/auth/totp/setup/", data),

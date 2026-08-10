@@ -116,7 +116,15 @@ class PasswordResetTests(APITestCase):
         if hasattr(mail, "outbox"):
             mail.outbox.clear()
 
-    def post_reset(self, email="reset.user@example.test", ip_address="10.20.30.40"):
+    def post_reset(self, identifier="reset.user@example.test", ip_address="10.20.30.40"):
+        return self.client.post(
+            self.reset_url,
+            {"identifier": identifier},
+            format="json",
+            REMOTE_ADDR=ip_address,
+        )
+
+    def post_reset_legacy_email(self, email="reset.user@example.test", ip_address="10.20.30.41"):
         return self.client.post(
             self.reset_url,
             {"email": email},
@@ -137,6 +145,20 @@ class PasswordResetTests(APITestCase):
         self.assertIn("password reset instructions", response.data["detail"])
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("http://frontend.test/reset-password/", mail.outbox[0].body)
+
+    def test_forgot_password_accepts_service_number(self):
+        response = self.post_reset(self.user.service_number)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("password reset instructions", response.data["detail"])
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Service number: 000010", mail.outbox[0].body)
+
+    def test_forgot_password_accepts_legacy_email_payload(self):
+        response = self.post_reset_legacy_email()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
 
     def test_password_reset_link_sets_new_password(self):
         uid, token = self.reset_uid_and_token()

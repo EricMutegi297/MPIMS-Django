@@ -121,7 +121,15 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    identifier = serializers.CharField(required=False, allow_blank=False, max_length=254)
+    email = serializers.EmailField(required=False, allow_blank=False, write_only=True)
+
+    def validate(self, data):
+        identifier = str(data.get("identifier") or data.get("email") or "").strip()
+        if not identifier:
+            raise serializers.ValidationError({"identifier": "Enter your email or service number."})
+        data["identifier"] = identifier
+        return data
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):

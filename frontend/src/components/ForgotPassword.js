@@ -4,7 +4,7 @@ import { authService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 
 export default function ForgotPassword() {
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -17,11 +17,11 @@ export default function ForgotPassword() {
     setMessage("");
     setError("");
     try {
-      const res = await authService.requestPasswordReset(email);
-      setMessage(res.data?.detail || "If the email exists, reset instructions have been sent.");
+      const res = await authService.requestPasswordReset(identifier);
+      setMessage(res.data?.detail || "If the account exists, reset instructions have been sent.");
     } catch (err) {
       const data = err.response?.data;
-      setError(data?.detail || data?.email?.[0] || "Unable to submit password reset request.");
+      setError(data?.detail || data?.identifier?.[0] || data?.email?.[0] || "Unable to submit password reset request.");
     } finally {
       setLoading(false);
     }
@@ -51,15 +51,15 @@ export default function ForgotPassword() {
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="block text-gray-300 text-sm font-medium mb-1">
-              Account Email
+              Email or Service Number
             </label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
               required
               className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="name@example.com"
+              placeholder="name@example.com or 151297"
             />
           </div>
 

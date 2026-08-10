@@ -410,7 +410,7 @@ def throttle_lockout_response(message, locked_until):
     return response
 
 
-def normalize_password_reset_email(value):
+def normalize_password_reset_identifier(value):
     return str(value or "").strip().lower()
 
 
@@ -428,17 +428,17 @@ def password_reset_request_lockout_duration():
     return timedelta(minutes=positive_int_setting("PASSWORD_RESET_LOCKOUT_MINUTES", 15))
 
 
-def password_reset_request_targets(email, ip_address):
-    email_key = normalize_password_reset_email(email)
-    email_label = str(email or "").strip()
+def password_reset_request_targets(identifier, ip_address):
+    identifier_key = normalize_password_reset_identifier(identifier)
+    identifier_label = str(identifier or "").strip()
     ip_label = str(ip_address or "").strip()
     targets = []
 
-    if email_key:
+    if identifier_key:
         targets.append({
             "scope": LoginThrottle.Scope.PASSWORD_RESET_EMAIL,
-            "key": email_key,
-            "label": f"password reset email {email_label}",
+            "key": identifier_key,
+            "label": f"password reset identifier {identifier_label}",
         })
     if ip_label:
         targets.append({
@@ -453,13 +453,13 @@ def password_reset_request_targets(email, ip_address):
     return targets
 
 
-def current_password_reset_request_lockout(email, ip_address):
-    return current_throttle_lockout(password_reset_request_targets(email, ip_address))
+def current_password_reset_request_lockout(identifier, ip_address):
+    return current_throttle_lockout(password_reset_request_targets(identifier, ip_address))
 
 
-def record_password_reset_request(email, ip_address):
+def record_password_reset_request(identifier, ip_address):
     return record_throttle_attempt(
-        password_reset_request_targets(email, ip_address),
+        password_reset_request_targets(identifier, ip_address),
         window=password_reset_request_window(),
         lockout_duration=password_reset_request_lockout_duration(),
         lock_when_exceeded=True,
@@ -771,17 +771,19 @@ def password_reset_request(request):
     serializer = PasswordResetRequestSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    email = serializer.validated_data["email"].strip()
+    identifier = serializer.validated_data["identifier"].strip()
     ip_address = client_ip(request)
-    locked_until = current_password_reset_request_lockout(email, ip_address)
+    locked_until = current_password_reset_request_lockout(identifier, ip_address)
     if locked_until:
         return throttle_lockout_response("Too many password reset requests.", locked_until)
 
-    newly_locked_until = record_password_reset_request(email, ip_address)
+    newly_locked_until = record_password_reset_request(identifier, ip_address)
     if newly_locked_until:
         return throttle_lockout_response("Too many password reset requests.", newly_locked_until)
 
-    users = User.objects.filter(email__iexact=email, is_active=True)
+    users = User.objects.filter(is_active=True).filter(
+        Q(email__iexact=identifier) | Q(service_number__iexact=identifier)
+    ).exclude(email="").distinct()
     for user in users:
         send_password_setup_email(
             user,
@@ -790,7 +792,7 @@ def password_reset_request(request):
         )
 
     return Response({
-        "detail": "If that email belongs to an active MPIMS account, password reset instructions have been sent."
+        "detail": "If that email or service number belongs to an active MPIMS account, password reset instructions have been sent."
     })
 
 
