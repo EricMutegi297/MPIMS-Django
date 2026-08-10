@@ -20,7 +20,8 @@ export default function ForgotPassword() {
       const res = await authService.requestPasswordReset(email);
       setMessage(res.data?.detail || "If the email exists, reset instructions have been sent.");
     } catch (err) {
-      setError(err.response?.data?.email?.[0] || "Unable to submit password reset request.");
+      const data = err.response?.data;
+      setError(data?.detail || data?.email?.[0] || "Unable to submit password reset request.");
     } finally {
       setLoading(false);
     }

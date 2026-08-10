@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import io
+import logging
 import secrets
 from datetime import timedelta
 
@@ -33,6 +34,8 @@ from .serializers import (
     UserCreateSerializer,
     UserSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 # Roles a battalion admin can assign
 BATTALION_ADMIN_ROLES = {"co", "oc", "detachment", "personnel", "investigator", "hod", "adj", "2ic", "order_nco"}
@@ -72,6 +75,7 @@ def send_password_setup_email(user, subject, intro):
             fail_silently=False,
         ))
     except Exception:
+        logger.exception("Failed to send password setup email for user id %s.", user.pk)
         return False
 
 

@@ -48,6 +48,7 @@ export default function Formations({ user, mode = "formations" }) {
   const [fmDeleteId,   setFmDeleteId]   = useState(null);
   const [bnModal,      setBnModal]      = useState(null);
   const [bnSaving,     setBnSaving]     = useState(false);
+  const [bnDeleteId,   setBnDeleteId]   = useState(null);
 
   const [unitModal,    setUnitModal]    = useState(null);
   const [unitSaving,   setUnitSaving]   = useState(false);
@@ -121,9 +122,14 @@ export default function Formations({ user, mode = "formations" }) {
   const saveBattalion = async (form) => {
     setBnSaving(true); setError(""); setMessage("");
     try {
-      await formationService.createBattalion(form);
+      if (bnModal.mode === "add") {
+        await formationService.createBattalion(form);
+        setMessage("Battalion created.");
+      } else {
+        await formationService.updateBattalion(bnModal.data.id, form);
+        setMessage("Battalion updated.");
+      }
       setBnModal(null);
-      setMessage("Battalion created.");
       await loadAll();
     } catch (err) {
       const d = err.response?.data;
@@ -136,6 +142,18 @@ export default function Formations({ user, mode = "formations" }) {
       );
     } finally {
       setBnSaving(false);
+    }
+  };
+
+  const deleteBattalion = async () => {
+    setError(""); setMessage("");
+    try {
+      await formationService.deleteBattalion(bnDeleteId);
+      setBnDeleteId(null);
+      setMessage("Battalion deleted.");
+      await loadAll();
+    } catch {
+      setError("Failed to delete battalion.");
     }
   };
 
@@ -251,13 +269,14 @@ export default function Formations({ user, mode = "formations" }) {
                   <th className="text-left px-4 py-2">Type</th>
                   <th className="text-left px-4 py-2">Companies</th>
                   <th className="text-left px-4 py-2">Case Count</th>
+                  {isSuperAdmin && <th className="text-left px-4 py-2">Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+                  <tr><td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
                 ) : visibleBattalions.length === 0 ? (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
+                  <tr><td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
                 ) : visibleBattalions.map((b) => (
                   <tr key={b.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                     <td className="px-4 py-2 text-white font-medium">
@@ -289,6 +308,26 @@ export default function Formations({ user, mode = "formations" }) {
                         {b.case_count ?? 0}
                       </button>
                     </td>
+                    {isSuperAdmin && (
+                      <td className="px-4 py-2">
+                        <div className="flex gap-3">
+                          <ABtn
+                            label="Edit"
+                            color="blue"
+                            onClick={() => setBnModal({ mode: "edit", data: {
+                              id: b.id,
+                              name: b.name || "",
+                              code: b.code || "",
+                              battalion_type: b.battalion_type || "normal",
+                              email: b.email || "",
+                              phone: b.phone || "",
+                              aor: b.aor || "",
+                            }})}
+                          />
+                          <ABtn label="Delete" color="red" onClick={() => setBnDeleteId(b.id)} />
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -344,10 +383,18 @@ export default function Formations({ user, mode = "formations" }) {
 
         {bnModal && (
           <BattalionModal
+            mode={bnModal.mode}
             initial={bnModal.data}
             saving={bnSaving}
             onSave={saveBattalion}
             onClose={() => setBnModal(null)}
+          />
+        )}
+        {bnDeleteId && (
+          <ConfirmDelete
+            label="battalion"
+            onConfirm={deleteBattalion}
+            onCancel={() => setBnDeleteId(null)}
           />
         )}
       </div>
@@ -543,11 +590,11 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
   );
 }
 
-function BattalionModal({ initial, saving, onSave, onClose }) {
+function BattalionModal({ mode = "add", initial, saving, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
-    <ModalWrap title="Add Battalion" onClose={onClose}>
+    <ModalWrap title={mode === "add" ? "Add Battalion" : "Edit Battalion"} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
         <FInput label="Battalion Name *" value={form.name || ""} onChange={s("name")} required />
         <FInput label="Code" value={form.code || ""} onChange={s("code")} />
@@ -563,7 +610,7 @@ function BattalionModal({ initial, saving, onSave, onClose }) {
         <FInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
         <FInput label="Phone" value={form.phone || ""} onChange={s("phone")} />
         <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
-        <SaveCancel saving={saving} canSave={!!form.name?.trim()} mode="add" onClose={onClose} />
+        <SaveCancel saving={saving} canSave={!!form.name?.trim()} mode={mode} onClose={onClose} />
       </form>
     </ModalWrap>
   );
