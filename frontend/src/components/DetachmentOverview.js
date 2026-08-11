@@ -34,6 +34,8 @@ const DRILLDOWN_STATUSES = [
   { value: "closed",              label: "Closed" },
   { value: "referred",            label: "Referred" },
 ];
+const COMPANY_OPTIONS = ["A", "B", "C", "D"];
+const EMPTY_COMPANY = { company: "A", name: "", aor: "", mobile_no: "", email: "" };
 
 /* ─────────────────────── small helpers ────────────────────────── */
 
@@ -44,6 +46,10 @@ function toArray(data) {
 function companyLabel(det) {
   const company = det?.company ? `${det.company} Company` : "Company";
   return det?.name ? `${company} - ${det.name}` : company;
+}
+
+function battalionAllowsCompanies(battalion) {
+  return String(battalion?.battalion_type || "normal").toLowerCase() === "normal";
 }
 
 function ClickPill({ value, style, onClick, title }) {
@@ -356,13 +362,19 @@ export default function DetachmentOverview({ user }) {
   const [data, setData]                         = useState(null);
   const [loading, setLoading]                   = useState(true);
   const [error, setError]                       = useState("");
+  const [message, setMessage]                   = useState("");
   const [battalions, setBattalions]             = useState([]);
   const [selectedBattalion, setSelectedBattalion] = useState(initialBattalion);
   const [battalionLoading, setBattalionLoading] = useState(false);
   const [drill, setDrill]                       = useState(null); // { detId, detName, company, status }
+  const [companyModal, setCompanyModal]         = useState(null);
+  const [companySaving, setCompanySaving]       = useState(false);
+  useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
 
   const selectedBattalionId = String(selectedBattalion || "");
+  const selectedBattalionRecord = battalions.find((b) => String(b.id) === selectedBattalionId);
+  const canAddCompany = isSuperuser && selectedBattalionId && battalionAllowsCompanies(selectedBattalionRecord);
 
   useEffect(() => {
     if (!isSuperuser) return;
@@ -422,6 +434,34 @@ export default function DetachmentOverview({ user }) {
   const openDrill = (det, status) =>
     setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
 
+  const saveCompany = async (form) => {
+    if (!selectedBattalionId) return;
+    setCompanySaving(true);
+    setError("");
+    setMessage("");
+    try {
+      await formationService.createDetachment({
+        ...form,
+        battalion: Number(selectedBattalionId),
+      });
+      setCompanyModal(null);
+      setMessage("Company created.");
+      await load();
+    } catch (err) {
+      const d = err.response?.data;
+      setError(
+        d?.battalion?.[0] ||
+        d?.company?.[0] ||
+        d?.name?.[0] ||
+        d?.aor?.[0] ||
+        d?.detail ||
+        "Failed to create company."
+      );
+    } finally {
+      setCompanySaving(false);
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
 
@@ -451,6 +491,17 @@ export default function DetachmentOverview({ user }) {
                 </option>
               ))}
             </select>
+          )}
+          {isSuperuser && (
+            <button
+              type="button"
+              onClick={() => setCompanyModal({ ...EMPTY_COMPANY })}
+              disabled={!canAddCompany}
+              title={canAddCompany ? "Add company to selected battalion" : "Select a normal battalion"}
+              className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
+            >
+              + Add Coy
+            </button>
           )}
           <button
             onClick={load}
@@ -508,6 +559,11 @@ export default function DetachmentOverview({ user }) {
       {error && (
         <div className="bg-red-900/30 border border-red-700/50 rounded-xl p-5 text-red-300 text-sm">
           {error}
+        </div>
+      )}
+      {message && (
+        <div className="bg-green-900/30 border border-green-700/50 rounded-xl p-5 text-green-300 text-sm">
+          {message}
         </div>
       )}
 
@@ -663,11 +719,88 @@ export default function DetachmentOverview({ user }) {
       {drill && (
         <DrilldownPanel drill={drill} onClose={() => setDrill(null)} />
       )}
+      {companyModal && (
+        <CompanyCreateModal
+          battalionName={selectedBattalionRecord?.name || "Selected Battalion"}
+          initial={companyModal}
+          saving={companySaving}
+          onSave={saveCompany}
+          onClose={() => setCompanyModal(null)}
+        />
+      )}
     </div>
   );
 }
 
 /* ─────────────────────── sub-components ───────────────────────── */
+
+function CompanyCreateModal({ battalionName, initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-xl bg-gray-800 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-700 px-6 py-4">
+          <h3 className="text-base font-semibold text-white">Add Coy</h3>
+          <button type="button" onClick={onClose} className="text-lg text-gray-400 hover:text-white">
+            x
+          </button>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3 px-6 py-4">
+          <div>
+            <label className="text-xs text-gray-400">Battalion</label>
+            <div className="mt-1 rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
+              {battalionName}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400">Coy *</label>
+            <select
+              value={form.company || "A"}
+              onChange={s("company")}
+              required
+              className="mt-1 w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            >
+              {COMPANY_OPTIONS.map((company) => (
+                <option key={company} value={company}>{company} Company</option>
+              ))}
+            </select>
+          </div>
+          <CompanyInput label="Company Name *" value={form.name || ""} onChange={s("name")} required />
+          <CompanyInput label="AOR *" value={form.aor || ""} onChange={s("aor")} required />
+          <CompanyInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+          <CompanyInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+            <button
+              type="submit"
+              disabled={saving || !form.company || !form.name?.trim() || !form.aor?.trim()}
+              className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? "Saving..." : "Create"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CompanyInput({ label, type = "text", value, onChange, required }) {
+  return (
+    <div>
+      <label className="text-xs text-gray-400">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        required={required}
+        className="mt-1 w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+      />
+    </div>
+  );
+}
 
 function SummaryTableHead() {
   return (
