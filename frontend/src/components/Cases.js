@@ -327,6 +327,39 @@ const INIT_CREATE = {
   accused_service: "", submitting_unit: "", date_of_offence: "", place_of_offence: "",
 };
 
+function caseToForm(caseObj) {
+  const accusedEntries = toArray(caseObj?.accused_entries).length
+    ? toArray(caseObj.accused_entries).map((entry) => ({
+        name: entry?.name || "",
+        rank: entry?.rank || "",
+        service_number: entry?.service_number || "",
+        service: entry?.service || "",
+        unit: entry?.unit ? String(entry.unit) : "",
+      }))
+    : [{
+        name: caseObj?.accused_name || "",
+        rank: caseObj?.accused_rank || "",
+        service_number: caseObj?.accused_service_number || "",
+        service: caseObj?.accused_service || "",
+        unit: caseObj?.accused_unit ? String(caseObj.accused_unit) : "",
+      }];
+
+  return {
+    title: caseObj?.title || "",
+    description: caseObj?.description || "",
+    offence: caseObj?.offence || "",
+    offence_ref: caseObj?.offence_ref ? String(caseObj.offence_ref) : "",
+    offence_type: caseObj?.offence_type || "",
+    service_offence_severity: caseObj?.service_offence_severity || "",
+    criminal_offence_type: caseObj?.criminal_offence_type || "",
+    accused_entries: accusedEntries.length ? accusedEntries : [INIT_ACCUSED_ENTRY],
+    accused_service: caseObj?.accused_service || "",
+    submitting_unit: caseObj?.submitting_unit ? String(caseObj.submitting_unit) : "",
+    date_of_offence: normalizeDateForApi(caseObj?.date_of_offence),
+    place_of_offence: caseObj?.place_of_offence || "",
+  };
+}
+
 function Badge({ label, style }) {
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${style}`}>
@@ -354,6 +387,43 @@ function SectionLabel({ children }) {
 function ErrMsg({ msg }) {
   if (!msg) return null;
   return <p className="text-red-400 text-xs mt-1">{msg}</p>;
+}
+
+function ConfirmCaseDelete({ caseObj, saving, onConfirm, onCancel }) {
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-sm rounded-xl bg-gray-800 p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-2 font-semibold text-white">Delete case?</h3>
+        <p className="mb-5 text-sm text-gray-400">
+          This will permanently delete {caseObj?.case_number || "this case"}. This action cannot be undone.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="px-4 py-2 text-sm text-gray-400 hover:text-white disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={saving}
+            className="rounded bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {saving ? "Deleting..." : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ActionLabel({ action }) {
@@ -635,6 +705,8 @@ export default function Cases({ user, criminalTypeFilter }) {
   // Create form
   const [showCreate, setShowCreate]   = useState(false);
   const [createForm, setCreateForm]   = useState(INIT_CREATE);
+  const [caseFormMode, setCaseFormMode] = useState("create");
+  const [caseDeleteTarget, setCaseDeleteTarget] = useState(null);
   const [createSaving, setCreateSaving] = useState(false);
   const [createErr, setCreateErr]     = useState("");
 
@@ -731,6 +803,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isSuperuser = Boolean(user?.is_superuser);
   const canCreate   = isHqsAdmin || isSuperuser;
   const canTask     = isHqsAdmin || isSuperuser;
+  const canManageCases = isHqsAdmin || isSuperuser;
   // Battalion admin/CO who is NOT HQS can assign teams
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
     (user?.role === "admin" || user?.role === "co");
@@ -849,6 +922,13 @@ export default function Cases({ user, criminalTypeFilter }) {
   function refreshSelected(updated) {
     setSelected(updated);
     setCases((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+  }
+
+  function closeCaseForm() {
+    setShowCreate(false);
+    setCreateErr("");
+    setCreateForm(INIT_CREATE);
+    setCaseFormMode("create");
   }
 
   function selectCase(c) {
@@ -1234,6 +1314,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   // ── Create case ───────────────────────────────────────────────────
   async function handleCreate(e) {
     e.preventDefault();
+    const editing = caseFormMode === "edit" && selected?.id;
     setCreateSaving(true);
     setCreateErr("");
     const fd = new FormData();
@@ -1241,20 +1322,28 @@ export default function Cases({ user, criminalTypeFilter }) {
       if (k === "offence_ref") return; // handled separately below
       if (k === "accused_entries") return; // handled separately below
       if (k === "submitting_unit") return; // handled separately
-      if (v) fd.append(k, v);
+      if (editing || v) fd.append(k, v || "");
     });
-    if (createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref);
-    if (createForm.submitting_unit) fd.append("submitting_unit", createForm.submitting_unit);
+    if (editing || createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref || "");
+    if (editing || createForm.submitting_unit) fd.append("submitting_unit", createForm.submitting_unit || "");
     const validAccusedEntries = (createForm.accused_entries || []).filter((entry) =>
       Object.values(entry).some((value) => String(value || "").trim())
     );
-    if (validAccusedEntries.length) {
+    if (editing || validAccusedEntries.length) {
       fd.append("accused_entries", JSON.stringify(validAccusedEntries));
     }
     try {
-      await caseService.create(fd);
+      if (editing) {
+        const res = await caseService.update(selected.id, fd);
+        refreshSelected(res.data);
+        showToast("Case updated successfully.", "success");
+      } else {
+        await caseService.create(fd);
+        showToast("Case created successfully.", "success");
+      }
       setShowCreate(false);
       setCreateForm(INIT_CREATE);
+      setCaseFormMode("create");
       loadCases();
     } catch (err) {
       const d = err.response?.data;
@@ -1268,10 +1357,32 @@ export default function Cases({ user, criminalTypeFilter }) {
           .join(" | ");
         setCreateErr(msgs);
       } else {
-        setCreateErr(err?.message || "Failed to create case.");
+        setCreateErr(err?.message || `Failed to ${editing ? "update" : "create"} case.`);
       }
     } finally {
       setCreateSaving(false);
+    }
+  }
+
+  async function handleDeleteCase() {
+    if (!caseDeleteTarget?.id) return;
+    setRowActionSavingId(caseDeleteTarget.id);
+    setRowActionErr("");
+    try {
+      await caseService.delete(caseDeleteTarget.id);
+      setCases((prev) => prev.filter((c) => c.id !== caseDeleteTarget.id));
+      if (selected?.id === caseDeleteTarget.id) {
+        setSelected(null);
+      }
+      setCaseDeleteTarget(null);
+      showToast("Case deleted successfully.", "success");
+    } catch (err) {
+      const d = err?.response?.data;
+      const message = d?.detail || "Failed to delete case.";
+      setRowActionErr(message);
+      showToast(message, "error");
+    } finally {
+      setRowActionSavingId(null);
     }
   }
 
@@ -1818,6 +1929,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setShowTeam(false);
     setCreateErr("");
     setShowCreate(false);
+    setCaseFormMode("create");
     setTaskModalMode(false);
     const willShow = !showTask;
     if (willShow) {
@@ -1835,6 +1947,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskErr("");
     setCreateErr("");
     setShowCreate(false);
+    setCaseFormMode("create");
     const willShow = !showTeam;
     if (willShow) {
       setAssignmentMode(selected?.assigned_team ? "team" : "io");
@@ -1852,6 +1965,20 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskErr("");
     setShowTeam(false);
     setTeamErr("");
+    setCreateForm(INIT_CREATE);
+    setCaseFormMode("create");
+    setShowCreate(true);
+  }
+
+  function openEditCaseModal(caseObj) {
+    setTaskModalMode(false);
+    setShowTask(false);
+    setTaskErr("");
+    setShowTeam(false);
+    setTeamErr("");
+    setCreateErr("");
+    setCreateForm(caseToForm(caseObj));
+    setCaseFormMode("edit");
     setShowCreate(true);
   }
 
@@ -2473,6 +2600,26 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <p className="text-sm text-gray-400 mt-1">{selected.description}</p>
               )}
             </div>
+
+            {canManageCases && (
+              <div className="flex flex-wrap gap-2 border-y border-gray-700 py-3">
+                <button
+                  type="button"
+                  onClick={() => openEditCaseModal(selected)}
+                  className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-xs font-medium text-white"
+                >
+                  Edit Case
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaseDeleteTarget(selected)}
+                  disabled={rowActionSavingId === selected.id}
+                  className="px-3 py-1.5 rounded bg-red-600 hover:bg-red-700 disabled:opacity-50 text-xs font-medium text-white"
+                >
+                  Delete Case
+                </button>
+              </div>
+            )}
 
             {/* Basic info */}
             <div className="grid grid-cols-2 gap-3">
@@ -3432,24 +3579,37 @@ export default function Cases({ user, criminalTypeFilter }) {
       {showCreate && (
         <div
           className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4"
-          onClick={() => { setShowCreate(false); setCreateErr(""); setCreateForm(INIT_CREATE); }}
+          onClick={closeCaseForm}
         >
           <div
             className="w-full max-w-xl bg-gray-800 rounded-2xl p-6 space-y-4 relative"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={() => { setShowCreate(false); setCreateErr(""); setCreateForm(INIT_CREATE); }}
+              onClick={closeCaseForm}
               className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <h3 className="text-lg font-semibold text-white">New Case</h3>
+            <h3 className="text-lg font-semibold text-white">
+              {caseFormMode === "edit" ? `Edit ${selected?.case_number || "Case"}` : "New Case"}
+            </h3>
 
             <form onSubmit={handleCreate} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
+
+                <div className="col-span-2">
+                  <label className="text-xs text-gray-400 block mb-1">Case Title</label>
+                  <input
+                    type="text"
+                    value={createForm.title}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
+                    placeholder="Short case title"
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 placeholder-gray-500"
+                  />
+                </div>
 
                 <div className="col-span-2">
                   <label className="text-xs text-gray-400 block mb-1">Offence</label>
@@ -3700,7 +3860,7 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div className="flex gap-3 justify-end pt-1">
                 <button
                   type="button"
-                  onClick={() => { setShowCreate(false); setCreateErr(""); setCreateForm(INIT_CREATE); }}
+                  onClick={closeCaseForm}
                   className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors"
                 >
                   Cancel
@@ -3710,12 +3870,23 @@ export default function Cases({ user, criminalTypeFilter }) {
                   disabled={createSaving}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
                 >
-                  {createSaving ? "Creating…" : "Create Case"}
+                  {createSaving
+                    ? (caseFormMode === "edit" ? "Saving..." : "Creating...")
+                    : (caseFormMode === "edit" ? "Save Changes" : "Create Case")}
                 </button>
               </div>
             </form>
           </div>
         </div>
+      )}
+
+      {caseDeleteTarget && (
+        <ConfirmCaseDelete
+          caseObj={caseDeleteTarget}
+          saving={rowActionSavingId === caseDeleteTarget.id}
+          onCancel={() => setCaseDeleteTarget(null)}
+          onConfirm={handleDeleteCase}
+        />
       )}
 
       {updateFlowCase && (

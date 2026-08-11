@@ -13,7 +13,7 @@ function battalionAllowsCompanies(battalion) {
 }
 
 function companyLabel(detachment) {
-  return detachment?.company ? `${detachment.company} Company` : "Company";
+  return detachment?.company ? `${detachment.company} Coy` : "Coy";
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -785,7 +785,7 @@ function CompanyModal({ mode = "add", initial, saving, onSave, onClose }) {
           <select value={form.company || "A"} onChange={s("company")} required
             className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
             {COMPANY_OPTIONS.map((company) => (
-              <option key={company} value={company}>{company} Company</option>
+              <option key={company} value={company}>{company} Coy</option>
             ))}
           </select>
         </div>

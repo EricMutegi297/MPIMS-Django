@@ -1350,6 +1350,14 @@ class CaseViewSet(viewsets.ModelViewSet):
                     f"Case {case.case_number} closed",
                 )
 
+    def destroy(self, request, *args, **kwargs):
+        can_delete = request.user.is_superuser or (
+            request.user.role == User.Role.ADMIN and is_hqs_admin(request.user)
+        )
+        if not can_delete:
+            raise PermissionDenied("Only HQ admin users can delete cases.")
+        return super().destroy(request, *args, **kwargs)
+
     def _send_assignment_notification(self, case, actor):
         if case.assigned_to_id:
             assignee_label = self._actor_label(case.assigned_to)

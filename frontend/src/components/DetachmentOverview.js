@@ -44,7 +44,7 @@ function toArray(data) {
 }
 
 function companyLabel(det) {
-  const company = det?.company ? `${det.company} Company` : "Company";
+  const company = det?.company ? `${det.company} Coy` : "Coy";
   return det?.name ? `${company} - ${det.name}` : company;
 }
 
@@ -369,36 +369,38 @@ export default function DetachmentOverview({ user }) {
   const [drill, setDrill]                       = useState(null); // { detId, detName, company, status }
   const [companyModal, setCompanyModal]         = useState(null);
   const [companySaving, setCompanySaving]       = useState(false);
+  const [companyDeleteId, setCompanyDeleteId]   = useState(null);
   useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
 
   const selectedBattalionId = String(selectedBattalion || "");
   const selectedBattalionRecord = battalions.find((b) => String(b.id) === selectedBattalionId);
-  const canAddCompany = isSuperuser && selectedBattalionId && battalionAllowsCompanies(selectedBattalionRecord);
+  const canManageCompanies = isSuperuser && selectedBattalionId && battalionAllowsCompanies(selectedBattalionRecord);
+
+  const loadBattalionOptions = useCallback(async () => {
+    setBattalionLoading(true);
+    try {
+      const res = await formationService.battalions({ page_size: 200 });
+      const items = toArray(res.data);
+      setBattalions(items);
+      setSelectedBattalion((current) => {
+        if (current) return current;
+        const firstWithCompanies = items.find((b) => (b.detachments || []).length > 0);
+        return String((firstWithCompanies || items[0])?.id ?? "");
+      });
+      return items;
+    } catch {
+      setError("Failed to load battalions.");
+      return [];
+    } finally {
+      setBattalionLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isSuperuser) return;
-    let alive = true;
-    setBattalionLoading(true);
-    formationService.battalions({ page_size: 200 })
-      .then((res) => {
-        if (!alive) return;
-        const items = toArray(res.data);
-        setBattalions(items);
-        setSelectedBattalion((current) => {
-          if (current) return current;
-          const firstWithCompanies = items.find((b) => (b.detachments || []).length > 0);
-          return String((firstWithCompanies || items[0])?.id ?? "");
-        });
-      })
-      .catch(() => {
-        if (alive) setError("Failed to load battalions.");
-      })
-      .finally(() => {
-        if (alive) setBattalionLoading(false);
-      });
-    return () => { alive = false; };
-  }, [isSuperuser]);
+    loadBattalionOptions();
+  }, [isSuperuser, loadBattalionOptions]);
 
   const load = useCallback(async () => {
     if (isSuperuser && !selectedBattalionId) {
@@ -434,19 +436,46 @@ export default function DetachmentOverview({ user }) {
   const openDrill = (det, status) =>
     setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
 
+  const openCompanyModal = (detachment = null) => {
+    if (!selectedBattalionId) return;
+    const fullDetachment = detachment
+      ? (selectedBattalionRecord?.detachments || []).find((d) => String(d.id) === String(detachment.id)) || detachment
+      : null;
+    setCompanyModal(fullDetachment ? {
+      mode: "edit",
+      id: fullDetachment.id,
+      company: fullDetachment.company || "A",
+      name: fullDetachment.name || "",
+      aor: fullDetachment.aor || "",
+      mobile_no: fullDetachment.mobile_no || "",
+      email: fullDetachment.email || "",
+    } : {
+      mode: "add",
+      ...EMPTY_COMPANY,
+    });
+  };
+
   const saveCompany = async (form) => {
     if (!selectedBattalionId) return;
     setCompanySaving(true);
     setError("");
     setMessage("");
     try {
-      await formationService.createDetachment({
-        ...form,
+      const { id, mode: formMode, ...values } = form;
+      const payload = {
+        ...values,
         battalion: Number(selectedBattalionId),
-      });
+      };
+      if (formMode === "edit" && id) {
+        await formationService.updateDetachment(id, payload);
+        setMessage("Company updated.");
+      } else {
+        await formationService.createDetachment(payload);
+        setMessage("Company created.");
+      }
       setCompanyModal(null);
-      setMessage("Company created.");
       await load();
+      await loadBattalionOptions();
     } catch (err) {
       const d = err.response?.data;
       setError(
@@ -459,6 +488,20 @@ export default function DetachmentOverview({ user }) {
       );
     } finally {
       setCompanySaving(false);
+    }
+  };
+
+  const deleteCompany = async () => {
+    setError("");
+    setMessage("");
+    try {
+      await formationService.deleteDetachment(companyDeleteId);
+      setCompanyDeleteId(null);
+      setMessage("Company deleted.");
+      await load();
+      await loadBattalionOptions();
+    } catch {
+      setError("Failed to delete company.");
     }
   };
 
@@ -495,9 +538,9 @@ export default function DetachmentOverview({ user }) {
           {isSuperuser && (
             <button
               type="button"
-              onClick={() => setCompanyModal({ ...EMPTY_COMPANY })}
-              disabled={!canAddCompany}
-              title={canAddCompany ? "Add company to selected battalion" : "Select a normal battalion"}
+              onClick={() => openCompanyModal()}
+              disabled={!canManageCompanies}
+              title={canManageCompanies ? "Add company to selected battalion" : "Select a normal battalion"}
               className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
             >
               + Add Coy
@@ -582,10 +625,10 @@ export default function DetachmentOverview({ user }) {
 
         {loading ? (
           <table className="w-full text-sm">
-            <SummaryTableHead />
+            <SummaryTableHead showActions={canManageCompanies} />
             <tbody>
               {[1, 2, 3, 4].map((i) => (
-                <SkeletonRow key={i} />
+                <SkeletonRow key={i} cols={canManageCompanies ? 8 : 7} />
               ))}
             </tbody>
           </table>
@@ -595,7 +638,7 @@ export default function DetachmentOverview({ user }) {
           </p>
         ) : !error ? (
           <table className="w-full text-sm">
-            <SummaryTableHead />
+            <SummaryTableHead showActions={canManageCompanies} />
             <tbody>
               {detachments.map((det) => (
                 <tr
@@ -608,7 +651,7 @@ export default function DetachmentOverview({ user }) {
                       onClick={() => openDrill(det, "all")}
                       className="text-gray-200 font-medium hover:text-blue-400 transition-colors text-left"
                     >
-                      {det.company ? `${det.company} Company` : "Company"}
+                      {det.company ? `${det.company} Coy` : "Coy"}
                     </button>
                   </td>
 
@@ -669,6 +712,26 @@ export default function DetachmentOverview({ user }) {
                       {det.total ?? 0}
                     </button>
                   </td>
+                  {canManageCompanies && (
+                    <td className="px-5 py-3">
+                      <div className="flex items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => openCompanyModal(det)}
+                          className="text-xs font-medium text-blue-400 transition-colors hover:text-blue-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCompanyDeleteId(det.id)}
+                          className="text-xs font-medium text-red-400 transition-colors hover:text-red-300"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
 
@@ -703,6 +766,7 @@ export default function DetachmentOverview({ user }) {
                 <td className="px-5 py-3 text-center">
                   <span className="text-white font-bold">{grandTotal}</span>
                 </td>
+                {canManageCompanies && <td className="px-5 py-3" />}
               </tr>
             </tbody>
           </table>
@@ -721,11 +785,19 @@ export default function DetachmentOverview({ user }) {
       )}
       {companyModal && (
         <CompanyCreateModal
+          mode={companyModal.mode || "add"}
           battalionName={selectedBattalionRecord?.name || "Selected Battalion"}
           initial={companyModal}
           saving={companySaving}
           onSave={saveCompany}
           onClose={() => setCompanyModal(null)}
+        />
+      )}
+      {companyDeleteId && (
+        <ConfirmDelete
+          label="company"
+          onConfirm={deleteCompany}
+          onCancel={() => setCompanyDeleteId(null)}
         />
       )}
     </div>
@@ -734,7 +806,7 @@ export default function DetachmentOverview({ user }) {
 
 /* ─────────────────────── sub-components ───────────────────────── */
 
-function CompanyCreateModal({ battalionName, initial, saving, onSave, onClose }) {
+function CompanyCreateModal({ mode = "add", battalionName, initial, saving, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
 
@@ -742,7 +814,7 @@ function CompanyCreateModal({ battalionName, initial, saving, onSave, onClose })
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-md rounded-xl bg-gray-800 shadow-2xl">
         <div className="flex items-center justify-between border-b border-gray-700 px-6 py-4">
-          <h3 className="text-base font-semibold text-white">Add Coy</h3>
+          <h3 className="text-base font-semibold text-white">{mode === "add" ? "Add Coy" : "Edit Coy"}</h3>
           <button type="button" onClick={onClose} className="text-lg text-gray-400 hover:text-white">
             x
           </button>
@@ -763,7 +835,7 @@ function CompanyCreateModal({ battalionName, initial, saving, onSave, onClose })
               className="mt-1 w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
             >
               {COMPANY_OPTIONS.map((company) => (
-                <option key={company} value={company}>{company} Company</option>
+                <option key={company} value={company}>{company} Coy</option>
               ))}
             </select>
           </div>
@@ -778,10 +850,25 @@ function CompanyCreateModal({ battalionName, initial, saving, onSave, onClose })
               disabled={saving || !form.company || !form.name?.trim() || !form.aor?.trim()}
               className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {saving ? "Saving..." : "Create"}
+              {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDelete({ label, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm rounded-xl bg-gray-800 p-6 shadow-2xl">
+        <h3 className="mb-2 font-semibold text-white">Delete {label}?</h3>
+        <p className="mb-5 text-sm text-gray-400">This action cannot be undone.</p>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+          <button type="button" onClick={onConfirm} className="rounded bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700">Delete</button>
+        </div>
       </div>
     </div>
   );
@@ -802,7 +889,7 @@ function CompanyInput({ label, type = "text", value, onChange, required }) {
   );
 }
 
-function SummaryTableHead() {
+function SummaryTableHead({ showActions = false }) {
   return (
     <thead>
       <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
@@ -813,6 +900,7 @@ function SummaryTableHead() {
         <th className="text-center px-5 py-3 font-medium">Pending</th>
         <th className="text-center px-5 py-3 font-medium">Closed</th>
         <th className="text-center px-5 py-3 font-medium">Total Cases</th>
+        {showActions && <th className="text-center px-5 py-3 font-medium">Actions</th>}
       </tr>
     </thead>
   );

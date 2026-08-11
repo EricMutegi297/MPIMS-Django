@@ -577,7 +577,19 @@ export default function Dashboard() {
   const handleOffenceSave = (data) => {
     return offenceService.create(data)
       .then(() => { loadOffences(); })
-      .catch(() => {});
+      .catch((err) => { throw err; });
+  };
+
+  const handleOffenceUpdate = (id, data) => {
+    return offenceService.update(id, data)
+      .then(() => { loadOffences(); })
+      .catch((err) => { throw err; });
+  };
+
+  const handleOffenceDelete = (id) => {
+    return offenceService.delete(id)
+      .then(() => { loadOffences(); })
+      .catch((err) => { throw err; });
   };
 
   React.useEffect(() => {
@@ -887,6 +899,8 @@ export default function Dashboard() {
               open={offenceModalOpen}
               onClose={() => setOffenceModalOpen(false)}
               onSave={handleOffenceSave}
+              onUpdate={handleOffenceUpdate}
+              onDelete={handleOffenceDelete}
               user={user}
               offences={offences}
             />

@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions
+from rest_framework.exceptions import PermissionDenied
 from .models import Offence
 from .serializers import OffenceSerializer
 
@@ -7,6 +8,7 @@ class OffenceViewSet(viewsets.ModelViewSet):
     serializer_class = OffenceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
-    def create(self, request, *args, **kwargs):
-        print("[DEBUG] Incoming Offence POST data:", request.data)
-        return super().create(request, *args, **kwargs)
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if request.method not in permissions.SAFE_METHODS and not request.user.is_superuser:
+            raise PermissionDenied("Only superusers can manage offences.")
