@@ -683,12 +683,12 @@ export default function BattalionDashboard({ user }) {
                             onClick={() => openTaskModal(c)}
                             className="px-3 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white transition-colors"
                           >
-                            Task to Company
+                            Task to Coy
                           </button>
                         )}
                         {c.tasked_detachment && (
                           <span className="text-xs text-gray-500 italic">
-                            Company tasked
+                            Coy tasked
                           </span>
                         )}
                       </td>
@@ -735,7 +735,7 @@ export default function BattalionDashboard({ user }) {
 
       <Footer />
 
-      {/* Task to Company Modal */}
+      {/* Task to Coy Modal */}
       {taskModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
@@ -745,24 +745,24 @@ export default function BattalionDashboard({ user }) {
             className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-bold text-white mb-1">Task Case to Company</h2>
+            <h2 className="text-lg font-bold text-white mb-1">Task Case to Coy</h2>
             <p className="text-sm text-gray-400 mb-5">
               Case <span className="font-mono text-gray-300">{taskModal.case_number}</span>:{" "}
               {taskModal.title || taskModal.offence}
             </p>
 
             <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
-              Select Company
+              Select Coy
             </label>
             <select
               value={selDetachment}
               onChange={(e) => setSelDetachment(e.target.value)}
               className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 mb-4"
             >
-              <option value="">-- Choose Company --</option>
+              <option value="">-- Choose Coy --</option>
               {detachments.map((d) => (
                 <option key={d.id} value={d.id}>
-                  {d.company ? `${d.company} Company` : "Company"}{d.name ? ` - ${d.name}` : ""}
+                  {d.company ? `${d.company} Coy` : "Coy"}{d.name ? ` - ${d.name}` : ""}
                 </option>
               ))}
             </select>
@@ -787,7 +787,7 @@ export default function BattalionDashboard({ user }) {
                 disabled={taskingCase || !selDetachment}
                 className="px-4 py-2 text-sm rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {taskingCase ? "Tasking..." : "Task to Company"}
+                {taskingCase ? "Tasking..." : "Task to Coy"}
               </button>
             </div>
           </div>

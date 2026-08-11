@@ -601,7 +601,7 @@ export default function Users({ user }) {
                     <option value="">— Battalion level (no company) —</option>
                     {detachments.map((d) => (
                       <option key={d.id} value={d.id}>
-                        {d.company ? `${d.company} Company` : "Company"}{d.name ? ` - ${d.name}` : ""}
+                        {d.company ? `${d.company} Coy` : "Coy"}{d.name ? ` - ${d.name}` : ""}
                       </option>
                     ))}
                   </select>
