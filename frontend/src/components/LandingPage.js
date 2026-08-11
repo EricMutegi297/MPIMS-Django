@@ -1,23 +1,23 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import AuthFrame from "./AuthFrame";
 
 export default function LandingPage() {
   const navigate = useNavigate();
   return (
-    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center px-4 text-center">
-      <h1 className="text-5xl font-bold font-condensed text-white tracking-widest uppercase mb-4">
-        MPIMS
-      </h1>
-      <p className="text-gray-400 max-w-xl mb-8 leading-relaxed">
-        Military Police Investigation Management System - secure, centralised
-        management of cases, incidents, guardrooms and morning briefs.
-      </p>
-      <button
-        onClick={() => navigate("/login")}
-        className="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-lg transition-colors text-lg"
-      >
-        Sign In
-      </button>
-    </div>
+    <AuthFrame wide subtitle="Military Police Investigation Management System">
+      <div className="text-center">
+        <p className="mx-auto max-w-xl text-base leading-relaxed text-slate-700">
+          Military Police Investigation Management System - secure, centralised
+          management of cases, incidents, guardrooms and morning briefs.
+        </p>
+        <button
+          onClick={() => navigate("/login")}
+          className="mt-8 rounded-md bg-black px-8 py-3 font-serif text-lg font-bold text-white transition-colors hover:bg-slate-800"
+        >
+          Login
+        </button>
+      </div>
+    </AuthFrame>
   );
 }
