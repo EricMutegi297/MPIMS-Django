@@ -14,6 +14,12 @@ function formatDate(value) {
   return parsed.toLocaleString();
 }
 
+function parseDateBoundary(value, endOfDay = false) {
+  if (!value) return null;
+  const parsed = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00"}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function formatDurationSeconds(seconds) {
   const total = Math.max(Number(seconds || 0), 0);
   const days = Math.floor(total / 86400);
@@ -35,6 +41,33 @@ function apiError(data, fallback) {
   return Array.isArray(value) ? value[0] : value || fallback;
 }
 
+function csvEscape(value) {
+  const text = String(value ?? "");
+  if (!/[",\r\n]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function uniqueOptions(items, getKey, getLabel) {
+  const map = new Map();
+  items.forEach((item) => {
+    const key = getKey(item);
+    if (key === undefined || key === null || key === "") return;
+    if (!map.has(String(key))) {
+      map.set(String(key), getLabel(item) || String(key));
+    }
+  });
+  return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+}
+
 const REASONS = [
   { value: "investigation", label: "Investigation" },
   { value: "legal_court_process", label: "Legal/Court Process" },
@@ -47,6 +80,13 @@ const STATUS_STYLE = {
   pending: "bg-yellow-500/20 text-yellow-300",
   approved: "bg-green-500/20 text-green-300",
   rejected: "bg-red-500/20 text-red-300",
+};
+
+const BOOK_OUT_STATUS_LABELS = {
+  not_requested: "Not Requested",
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
 };
 
 const INVESTIGATOR_VIEWS = [
@@ -66,6 +106,40 @@ const BLANK_GUARDROOM = {
 };
 
 const INPUT_CLASS = "w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500";
+
+function toGuardroomForm(guardroom = {}) {
+  return {
+    name: guardroom.name || "",
+    location: guardroom.location || "",
+    phone_no: guardroom.phone_no || "",
+    capacity: guardroom.capacity ?? "",
+    current_strength: guardroom.current_strength ?? "",
+    established_strength: guardroom.established_strength ?? guardroom.capacity ?? "",
+    is_active: guardroom.is_active !== false,
+  };
+}
+
+function toNonNegativeInteger(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function buildGuardroomPayload(form) {
+  const capacity = toNonNegativeInteger(form.capacity);
+  const establishedStrength =
+    form.established_strength === "" || form.established_strength == null
+      ? capacity
+      : form.established_strength;
+  return {
+    name: form.name.trim(),
+    location: form.location || "",
+    phone_no: form.phone_no || "",
+    capacity,
+    current_strength: toNonNegativeInteger(form.current_strength),
+    established_strength: toNonNegativeInteger(establishedStrength),
+    is_active: Boolean(form.is_active),
+  };
+}
 
 export default function Guardrooms({ user }) {
   const [searchParams] = useSearchParams();
@@ -88,6 +162,8 @@ export default function Guardrooms({ user }) {
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [loadingCases, setLoadingCases] = useState(false);
   const [guardroomForm, setGuardroomForm] = useState(BLANK_GUARDROOM);
+  const [editingGuardroomId, setEditingGuardroomId] = useState(null);
+  const [deletingGuardroomId, setDeletingGuardroomId] = useState(null);
   const [requestForm, setRequestForm] = useState({ guardroom: "", reason: "" });
   const [reviewDrafts, setReviewDrafts] = useState({});
   const [savingGuardroom, setSavingGuardroom] = useState(false);
@@ -201,7 +277,20 @@ export default function Guardrooms({ user }) {
     setActiveView("status");
   };
 
-  const handleCreateGuardroom = async (e) => {
+  const cancelGuardroomEdit = () => {
+    setGuardroomForm(BLANK_GUARDROOM);
+    setEditingGuardroomId(null);
+  };
+
+  const startEditGuardroom = (guardroom) => {
+    setGuardroomForm(toGuardroomForm(guardroom));
+    setEditingGuardroomId(guardroom.id);
+    setActiveView("register");
+    setError("");
+    setMessage("");
+  };
+
+  const handleSaveGuardroom = async (e) => {
     e.preventDefault();
     setError("");
     setMessage("");
@@ -211,19 +300,37 @@ export default function Guardrooms({ user }) {
     }
     setSavingGuardroom(true);
     try {
-      await guardroomService.create({
-        ...guardroomForm,
-        capacity: Number(guardroomForm.capacity || 0),
-        current_strength: Number(guardroomForm.current_strength || 0),
-        established_strength: Number(guardroomForm.established_strength || guardroomForm.capacity || 0),
-      });
-      setGuardroomForm(BLANK_GUARDROOM);
-      setMessage("Guardroom added.");
-      loadGuardrooms();
+      const payload = buildGuardroomPayload(guardroomForm);
+      if (editingGuardroomId) {
+        await guardroomService.update(editingGuardroomId, payload);
+        setMessage("Guardroom updated.");
+      } else {
+        await guardroomService.create(payload);
+        setMessage("Guardroom added.");
+      }
+      cancelGuardroomEdit();
+      await loadGuardrooms();
     } catch (ex) {
-      setError(apiError(ex?.response?.data, "Failed to add guardroom."));
+      setError(apiError(ex?.response?.data, editingGuardroomId ? "Failed to update guardroom." : "Failed to add guardroom."));
     } finally {
       setSavingGuardroom(false);
+    }
+  };
+
+  const handleDeleteGuardroom = async (guardroom) => {
+    if (!window.confirm(`Delete ${guardroom.name}? This cannot be undone.`)) return;
+    setDeletingGuardroomId(guardroom.id);
+    setError("");
+    setMessage("");
+    try {
+      await guardroomService.delete(guardroom.id);
+      if (editingGuardroomId === guardroom.id) cancelGuardroomEdit();
+      setMessage("Guardroom deleted.");
+      await loadGuardrooms();
+    } catch (ex) {
+      setError(apiError(ex?.response?.data, "Failed to delete guardroom. If it has placement history, mark it inactive instead."));
+    } finally {
+      setDeletingGuardroomId(null);
     }
   };
 
@@ -403,7 +510,9 @@ export default function Guardrooms({ user }) {
           guardroomForm={guardroomForm}
           setGuardroomForm={setGuardroomForm}
           savingGuardroom={savingGuardroom}
-          onSubmit={handleCreateGuardroom}
+          editingGuardroomId={editingGuardroomId}
+          onCancelEdit={cancelGuardroomEdit}
+          onSubmit={handleSaveGuardroom}
         />
       )}
 
@@ -503,6 +612,11 @@ export default function Guardrooms({ user }) {
                 guardrooms={guardrooms}
                 loading={loadingGuardrooms}
                 onCountClick={(guardroom) => showGuardroomStatus(guardroom.id)}
+                canManage={isSuperuser}
+                editingId={editingGuardroomId}
+                deletingId={deletingGuardroomId}
+                onEdit={startEditGuardroom}
+                onDelete={handleDeleteGuardroom}
               />
 
               {canReviewPlacement && (
@@ -579,13 +693,32 @@ export default function Guardrooms({ user }) {
   );
 }
 
-function AddGuardroomForm({ guardroomForm, setGuardroomForm, savingGuardroom, onSubmit }) {
+function AddGuardroomForm({
+  guardroomForm,
+  setGuardroomForm,
+  savingGuardroom,
+  editingGuardroomId,
+  onCancelEdit,
+  onSubmit,
+}) {
+  const isEditing = Boolean(editingGuardroomId);
   return (
     <section className="bg-gray-800 rounded-lg border border-gray-700 p-4">
       <div className="flex items-center justify-between gap-3 mb-4">
-        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Add Guardroom</h3>
+        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
+          {isEditing ? "Edit Guardroom" : "Add Guardroom"}
+        </h3>
+        {isEditing && (
+          <button
+            type="button"
+            onClick={onCancelEdit}
+            className="rounded bg-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-200 hover:bg-gray-600"
+          >
+            Cancel Edit
+          </button>
+        )}
       </div>
-      <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-6 gap-3">
+      <form onSubmit={onSubmit} className="grid grid-cols-1 md:grid-cols-7 gap-3">
         <Field label="Name *" className="md:col-span-2">
           <input
             required
@@ -627,13 +760,24 @@ function AddGuardroomForm({ guardroomForm, setGuardroomForm, savingGuardroom, on
             className={INPUT_CLASS}
           />
         </Field>
+        <Field label="Status">
+          <label className="flex h-[38px] items-center gap-2 rounded-lg border border-gray-600 bg-gray-700 px-3 text-sm text-white">
+            <input
+              type="checkbox"
+              checked={Boolean(guardroomForm.is_active)}
+              onChange={(e) => setGuardroomForm({ ...guardroomForm, is_active: e.target.checked })}
+              className="h-4 w-4 rounded border-gray-500 bg-gray-800 text-blue-600 focus:ring-blue-500"
+            />
+            Active
+          </label>
+        </Field>
         <div className="flex items-end">
           <button
             type="submit"
             disabled={savingGuardroom}
             className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-lg px-4 py-2.5 transition-colors"
           >
-            {savingGuardroom ? "Adding..." : "Add Guardroom"}
+            {savingGuardroom ? "Saving..." : isEditing ? "Save Changes" : "Add Guardroom"}
           </button>
         </div>
       </form>
@@ -754,12 +898,52 @@ function CountButton({ value, onClick, title }) {
   );
 }
 
-function GuardroomRegister({ guardrooms, loading, onCountClick }) {
+function statusOffender(entry) {
+  return [entry.accused_rank, entry.accused_name].filter(Boolean).join(" ") || "Accused not recorded";
+}
+
+function statusAssignment(entry) {
+  return entry.assigned_to_name || entry.assigned_team_name || "--";
+}
+
+function statusCompany(entry) {
+  return entry.team_detachment_name || entry.tasked_detachment_name || "--";
+}
+
+function buildStatusRows(entries, getTimeInSeconds) {
+  return entries.map((entry) => ({
+    Offender: statusOffender(entry),
+    "Service Number": entry.accused_service_number || "--",
+    Case: entry.case_number || "--",
+    Guardroom: entry.guardroom_name || "--",
+    Location: entry.guardroom_location || "--",
+    "Requested By": entry.requested_by_name || "--",
+    Assignment: statusAssignment(entry),
+    Coy: statusCompany(entry),
+    Reason: entry.reason_display || entry.reason || "--",
+    "Book-out Status": entry.book_out_status_display || BOOK_OUT_STATUS_LABELS[entry.book_out_status] || entry.book_out_status || "--",
+    "Booked In": formatDate(entry.booked_in_at),
+    "Booked In By": entry.booked_in_by_name || "--",
+    "Time In": formatDurationSeconds(getTimeInSeconds(entry)),
+  }));
+}
+
+function GuardroomRegister({
+  guardrooms,
+  loading,
+  onCountClick,
+  canManage = false,
+  editingId,
+  deletingId,
+  onEdit,
+  onDelete,
+}) {
   const availableSpace = (guardroom) => {
     const capacity = Number(guardroom.capacity || guardroom.established_strength || 0);
     const current = Number(guardroom.current_strength || 0);
     return Math.max(capacity - current, 0);
   };
+  const columnCount = canManage ? 8 : 7;
 
   return (
     <section className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
@@ -767,7 +951,7 @@ function GuardroomRegister({ guardrooms, loading, onCountClick }) {
         <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Guardroom Register</h3>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[820px] text-sm">
+        <table className="w-full min-w-[940px] text-sm">
           <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
             <tr>
               <th className="text-left px-4 py-3">Name</th>
@@ -777,16 +961,17 @@ function GuardroomRegister({ guardrooms, loading, onCountClick }) {
               <th className="text-left px-4 py-3">Current</th>
               <th className="text-left px-4 py-3">Available Space</th>
               <th className="text-left px-4 py-3">Status</th>
+              {canManage && <th className="text-right px-4 py-3">Action</th>}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">Loading guardrooms...</td></tr>
+              <tr><td colSpan={columnCount} className="px-4 py-8 text-center text-gray-500">Loading guardrooms...</td></tr>
             ) : guardrooms.length === 0 ? (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-500">No guardrooms found.</td></tr>
+              <tr><td colSpan={columnCount} className="px-4 py-8 text-center text-gray-500">No guardrooms found.</td></tr>
             ) : (
               guardrooms.map((g) => (
-                <tr key={g.id} className="border-b border-gray-700/40">
+                <tr key={g.id} className={`border-b border-gray-700/40 ${editingId === g.id ? "bg-blue-500/10" : ""}`}>
                   <td className="px-4 py-3 font-medium text-gray-100">{g.name}</td>
                   <td className="px-4 py-3 text-gray-400">{g.location || "--"}</td>
                   <td className="px-4 py-3 text-gray-400">{g.phone_no || "--"}</td>
@@ -816,6 +1001,28 @@ function GuardroomRegister({ guardrooms, loading, onCountClick }) {
                       {g.is_active ? "Active" : "Inactive"}
                     </span>
                   </td>
+                  {canManage && (
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onEdit(g)}
+                          disabled={deletingId === g.id}
+                          className="rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(g)}
+                          disabled={deletingId === g.id}
+                          className="rounded bg-red-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-60"
+                        >
+                          {deletingId === g.id ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
@@ -837,6 +1044,14 @@ function GuardStatusPanel({
   onClearFilter,
 }) {
   const [tick, setTick] = useState(0);
+  const [filters, setFilters] = useState({
+    search: "",
+    guardroom: "",
+    reason: "",
+    bookOutStatus: "",
+    from: "",
+    to: "",
+  });
   const now = Date.now() + tick * 0;
   const columnCount = showActions ? 9 : 8;
 
@@ -852,6 +1067,147 @@ function GuardStatusPanel({
     const released = entry.released_at ? new Date(entry.released_at).getTime() : null;
     const end = released && !Number.isNaN(released) ? released : now;
     return Math.max(Math.floor((end - booked.getTime()) / 1000), 0);
+  };
+
+  const guardroomOptions = useMemo(
+    () => uniqueOptions(entries, (entry) => entry.guardroom, (entry) => entry.guardroom_name),
+    [entries]
+  );
+  const reasonOptions = useMemo(
+    () => uniqueOptions(entries, (entry) => entry.reason, (entry) => entry.reason_display || entry.reason),
+    [entries]
+  );
+  const bookOutOptions = useMemo(
+    () =>
+      uniqueOptions(
+        entries,
+        (entry) => entry.book_out_status,
+        (entry) => entry.book_out_status_display || BOOK_OUT_STATUS_LABELS[entry.book_out_status] || entry.book_out_status
+      ),
+    [entries]
+  );
+
+  const filteredEntries = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+    const from = parseDateBoundary(filters.from);
+    const to = parseDateBoundary(filters.to, true);
+
+    return entries.filter((entry) => {
+      if (filters.guardroom && String(entry.guardroom) !== String(filters.guardroom)) return false;
+      if (filters.reason && String(entry.reason) !== String(filters.reason)) return false;
+      if (filters.bookOutStatus && String(entry.book_out_status) !== String(filters.bookOutStatus)) return false;
+
+      if (from || to) {
+        const bookedIn = entry.booked_in_at ? new Date(entry.booked_in_at) : null;
+        if (!bookedIn || Number.isNaN(bookedIn.getTime())) return false;
+        if (from && bookedIn < from) return false;
+        if (to && bookedIn > to) return false;
+      }
+
+      if (!search) return true;
+      const haystack = [
+        statusOffender(entry),
+        entry.accused_service_number,
+        entry.case_number,
+        entry.guardroom_name,
+        entry.guardroom_location,
+        entry.requested_by_name,
+        statusAssignment(entry),
+        statusCompany(entry),
+        entry.reason_display,
+        entry.book_out_status_display,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(search);
+    });
+  }, [entries, filters]);
+
+  const clearFilters = () => {
+    setFilters({
+      search: "",
+      guardroom: "",
+      reason: "",
+      bookOutStatus: "",
+      from: "",
+      to: "",
+    });
+  };
+
+  const exportStatusCsv = () => {
+    const rows = buildStatusRows(filteredEntries, timeInSeconds);
+    if (rows.length === 0) return;
+    const headers = Object.keys(rows[0]);
+    const csv = [
+      headers.map(csvEscape).join(","),
+      ...rows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
+    ].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `guardroom-status-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const printStatusReport = () => {
+    const rows = buildStatusRows(filteredEntries, timeInSeconds);
+    const headers = rows[0] ? Object.keys(rows[0]) : Object.keys(buildStatusRows([{}], () => 0)[0]);
+    const guardroomFilter = filters.guardroom
+      ? guardroomOptions.find(([value]) => value === String(filters.guardroom))?.[1]
+      : "";
+    const summary = [
+      filterLabel ? `Register filter: ${filterLabel}` : "",
+      filters.search ? `Search: ${filters.search}` : "",
+      guardroomFilter ? `Guardroom: ${guardroomFilter}` : "",
+      filters.reason ? `Reason: ${reasonOptions.find(([value]) => value === String(filters.reason))?.[1] || filters.reason}` : "",
+      filters.bookOutStatus
+        ? `Book-out: ${bookOutOptions.find(([value]) => value === String(filters.bookOutStatus))?.[1] || filters.bookOutStatus}`
+        : "",
+      filters.from ? `From: ${filters.from}` : "",
+      filters.to ? `To: ${filters.to}` : "",
+    ]
+      .filter(Boolean)
+      .join(" | ");
+    const printableRows =
+      rows.length > 0
+        ? rows
+            .map((row) => `<tr>${headers.map((header) => `<td>${escapeHtml(row[header])}</td>`).join("")}</tr>`)
+            .join("")
+        : `<tr><td colspan="${headers.length}">No guardroom status records matched the filters.</td></tr>`;
+    const printWindow = window.open("", "_blank", "width=1200,height=800");
+    if (!printWindow) return;
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>Guardroom Status Report</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #111827; padding: 24px; }
+            h1 { font-size: 20px; margin: 0 0 6px; }
+            p { margin: 0 0 16px; color: #4b5563; font-size: 12px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th, td { border: 1px solid #d1d5db; padding: 6px; text-align: left; vertical-align: top; }
+            th { background: #f3f4f6; text-transform: uppercase; font-size: 10px; }
+          </style>
+        </head>
+        <body>
+          <h1>Guardroom Status Report</h1>
+          <p>${escapeHtml(summary || "All active booked-in offenders")} | Printed ${escapeHtml(formatDate(new Date()))}</p>
+          <table>
+            <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
+            <tbody>${printableRows}</tbody>
+          </table>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   };
 
   return (
@@ -871,6 +1227,98 @@ function GuardStatusPanel({
           </div>
         )}
       </div>
+      <div className="border-b border-gray-700 p-4 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <Field label="Search" className="md:col-span-2">
+            <input
+              value={filters.search}
+              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+              placeholder="Search offender, case, guardroom..."
+              className={INPUT_CLASS}
+            />
+          </Field>
+          <Field label="Guardroom">
+            <select
+              value={filters.guardroom}
+              onChange={(e) => setFilters({ ...filters, guardroom: e.target.value })}
+              className={INPUT_CLASS}
+            >
+              <option value="">All guardrooms</option>
+              {guardroomOptions.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Reason">
+            <select
+              value={filters.reason}
+              onChange={(e) => setFilters({ ...filters, reason: e.target.value })}
+              className={INPUT_CLASS}
+            >
+              <option value="">All reasons</option>
+              {reasonOptions.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Book-out">
+            <select
+              value={filters.bookOutStatus}
+              onChange={(e) => setFilters({ ...filters, bookOutStatus: e.target.value })}
+              className={INPUT_CLASS}
+            >
+              <option value="">All states</option>
+              {bookOutOptions.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="From Date">
+            <input
+              type="date"
+              value={filters.from}
+              onChange={(e) => setFilters({ ...filters, from: e.target.value })}
+              className={INPUT_CLASS}
+            />
+          </Field>
+          <Field label="To Date">
+            <input
+              type="date"
+              value={filters.to}
+              onChange={(e) => setFilters({ ...filters, to: e.target.value })}
+              className={INPUT_CLASS}
+            />
+          </Field>
+        </div>
+        <div className="flex flex-col gap-2 text-xs text-gray-400 sm:flex-row sm:items-center sm:justify-between">
+          <span>Showing {filteredEntries.length} of {entries.length} booked-in offenders</span>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="rounded border border-gray-600 px-3 py-1.5 text-gray-200 hover:bg-gray-700"
+            >
+              Reset Filters
+            </button>
+            <button
+              type="button"
+              onClick={exportStatusCsv}
+              disabled={filteredEntries.length === 0}
+              className="rounded bg-green-700 px-3 py-1.5 font-semibold text-white hover:bg-green-600 disabled:opacity-60"
+            >
+              Export CSV
+            </button>
+            <button
+              type="button"
+              onClick={printStatusReport}
+              disabled={filteredEntries.length === 0}
+              className="rounded bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-500 disabled:opacity-60"
+            >
+              Print
+            </button>
+          </div>
+        </div>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1180px] text-sm">
           <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
@@ -880,7 +1328,7 @@ function GuardStatusPanel({
               <th className="text-left px-4 py-3">Guardroom</th>
               <th className="text-left px-4 py-3">Requested By</th>
               <th className="text-left px-4 py-3">Assignment</th>
-              <th className="text-left px-4 py-3">Company</th>
+              <th className="text-left px-4 py-3">Coy</th>
               <th className="text-left px-4 py-3">Booked In</th>
               <th className="text-left px-4 py-3">Time In</th>
               {showActions && <th className="text-left px-4 py-3">Action</th>}
@@ -889,15 +1337,13 @@ function GuardStatusPanel({
           <tbody>
             {loading ? (
               <tr><td colSpan={columnCount} className="px-4 py-8 text-center text-gray-500">Loading guardroom status...</td></tr>
-            ) : entries.length === 0 ? (
-              <tr><td colSpan={columnCount} className="px-4 py-8 text-center text-gray-500">No booked-in offenders found.</td></tr>
+            ) : filteredEntries.length === 0 ? (
+              <tr><td colSpan={columnCount} className="px-4 py-8 text-center text-gray-500">No booked-in offenders match the filters.</td></tr>
             ) : (
-              entries.map((entry) => (
+              filteredEntries.map((entry) => (
                 <tr key={entry.id} className="border-b border-gray-700/40">
                   <td className="px-4 py-3">
-                    <p className="font-medium text-gray-100">
-                      {[entry.accused_rank, entry.accused_name].filter(Boolean).join(" ") || "Accused not recorded"}
-                    </p>
+                    <p className="font-medium text-gray-100">{statusOffender(entry)}</p>
                     <p className="text-xs text-gray-500">{entry.accused_service_number || "--"}</p>
                   </td>
                   <td className="px-4 py-3 text-gray-300">{entry.case_number || "--"}</td>
@@ -906,8 +1352,8 @@ function GuardStatusPanel({
                     <p className="text-xs text-gray-500">{entry.guardroom_location || ""}</p>
                   </td>
                   <td className="px-4 py-3 text-gray-400">{entry.requested_by_name || "--"}</td>
-                  <td className="px-4 py-3 text-gray-400">{entry.assigned_to_name || entry.assigned_team_name || "--"}</td>
-                  <td className="px-4 py-3 text-gray-400">{entry.team_detachment_name || entry.tasked_detachment_name || "--"}</td>
+                  <td className="px-4 py-3 text-gray-400">{statusAssignment(entry)}</td>
+                  <td className="px-4 py-3 text-gray-400">{statusCompany(entry)}</td>
                   <td className="px-4 py-3">
                     <p className="text-gray-300">{formatDate(entry.booked_in_at)}</p>
                     <p className="text-xs text-gray-500">{entry.booked_in_by_name ? `By ${entry.booked_in_by_name}` : ""}</p>

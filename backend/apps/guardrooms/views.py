@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import ProtectedError
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, viewsets
@@ -39,6 +40,14 @@ class GuardroomViewSet(viewsets.ModelViewSet):
         if self.request.method in permissions.SAFE_METHODS:
             return qs.filter(is_active=True)
         return qs.none()
+
+    def perform_destroy(self, instance):
+        try:
+            instance.delete()
+        except ProtectedError as exc:
+            raise ValidationError(
+                "This guardroom has placement history. Mark it inactive instead of deleting it."
+            ) from exc
 
 
 class GuardPostViewSet(viewsets.ModelViewSet):
