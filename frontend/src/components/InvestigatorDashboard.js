@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { caseService, teamService, attachmentService } from "../services/api";
+import { caseService, teamService, attachmentService, guardroomService, detaineeRequestService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 
 function toArray(data) {
@@ -1630,63 +1630,260 @@ function PendingModal({ caseObj, onClose, onDone }) {
   );
 }
 
-function GuardroomModal({ caseObj, onClose, onDone }) {
-  const [reason, setReason] = useState("");
+// ── Guardroom Request Modal (2-step: select guardroom → fill Committal 1) ──────
+function GuardroomModal({ caseObj, user, onClose, onDone }) {
+  const [step, setStep] = useState(1);
+  const [guardrooms, setGuardrooms] = useState([]);
+  const [loadingGuardrooms, setLoadingGuardrooms] = useState(true);
+  const [selected, setSelected] = useState(null);
+
+  // Committal 1 fields
+  const [accusedNo, setAccusedNo] = useState(caseObj?.accused_service_number || "");
+  const [accusedRank, setAccusedRank] = useState(caseObj?.accused_rank || "");
+  const [accusedName, setAccusedName] = useState(caseObj?.accused_name || "");
+  const [accusedUnit, setAccusedUnit] = useState(caseObj?.accused_unit_name || "");
+  const [accusedOffence, setAccusedOffence] = useState(caseObj?.offence_name || caseObj?.offence || "");
+  const [gcDate, setGcDate] = useState("");
+  const [gcTime, setGcTime] = useState("");
+  const [location, setLocation] = useState(caseObj?.place_of_offence || "");
+  const [handedByName, setHandedByName] = useState(user?.name || "");
+  const [handedByRank, setHandedByRank] = useState(
+    user?.rank && user?.service_number
+      ? `${user.rank} / ${user.service_number}`
+      : user?.rank || user?.service_number || ""
+  );
+
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
 
-  const handleRequest = async () => {
-    if (!reason.trim()) { setErr("Please provide a reason for the guardroom request."); return; }
+  useEffect(() => {
+    setLoadingGuardrooms(true);
+    guardroomService
+      .list()
+      .then((res) => {
+        const rows = Array.isArray(res.data) ? res.data : (res.data?.results || []);
+        setGuardrooms(rows.filter((g) => g.is_active));
+      })
+      .catch(() => {})
+      .finally(() => setLoadingGuardrooms(false));
+  }, []);
+
+  const handleSubmit = async () => {
+    if (!gcDate) { setErr("Guard Commander date is required."); return; }
+    if (!gcTime.trim()) { setErr("Guard Commander time is required."); return; }
+    if (!location.trim()) { setErr("Location is required."); return; }
+    if (!handedByName.trim()) { setErr("Handed by (name) is required."); return; }
+    if (!handedByRank.trim()) { setErr("Handed by (rank) is required."); return; }
+
     setSaving(true);
     setErr("");
     try {
-      await caseService.update(caseObj.id, { action_taken: `[GUARDROOM REQUEST] ${reason.trim()}` });
+      await detaineeRequestService.create({
+        case: caseObj.id,
+        guardroom: selected.id,
+        accused_no: accusedNo.trim(),
+        accused_rank: accusedRank.trim(),
+        accused_name: accusedName.trim(),
+        accused_unit: accusedUnit.trim(),
+        accused_offence: accusedOffence.trim(),
+        guard_commander_date: gcDate,
+        guard_commander_time: gcTime.trim(),
+        location: location.trim(),
+        handed_by_name: handedByName.trim(),
+        handed_by_rank: handedByRank.trim(),
+      });
       setDone(true);
       onDone();
     } catch (ex) {
-      setErr(ex?.response?.data?.detail || "Failed to submit request.");
+      const d = ex?.response?.data;
+      setErr(d?.detail || Object.values(d || {})[0]?.[0] || "Failed to submit request.");
     } finally {
       setSaving(false);
     }
   };
 
+  const labelCls = "block text-xs text-gray-400 mb-1";
+  const inputCls = "w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder-gray-500";
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && !done && onClose()}>
-      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
-        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="text-white font-semibold">Request Guardroom</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={(e) => e.target === e.currentTarget && !done && onClose()}
+    >
+      <div className="bg-gray-800 rounded-xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="text-white font-semibold">Request Guardroom</h3>
+            <p className="text-gray-500 text-xs mt-0.5">
+              Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span>
+              {!done && <span className="ml-2 text-gray-600">Step {step} of 2</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        <div className="px-5 py-4 space-y-4">
+
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
           {done ? (
-            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
-              <p className="text-green-400 font-medium">Request Submitted</p>
-              <p className="text-gray-400 text-xs mt-1">Guardroom request for <span className="font-mono text-blue-400">{caseObj.case_number}</span> has been recorded.</p>
+            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-5 text-center space-y-1">
+              <p className="text-green-400 font-semibold text-base">Request Submitted</p>
+              <p className="text-gray-400 text-sm">
+                Committal receipt sent to <span className="text-white font-medium">{selected?.name}</span>. The Guardroom IC will review and notify you.
+              </p>
             </div>
+          ) : step === 1 ? (
+            <>
+              <p className="text-sm text-gray-400">Select a guardroom for detainee placement:</p>
+              {loadingGuardrooms ? (
+                <p className="text-gray-500 text-sm">Loading guardrooms...</p>
+              ) : guardrooms.length === 0 ? (
+                <p className="text-gray-500 text-sm italic">No active guardrooms available.</p>
+              ) : (
+                <div className="space-y-2">
+                  {guardrooms.map((g) => {
+                    const isSelected = selected?.id === g.id;
+                    const isFull = g.vacant_slots === 0;
+                    return (
+                      <button
+                        key={g.id}
+                        type="button"
+                        disabled={isFull}
+                        onClick={() => !isFull && setSelected(g)}
+                        className={`w-full text-left rounded-lg p-3 border transition-all ${
+                          isSelected
+                            ? "border-red-500 bg-red-900/20 ring-1 ring-red-500"
+                            : isFull
+                            ? "border-gray-700 bg-gray-800 opacity-50 cursor-not-allowed"
+                            : "border-gray-700 bg-gray-700/40 hover:border-gray-500"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-white font-medium text-sm">{g.name}</span>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                              isFull ? "bg-red-900/50 text-red-400" : "bg-green-900/50 text-green-400"
+                            }`}
+                          >
+                            {isFull ? "Full" : `${g.vacant_slots} vacant`}
+                          </span>
+                        </div>
+                        <div className="flex gap-3 mt-1 text-xs text-gray-400">
+                          {g.location && <span>📍 {g.location}</span>}
+                          <span>Capacity: {g.capacity}</span>
+                          <span>Detainees: {g.detainee_count}</span>
+                        </div>
+                        {g.ic_name && (
+                          <p className="text-xs text-gray-500 mt-0.5">IC: {g.ic_name}</p>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           ) : (
             <>
-              <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span> - <span className="text-gray-300">{caseObj.accused_name || ""}</span></p>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Reason / Justification <span className="text-red-400">*</span></label>
-                <textarea
-                  rows={4}
-                  value={reason}
-                  onChange={(e) => { setReason(e.target.value); setErr(""); }}
-                  placeholder="State the reason for requesting guardroom detention..."
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder-gray-500 resize-none"
-                />
+              <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider">
+                Committal Receipt — MPC 6009 (Request)
+              </p>
+              <div className="bg-gray-700/30 border border-gray-600/40 rounded-lg p-3 text-xs text-gray-400">
+                Guardroom: <span className="text-white font-medium">{selected?.name}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Service No <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={accusedNo} onChange={(e) => setAccusedNo(e.target.value)} placeholder="e.g. 151297" />
+                </div>
+                <div>
+                  <label className={labelCls}>Rank <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={accusedRank} onChange={(e) => setAccusedRank(e.target.value)} placeholder="e.g. CPL" />
+                </div>
+                <div>
+                  <label className={labelCls}>Name <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={accusedName} onChange={(e) => setAccusedName(e.target.value)} placeholder="Full name" />
+                </div>
+                <div>
+                  <label className={labelCls}>Unit <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={accusedUnit} onChange={(e) => setAccusedUnit(e.target.value)} placeholder="e.g. SIM" />
+                </div>
+                <div>
+                  <label className={labelCls}>Guard Commander Date <span className="text-red-400">*</span></label>
+                  <input type="date" className={inputCls} value={gcDate} onChange={(e) => setGcDate(e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Time (hrs) <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={gcTime} onChange={(e) => setGcTime(e.target.value)} placeholder="e.g. 1400" maxLength={6} />
+                </div>
+                <div className="col-span-2">
+                  <label className={labelCls}>Offence <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={accusedOffence} onChange={(e) => setAccusedOffence(e.target.value)} placeholder="e.g. Absence without leave" />
+                </div>
+                <div className="col-span-2">
+                  <label className={labelCls}>When at (Location) <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={location} onChange={(e) => setLocation(e.target.value)} placeholder="e.g. DOD/KMI" />
+                </div>
+                <div>
+                  <label className={labelCls}>Handed by — Name <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={handedByName} onChange={(e) => setHandedByName(e.target.value)} placeholder="e.g. BERNARD NGARE" />
+                </div>
+                <div>
+                  <label className={labelCls}>Handed by — Rank/No <span className="text-red-400">*</span></label>
+                  <input className={inputCls} value={handedByRank} onChange={(e) => setHandedByRank(e.target.value)} placeholder="e.g. SGT / SVC No" />
+                </div>
               </div>
               {err && <p className="text-red-400 text-xs">{err}</p>}
             </>
           )}
         </div>
-        <div className="px-5 pb-4 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">{done ? "Close" : "Cancel"}</button>
-          {!done && (
-            <button onClick={handleRequest} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 transition-colors">
-              {saving ? "Submitting..." : "Submit Request"}
+
+        {/* Footer */}
+        <div className="px-5 pb-4 pt-2 border-t border-gray-700 flex justify-between items-center shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors"
+          >
+            {done ? "Close" : "Cancel"}
+          </button>
+          {!done && step === 1 && (
+            <button
+              disabled={!selected}
+              onClick={() => {
+                const now = new Date();
+                const yyyy = now.getFullYear();
+                const mm = String(now.getMonth() + 1).padStart(2, "0");
+                const dd = String(now.getDate()).padStart(2, "0");
+                setGcDate(`${yyyy}-${mm}-${dd}`);
+                const hh = String(now.getHours()).padStart(2, "0");
+                const min = String(now.getMinutes()).padStart(2, "0");
+                setGcTime(`${hh}${min}`);
+                setStep(2);
+              }}
+              className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 transition-colors"
+            >
+              Next — Fill Committal Receipt
             </button>
+          )}
+          {!done && step === 2 && (
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setStep(1); setErr(""); }}
+                className="px-4 py-2 rounded-lg text-sm text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors"
+              >
+                Back
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={saving}
+                className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 transition-colors"
+              >
+                {saving ? "Submitting..." : "Submit Request"}
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -1694,7 +1891,7 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
   );
 }
 
-function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
+function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate, isHQAdmin }) {
   const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
   const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || c?.updated_at?.slice(0, 10) || "--";
   const latestUpdateText = c?.action_taken || c?.remarks || "--";
@@ -1733,7 +1930,7 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
                   </>
                 )
               )}
-              {!isDciCiv && (
+              {!isDciCiv && !isHQAdmin && (
                 <button onClick={() => onGuardroom(c)} className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap" title="Request Guardroom">Guardroom</button>
               )}
             </div>
@@ -1744,7 +1941,7 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
   );
 }
 
-function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
+function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate, isHQAdmin }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
       <table className="min-w-[1200px] text-sm">
@@ -1768,7 +1965,7 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
           ) : cases.length === 0 ? (
             <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
-            cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />)
+            cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} isHQAdmin={isHQAdmin} />)
           )}
         </tbody>
       </table>
@@ -1778,7 +1975,7 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
 
 // â"€â"€ Pending cases table (dedicated columns) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 function PendingRow({ c, onAttach, onResume }) {
-  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || c?.updated_at?.slice(0, 10) || "--";
   const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
@@ -1944,9 +2141,10 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
 }
 
 // â"€â"€ Generic table (all other filters) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
+function GenericCaseRow({ c, hasDciCiv, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
+  const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || c?.updated_at?.slice(0, 10) || "--";
   const renderAction = () => {
-    const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
     if (c.status === "under_investigation") {
       if (isDciCiv) {
         return (
@@ -1984,13 +2182,15 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
           >
             Pending
           </button>
-          <button
-            onClick={() => onGuardroom(c)}
-            className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap"
-            title="Request Guardroom"
-          >
-            Guardroom
-          </button>
+          {!isHQAdmin && (
+            <button
+              onClick={() => onGuardroom(c)}
+              className="text-[10px] px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-white transition-colors whitespace-nowrap"
+              title="Request Guardroom"
+            >
+              Guardroom
+            </button>
+          )}
         </div>
       );
     }
@@ -2034,17 +2234,23 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-4 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.police_station || "--"}</td>
+      {hasDciCiv && <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{isDciCiv ? (c.police_station || "--") : ""}</td>}
       <td className="px-4 py-3"><DescriptionCell text={c.description} /></td>
       <td className="px-4 py-3 text-gray-300 text-xs max-w-[200px]">
-        {c.criminal_offence_type === "dci_civ_police" ? (
+        {isDciCiv ? (
           <div className="space-y-0.5">
-            <span className="line-clamp-2 block">{c.action_taken || "--"}</span>
-            {c.action_taken && (
-              <button type="button" onClick={() => onCaseUpdate(c)} className="text-[10px] text-cyan-400 hover:underline">Edit</button>
+            {c.action_taken ? (
+              <>
+                <span className="line-clamp-2 block">{c.action_taken}</span>
+                <button type="button" onClick={() => onCaseUpdate(c)} className="text-[10px] text-cyan-400 hover:underline">Edit</button>
+              </>
+            ) : (
+              <span className="text-gray-500 text-xs">{latestUpdateDate}</span>
             )}
           </div>
-        ) : <span className="text-gray-600">--</span>}
+        ) : (
+          <span className="text-gray-400 text-xs">{latestUpdateDate}</span>
+        )}
       </td>
       <td className="px-4 py-3">
         <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
@@ -2062,7 +2268,7 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
 
 function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin, onMilestone, onViewHistory }) {
   if (isUnderInvestigation) {
-    return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />;
+    return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} isHQAdmin={isHQAdmin} />;
   }
   if (isPending) {
     return <PendingTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onResume={onResume} />;
@@ -2070,6 +2276,8 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
   if (isServed) {
     return <ServedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} onMilestone={onMilestone} onViewHistory={onViewHistory} />;
   }
+  const hasDciCiv = cases.some(c => c?.criminal_offence_type === "dci_civ_police");
+  const colSpanCount = hasDciCiv ? 12 : 11;
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
       <table className="min-w-[1220px] text-sm">
@@ -2080,7 +2288,7 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
             <th className="text-left px-4 py-3">Rank</th>
             <th className="text-left px-4 py-3">Accused</th>
             <th className="text-left px-4 py-3">Offence</th>
-            <th className="text-left px-4 py-3 whitespace-nowrap">P/Station</th>
+            {hasDciCiv && <th className="text-left px-4 py-3 whitespace-nowrap">P/Station</th>}
             <th className="text-left px-4 py-3">Description</th>
             <th className="text-left px-4 py-3 whitespace-nowrap">Updates</th>
             <th className="text-left px-4 py-3">Status</th>
@@ -2091,14 +2299,15 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={colSpanCount} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={colSpanCount} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => (
               <GenericCaseRow
                 key={c.id}
                 c={c}
+                hasDciCiv={hasDciCiv}
                 onAttach={onAttach}
                 onServe={onServe}
                 onMarkPending={onMarkPending}
@@ -2206,7 +2415,7 @@ export default function InvestigatorDashboard({ user }) {
   const [cases, setCases] = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
   const [loadingCases, setLoadingCases] = useState(true);
-  const [activeFilter, setActiveFilter] = useState("under_investigation");
+  const [activeFilter, setActiveFilter] = useState("all");
   const [attachingCase, setAttachingCase] = useState(null);
   const [mentioningPromptCase, setMentioningPromptCase] = useState(null);
   const [servingCase, setServingCase] = useState(null);
@@ -2515,6 +2724,7 @@ export default function InvestigatorDashboard({ user }) {
       {guardroomCase && (
         <GuardroomModal
           caseObj={guardroomCase}
+          user={user}
           onClose={() => setGuardroomCase(null)}
           onDone={handleAttachmentChanged}
         />

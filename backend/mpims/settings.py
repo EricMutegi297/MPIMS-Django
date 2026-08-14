@@ -3,8 +3,23 @@ from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def config_bool(name, default=False):
+    value = config(name, default=default)
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on", "debug", "development", "dev", "local"}:
+        return True
+    if normalized in {"", "0", "false", "f", "no", "n", "off", "release", "production", "prod"}:
+        return False
+
+    raise ValueError(f"Invalid boolean value for {name}: {value!r}")
+
+
 SECRET_KEY = config("SECRET_KEY")
-DEBUG = config("DEBUG", default=True, cast=bool)
+DEBUG = config_bool("DEBUG", default=True)
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
 

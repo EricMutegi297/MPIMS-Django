@@ -176,8 +176,21 @@ export const teamService = {
 };
 
 export const guardroomService = {
-  list: () => api.get("/api/guardrooms/guardrooms/"),
+  list: (params) => api.get("/api/guardrooms/guardrooms/", { params }),
   create: (data) => api.post("/api/guardrooms/guardrooms/", data),
   update: (id, data) => api.patch(`/api/guardrooms/guardrooms/${id}/`, data),
   delete: (id) => api.delete(`/api/guardrooms/guardrooms/${id}/`),
+};
+
+export const detaineeRequestService = {
+  list: (params) => api.get("/api/guardrooms/detainee-requests/", { params }),
+  create: (data) => api.post("/api/guardrooms/detainee-requests/", data),
+  get: (id) => api.get(`/api/guardrooms/detainee-requests/${id}/`),
+  approve: (id) => api.post(`/api/guardrooms/detainee-requests/${id}/approve/`),
+  reject: (id, reason) =>
+    api.post(`/api/guardrooms/detainee-requests/${id}/reject/`, { rejection_reason: reason }),
+  bookIn: (id, data) =>
+    api.post(`/api/guardrooms/detainee-requests/${id}/book_in/`, data),
+  bookOut: (id, reason) =>
+    api.post(`/api/guardrooms/detainee-requests/${id}/book_out/`, { book_out_reason: reason }),
 };

@@ -109,7 +109,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "so1_ops", "so2_ops"].includes(user?.role),
+      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "so1_ops", "so2_ops", "investigator"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -366,8 +366,7 @@ export default function Dashboard() {
 
   const handleOffenceSave = (data) => {
     return offenceService.create(data)
-      .then(() => { loadOffences(); })
-      .catch(() => {});
+      .then(() => { loadOffences(); });
   };
 
   // Load offences for all authenticated users
@@ -585,6 +584,7 @@ export default function Dashboard() {
             isHqsAdmin ? <HQDashboard user={user} /> :
             isHqStaffRole ? <HQDashboard user={user} /> :
             user?.role === "investigator" ? <InvestigatorDashboard user={user} /> :
+            user?.role === "guardroom_ic" ? <Guardrooms user={user} /> :
             (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
             (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
             user?.battalion_type ? <BattalionDashboard user={user} /> :
@@ -600,7 +600,7 @@ export default function Dashboard() {
           <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
           <Route path="/Battalions" element={<Battalions user={user} />} />
           <Route path="/formations" element={<Formations user={user} />} />
-          <Route path="/formations-btn" element={<Offences user={user} />} />
+          <Route path="/formations-btn" element={<Offences user={user} offences={offences} />} />
           <Route
             path="/notifications"
             element={<Notifications onRead={refreshUnreadCount} />}
