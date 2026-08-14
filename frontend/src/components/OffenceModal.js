@@ -1,57 +1,29 @@
-import React, { useMemo, useState } from "react";
-
-function getErrorMessage(err) {
-  const data = err?.response?.data;
-  if (data?.non_field_errors?.[0]) return data.non_field_errors[0];
-  if (data?.category?.[0]) return `Category: ${data.category[0]}`;
-  if (data?.name?.[0]) return `Offence name: ${data.name[0]}`;
-  if (data?.detail) return data.detail;
-  return "Failed to save offence.";
-}
+import React, { useState } from "react";
 
 export default function OffenceModal({ open, onClose, onSave, user, offences = [] }) {
   const [showForm, setShowForm] = useState(false);
   const [category, setCategory] = useState("");
   const [categoryInput, setCategoryInput] = useState("");
   const [name, setName] = useState("");
-  const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("");
   const [saving, setSaving] = useState(false);
   const isSuperuser = !!user?.is_superuser;
-
-  const uniqueCategories = useMemo(
-    () => Array.from(new Set(offences.map((o) => o.category))).filter(Boolean).sort(),
-    [offences]
-  );
-
-  const filteredOffences = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return offences.filter((o) => {
-      const categoryText = o.category || "";
-      const nameText = o.name || "";
-      const categoryMatches = !categoryFilter || categoryText === categoryFilter;
-      const searchMatches = !query || `${categoryText} ${nameText}`.toLowerCase().includes(query);
-      return categoryMatches && searchMatches;
-    });
-  }, [offences, search, categoryFilter]);
 
   if (!open) return null;
 
   // Group offences by category
-  const grouped = filteredOffences.reduce((acc, o) => {
+  const grouped = offences.reduce((acc, o) => {
     const cat = o.category || "Uncategorised";
     if (!acc[cat]) acc[cat] = [];
     acc[cat].push(o);
     return acc;
   }, {});
   const categories = Object.keys(grouped).sort();
+  const uniqueCategories = Array.from(new Set(offences.map((o) => o.category))).filter(Boolean).sort();
 
   const resetForm = () => {
     setCategory("");
     setCategoryInput("");
     setName("");
-    setError("");
     setShowForm(false);
   };
 
@@ -60,12 +32,9 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
     const finalCategory = category === "__new__" ? categoryInput.trim() : category;
     if (!finalCategory || !name.trim()) return;
     setSaving(true);
-    setError("");
     try {
       await onSave({ category: finalCategory, name: name.trim() });
       resetForm();
-    } catch (err) {
-      setError(getErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -107,25 +76,6 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
 
         {/* Offences list */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search offences"
-              className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-            />
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="w-full sm:w-48 rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option value="">All categories</option>
-              {uniqueCategories.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-          </div>
           {offences.length === 0 ? (
             <div className="text-center py-10 text-gray-500">
               <svg className="w-10 h-10 mx-auto mb-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -133,10 +83,6 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
               </svg>
               <p className="text-sm">No offences recorded yet.</p>
               {isSuperuser && <p className="text-xs mt-1">Click "Add Offence" to add one.</p>}
-            </div>
-          ) : filteredOffences.length === 0 ? (
-            <div className="text-center py-10 text-gray-500">
-              <p className="text-sm">No offences match your filters.</p>
             </div>
           ) : (
             categories.map((cat) => (
@@ -165,11 +111,6 @@ export default function OffenceModal({ open, onClose, onSave, user, offences = [
           <div className="border-t border-gray-700 px-5 py-4">
             <p className="text-xs font-semibold text-gray-300 mb-3 uppercase tracking-wide">New Offence</p>
             <form onSubmit={handleSubmit} className="space-y-3">
-              {error && (
-                <div className="rounded-lg border border-red-700 bg-red-900/30 px-3 py-2 text-xs text-red-200">
-                  {error}
-                </div>
-              )}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Category</label>
                 <select
