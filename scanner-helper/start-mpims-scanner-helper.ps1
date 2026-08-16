@@ -11,6 +11,7 @@ function Add-CorsHeaders {
     $Response.Headers["Access-Control-Allow-Origin"] = "*"
     $Response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     $Response.Headers["Access-Control-Allow-Headers"] = "Content-Type"
+    $Response.Headers["Access-Control-Allow-Private-Network"] = "true"
 }
 
 function Write-TextResponse {
