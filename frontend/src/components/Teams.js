@@ -1,20 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { teamService, userService } from "../services/api";
-
-function SuccessToast({ message, onDone }) {
-  useEffect(() => {
-    const t = setTimeout(onDone, 2800);
-    return () => clearTimeout(t);
-  }, [onDone]);
-  return (
-    <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-2xl animate-fade-in-down">
-      <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-      </svg>
-      {message}
-    </div>
-  );
-}
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -23,15 +9,11 @@ function toArray(data) {
 const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
-  detachment:   "IC Det",
-  so1_legal:    "SO 1 Legal",
-  so1_ops:      "SO 1 OPs",
-  so2_legal:    "SO 2 Legal",
-  so2_ops:      "SO 2 OPs",
+  detachment:   "IC COY",
 };
 
 function displayUser(u) {
-  if (!u) return "-";
+  if (!u) return "—";
   const name = u.name ?? String(u);
   // Don't prepend rank if name already starts with it
   if (!u.rank || name.startsWith(u.rank)) return name;
@@ -56,7 +38,7 @@ function MembersModal({ teamName, members, onClose }) {
         className="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-sm"
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <h3 className="text-sm font-semibold text-white">{teamName} - Members</h3>
+          <h3 className="text-sm font-semibold text-white">{teamName} — Members</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-white">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -85,6 +67,11 @@ function MembersModal({ teamName, members, onClose }) {
 
 // Shared form for Create/Edit outside Teams so React never remounts it
 function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligibleMems, error, detUsers, workloadMap }) {
+  const loadFor = (u) => workloadMap[u.id] ?? 0;
+  const sortedIcs = [...detUsers].sort(
+    (a, b) => loadFor(a) - loadFor(b) || displayUser(a).localeCompare(displayUser(b))
+  );
+
   return (
     <div className="space-y-4">
       {error && (
@@ -112,11 +99,14 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
           className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="">-- Select Team IC --</option>
-          {detUsers.map((u) => (
+          {sortedIcs.map((u) => {
+            const load = loadFor(u);
+            return (
             <option key={u.id} value={u.id}>
-              {u.rank ? `${u.rank} ` : ""}{u.name} - {ROLE_LABELS[u.role] || u.role} ({u.service_number})
+              {displayUser(u)} - {ROLE_LABELS[u.role] || u.role} ({u.service_number || "--"}) - {load} active case{load !== 1 ? "s" : ""}
             </option>
-          ))}
+            );
+          })}
         </select>
       </div>
       <div>
@@ -157,7 +147,7 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
                   <span className="text-xs text-indigo-400">{ROLE_LABELS[u.role] || u.role}</span>
                   <span className="text-xs text-gray-500">{u.service_number}</span>
                   <span
-                    title={`${load} case${load !== 1 ? "s" : ""} under investigation`}
+                    title={`${load} active case${load !== 1 ? "s" : ""}`}
                     className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${badge}`}
                   >{load}</span>
                 </label>
@@ -190,8 +180,8 @@ export default function Teams({ user, scope = "detachment" }) {
   // ── Workload ──────────────────────────────────────────────────
   const [workload, setWorkload]           = useState([]);
   const [loadingWorkload, setLoadingWorkload] = useState(false);
-  // map userId -> total_engagement for badge display in form
-  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement]));
+  // map userId → total_engagement for badge display in form
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
 
   const loadWorkload = useCallback(() => {
     setLoadingWorkload(true);
@@ -201,24 +191,25 @@ export default function Teams({ user, scope = "detachment" }) {
       .finally(() => setLoadingWorkload(false));
   }, []);
 
-  // â"€â"€ Create modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Create modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [showCreate, setShowCreate]   = useState(false);
   const [teamName, setTeamName]       = useState("");
   const [teamIC, setTeamIC]           = useState("");
   const [members, setMembers]         = useState([]);
   const [creating, setCreating]       = useState(false);
   const [createError, setCreateError] = useState("");
-  const [successMsg, setSuccessMsg]   = useState("");
 
-  // â"€â"€ Edit modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Edit modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [editingTeam, setEditingTeam]   = useState(null);
   const [editName, setEditName]         = useState("");
   const [editIC, setEditIC]             = useState("");
   const [editMembers, setEditMembers]   = useState([]);
   const [editing, setEditing]           = useState(false);
   const [editError, setEditError]       = useState("");
+  useAutoDismiss(createError, setCreateError);
+  useAutoDismiss(editError, setEditError);
 
-  // â"€â"€ Delete confirm â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Delete confirm â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [deleting, setDeleting]               = useState(false);
 
@@ -254,9 +245,11 @@ export default function Teams({ user, scope = "detachment" }) {
       .catch(() => setDetUsers([]));
   }, [isBattalionScope, scopeId]);
 
-  // â"€â"€ Create helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Create helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sort least-engaged first using workload data
-  const byLoad = (a, b) => (workloadMap[a.id] ?? 0) - (workloadMap[b.id] ?? 0);
+  const byLoad = (a, b) =>
+    (workloadMap[a.id] ?? 0) - (workloadMap[b.id] ?? 0) ||
+    displayUser(a).localeCompare(displayUser(b));
   const eligibleCreateMembers = detUsers
     .filter((u) => String(u.id) !== String(teamIC))
     .sort(byLoad);
@@ -283,7 +276,7 @@ export default function Teams({ user, scope = "detachment" }) {
       await teamService.create({ name: teamName.trim(), team_ic: teamIC, members });
       setShowCreate(false);
       loadTeams();
-      setSuccessMsg("Team created successfully.");
+      loadWorkload();
     } catch (e) {
       const d = e?.response?.data;
       setCreateError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to create team.");
@@ -292,7 +285,7 @@ export default function Teams({ user, scope = "detachment" }) {
     }
   };
 
-  // â"€â"€ Edit helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Edit helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const eligibleEditMembers = detUsers
     .filter((u) => String(u.id) !== String(editIC))
     .sort(byLoad);
@@ -328,7 +321,7 @@ export default function Teams({ user, scope = "detachment" }) {
       });
       setEditingTeam(null);
       loadTeams();
-      setSuccessMsg("Team updated successfully.");
+      loadWorkload();
     } catch (e) {
       const d = e?.response?.data;
       setEditError(d?.detail || d?.non_field_errors?.[0] || d?.members?.[0] || "Failed to update team.");
@@ -337,14 +330,14 @@ export default function Teams({ user, scope = "detachment" }) {
     }
   };
 
-  // â"€â"€ Delete â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // â”€â”€ Delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleDelete = async (id) => {
     setDeleting(true);
     try {
       await teamService.delete(id);
       setConfirmDeleteId(null);
       loadTeams();
-      setSuccessMsg("Team deleted successfully.");
+      loadWorkload();
     } catch {
       // ignore
     } finally {
@@ -354,8 +347,6 @@ export default function Teams({ user, scope = "detachment" }) {
 
 
   return (
-    <>
-    {successMsg && <SuccessToast message={successMsg} onDone={() => setSuccessMsg("")} />}
     <div className="p-4 md:p-6 min-h-screen bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
@@ -366,12 +357,12 @@ export default function Teams({ user, scope = "detachment" }) {
           <p className="text-sm text-gray-500 mt-0.5">
             {isBattalionScope
               ? (user?.battalion_name ? `${user.battalion_name} Teams` : "Battalion Teams")
-              : (user?.detachment_name ? `${user.detachment_name} Detachment` : "Detachment Teams")}
+              : (user?.detachment_name ? `${user.detachment_name} Company` : "Company Teams")}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <button
-            onClick={(e) => { e.stopPropagation(); loadTeams(); }}
+            onClick={(e) => { e.stopPropagation(); loadTeams(); loadWorkload(); }}
             className="flex items-center gap-2 text-sm bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -409,7 +400,7 @@ export default function Teams({ user, scope = "detachment" }) {
       {activeTab === "workload" && (
         <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-300">Personnel Engagement (Cases Under Investigation)</h3>
+            <h3 className="text-sm font-semibold text-gray-300">Personnel Engagement (Active Cases)</h3>
             {loadingWorkload && <span className="text-xs text-gray-500 animate-pulse">Loading...</span>}
           </div>
           {workload.length === 0 && !loadingWorkload ? (
@@ -422,6 +413,7 @@ export default function Teams({ user, scope = "detachment" }) {
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider w-10">#</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Name</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Role</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As IO</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As IC</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">As Member</th>
                     <th className="px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider text-center">Total</th>
@@ -441,6 +433,7 @@ export default function Teams({ user, scope = "detachment" }) {
                           <div className="text-xs text-gray-500">{w.service_number}</div>
                         </td>
                         <td className="px-4 py-3 text-xs text-indigo-400">{ROLE_LABELS[w.role] || w.role}</td>
+                        <td className="px-4 py-3 text-center text-xs text-gray-300">{w.direct_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center text-xs text-gray-300">{w.ic_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center text-xs text-gray-300">{w.member_cases ?? 0}</td>
                         <td className="px-4 py-3 text-center">
@@ -507,7 +500,7 @@ export default function Teams({ user, scope = "detachment" }) {
                     <td className="px-4 py-3">
                       {icDetail
                         ? <span className="text-indigo-300 text-sm">{displayUser(icDetail)}</span>
-                        : <span className="text-gray-600 italic text-xs">-</span>}
+                        : <span className="text-gray-600 italic text-xs">â€”</span>}
                     </td>
                     <td className="px-4 py-3">
                       <button
@@ -595,19 +588,19 @@ export default function Teams({ user, scope = "detachment" }) {
                 disabled={creating || !teamName.trim() || !teamIC || members.length < 2}
                 className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {creating ? "Creating..." : "Create Team"}
+                {creating ? "Creatingâ€¦" : "Create Team"}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* â"€â"€ Edit Modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€ */}
+      {/* â”€â”€ Edit Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {editingTeam && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setEditingTeam(null)}>
           <div className="bg-gray-800 rounded-xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto border border-gray-700" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-lg font-bold text-white">Edit Team - {editingTeam.name}</h2>
+              <h2 className="text-lg font-bold text-white">Edit Team â€” {editingTeam.name}</h2>
               <button onClick={() => setEditingTeam(null)} className="text-gray-400 hover:text-white">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -630,13 +623,12 @@ export default function Teams({ user, scope = "detachment" }) {
                 disabled={editing || !editName.trim() || !editIC || editMembers.length < 2}
                 className="px-4 py-2 text-sm rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {editing ? "Saving..." : "Save Changes"}
+                {editing ? "Savingâ€¦" : "Save Changes"}
               </button>
             </div>
           </div>
         </div>
       )}
     </div>
-    </>
   );
 }

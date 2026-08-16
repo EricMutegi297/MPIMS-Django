@@ -1,29 +1,17 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { userService, formationService } from "../services/api";
-
-function SuccessToast({ message, onDone }) {
-  useEffect(() => {
-    const t = setTimeout(onDone, 2800);
-    return () => clearTimeout(t);
-  }, [onDone]);
-  return (
-    <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-3 bg-green-600 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-2xl animate-fade-in-down">
-      <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-      </svg>
-      {message}
-    </div>
-  );
-}
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 const ROLE_LABELS = {
   admin:        "Admin",
   co:           "Commanding Officer",
+  oc:           "Officer Commanding",
   corps_cmd:    "Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
+  hod:          "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment:   "IC Det",
+  detachment:   "IC COY",
   personnel:    "Personnel",
   legal:        "Legal",
   order_nco:    "Order NCO",
@@ -32,18 +20,16 @@ const ROLE_LABELS = {
   cop:          "COP",
   adj:          "Adjutant",
   "2ic":        "2nd in Command",
-  so1_legal:    "SO 1 Legal",
-  so1_ops:      "SO 1 OPs",
-  so2_legal:    "SO 2 Legal",
-  so2_ops:      "SO 2 OPs",
 };
 
 const ROLE_BADGE = {
   admin:        "bg-blue-500/20 text-blue-400",
   co:           "bg-purple-500/20 text-purple-400",
+  oc:           "bg-fuchsia-500/20 text-fuchsia-400",
   corps_cmd:    "bg-red-500/20 text-red-400",
   investigator: "bg-indigo-500/20 text-indigo-400",
   duty_officer: "bg-yellow-500/20 text-yellow-400",
+  hod:          "bg-lime-500/20 text-lime-400",
   guardroom_ic: "bg-orange-500/20 text-orange-400",
   detachment:   "bg-teal-500/20 text-teal-400",
   personnel:    "bg-gray-500/20 text-gray-400",
@@ -54,13 +40,7 @@ const ROLE_BADGE = {
   cop:          "bg-rose-500/20 text-rose-400",
   adj:          "bg-violet-500/20 text-violet-400",
   "2ic":        "bg-sky-500/20 text-sky-400",
-  so1_legal:    "bg-fuchsia-500/20 text-fuchsia-400",
-  so1_ops:      "bg-lime-500/20 text-lime-400",
-  so2_legal:    "bg-pink-500/20 text-pink-400",
-  so2_ops:      "bg-emerald-500/20 text-emerald-400",
 };
-
-const GLOBAL_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_legal", "so2_ops"];
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -72,6 +52,7 @@ export default function Users({ user }) {
   const [error, setError]       = useState("");
   const [search, setSearch]     = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
+  useAutoDismiss(error, setError);
 
   const isHqsAdmin      = user?.role === "admin" && user?.battalion_type === "hqs";
   const isSuperuser     = Boolean(user?.is_superuser);
@@ -81,9 +62,9 @@ export default function Users({ user }) {
 
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","corps_cmd","investigator","duty_officer","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","so1_legal","so1_ops","so2_legal","so2_ops"]
+    ? ["admin","co","oc","corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
     : isBattalionAdmin
-    ? ["co","detachment","personnel","investigator","adj","2ic"]
+    ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
     : isDetachmentIC
     ? ["personnel","investigator"]
     : [];
@@ -93,7 +74,7 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","detachment","personnel","investigator","adj","2ic"]
+      ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
       : isDetachmentIC
       ? ["personnel","investigator"]
       : []
@@ -110,10 +91,11 @@ export default function Users({ user }) {
   const [detachments, setDetachments]   = useState([]);
   const [creating, setCreating]         = useState(false);
   const [createError, setCreateError]   = useState("");
-  const [successMsg, setSuccessMsg]     = useState("");
+  const [createNotice, setCreateNotice] = useState("");
 
-  // Roles that can optionally be scoped to a detachment
+  // Roles that can optionally be scoped to a company
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
 
   const loadDetachments = useCallback((battalionId) => {
     if (!battalionId) { setDetachments([]); return; }
@@ -128,6 +110,9 @@ export default function Users({ user }) {
   const [editForm, setEditForm]         = useState({});
   const [editing, setEditing]           = useState(false);
   const [editError, setEditError]       = useState("");
+  useAutoDismiss(createError, setCreateError);
+  useAutoDismiss(createNotice, setCreateNotice);
+  useAutoDismiss(editError, setEditError);
 
   // Delete confirm state
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
@@ -163,6 +148,7 @@ export default function Users({ user }) {
     };
     setForm(prefill);
     setCreateError("");
+    setCreateNotice("");
     setDetachments([]);
     setShowCreate(true);
     if (battalions.length === 0) {
@@ -197,7 +183,6 @@ export default function Users({ user }) {
       await userService.update(editTarget.id, editForm);
       setShowEdit(false);
       loadUsers();
-      setSuccessMsg("User updated successfully.");
     } catch (err) {
       const data = err?.response?.data;
       if (data && typeof data === "object") {
@@ -216,7 +201,6 @@ export default function Users({ user }) {
       await userService.delete(id);
       setConfirmDeleteId(null);
       loadUsers();
-      setSuccessMsg("User deleted successfully.");
     } catch {
       // silently ignore
     } finally {
@@ -232,14 +216,22 @@ export default function Users({ user }) {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
       if (!payload.battalion) delete payload.battalion;
-      // Ensure battalion is always included; backend enforce-assigns it for battalion admin/IC Det anyway
-      if ((isBattalionAdmin || isDetachmentIC) && !payload.battalion) {
-        payload.battalion = user?.battalion ?? payload.battalion;
-      }
-      await userService.create(payload);
+      delete payload.password;
+      // For battalion admin/IC COY the backend auto-assigns battalion; for superuser use form value
+      if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
+      const res = await userService.create(payload);
+      const email = res.data?.activation_email || payload.email;
+      const sent = Boolean(res.data?.activation_email_sent);
+      const delivery = res.data?.activation_delivery;
+      setCreateNotice(
+        sent && delivery === "console"
+          ? `Account created. Activation link printed in the backend terminal for ${email}.`
+          : sent
+          ? `Account created. Activation link sent to ${email}.`
+          : `Account created, but activation email could not be sent to ${email}. Check email settings.`
+      );
       setShowCreate(false);
       loadUsers();
-      setSuccessMsg("User created. A password setup link has been sent to their email.");
     } catch (err) {
       const data = err?.response?.data;
       if (data && typeof data === "object") {
@@ -269,7 +261,7 @@ export default function Users({ user }) {
       .then((res) => setUsers(toArray(res.data)))
       .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [isDetachmentIC, isHqsAdmin, isSuperuser, user?.battalion, user?.detachment]);
+  }, [isHqsAdmin, isSuperuser, isDetachmentIC, user?.battalion, user?.detachment]);
 
   useEffect(() => {
     loadUsers();
@@ -289,14 +281,13 @@ export default function Users({ user }) {
   const title = isHqsAdmin || isSuperuser
     ? "All Users"
     : isDetachmentIC
-    ? `${user?.detachment_name ?? "Detachment"}  -  Personnel`
+    ? `${user?.detachment_name ?? "Company"} — Personnel`
     : user?.battalion_name
-    ? `${user.battalion_name}  -  Personnel`
+    ? `${user.battalion_name} — Personnel`
     : "Battalion Personnel";
 
   return (
     <>
-    {successMsg && <SuccessToast message={successMsg} onDone={() => setSuccessMsg("")} />}
     <div className="p-4 md:p-6 min-h-screen bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between mb-5">
@@ -367,6 +358,12 @@ export default function Users({ user }) {
       {error && (
         <div className="bg-red-900/30 border border-red-700 text-red-400 text-sm rounded-lg px-4 py-3 mb-5">
           {error}
+        </div>
+      )}
+
+      {createNotice && (
+        <div className="bg-blue-900/30 border border-blue-700 text-blue-200 text-sm rounded-lg px-4 py-3 mb-5">
+          {createNotice}
         </div>
       )}
 
@@ -495,9 +492,6 @@ export default function Users({ user }) {
             {createError && (
               <p className="text-red-400 text-xs bg-red-900/30 rounded px-3 py-2">{createError}</p>
             )}
-            <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-100">
-              MPIMS will email this user a secure link to choose their own password.
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Service Number *</label>
@@ -542,16 +536,16 @@ export default function Users({ user }) {
                   required value={form.role}
                   onChange={(e) => {
                     const newRole = e.target.value;
-                    const clearOrg = GLOBAL_ROLES.includes(newRole);
+                    const isGlobalRole = GLOBAL_LEVEL_ROLES.includes(newRole);
                     const clearDet = !DETACHMENT_LEVEL_ROLES.includes(newRole);
                     setForm({
                       ...form,
                       role: newRole,
-                      battalion: clearOrg ? "" : form.battalion,
-                      detachment: clearOrg || clearDet ? "" : form.detachment,
+                      battalion: isGlobalRole ? "" : form.battalion,
+                      detachment: clearDet || isGlobalRole ? "" : form.detachment,
                     });
-                    // Load detachments when switching to a detachment-level role and battalion is known
-                    if (!clearOrg && DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion) {
+                    // Load companies when switching to a company-level role and battalion is known
+                    if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion && !isGlobalRole) {
                       loadDetachments(form.battalion);
                     }
                   }}
@@ -565,12 +559,16 @@ export default function Users({ user }) {
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">
-                  Battalion {!GLOBAL_ROLES.includes(form.role) && "*"}
+                  Battalion {GLOBAL_LEVEL_ROLES.includes(form.role) ? "" : "*"}
                 </label>
-                {isSuperuser || isHqsAdmin ? (
+                {GLOBAL_LEVEL_ROLES.includes(form.role) ? (
+                  <input
+                    readOnly value="No battalion required"
+                    className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                  />
+                ) : isSuperuser || isHqsAdmin ? (
                   <select
-                    required={!GLOBAL_ROLES.includes(form.role)}
-                    value={form.battalion}
+                    required={!GLOBAL_LEVEL_ROLES.includes(form.role)} value={form.battalion}
                     onChange={(e) => {
                       const val = e.target.value;
                       setForm({ ...form, battalion: val, detachment: "" });
@@ -593,16 +591,18 @@ export default function Users({ user }) {
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Detachment <span className="text-gray-500">(optional  -  leave blank for battalion-level)</span>
+                    Company <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
                   </label>
                   <select
                     value={form.detachment}
                     onChange={(e) => setForm({ ...form, detachment: e.target.value })}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    <option value=""> -  Battalion level (no detachment)  - </option>
+                    <option value="">— Battalion level (no company) —</option>
                     {detachments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
+                      <option key={d.id} value={d.id}>
+                        {d.company ? `${d.company} Coy` : "Coy"}{d.name ? ` - ${d.name}` : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -632,7 +632,7 @@ export default function Users({ user }) {
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
         <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
-            <h2 className="text-white font-semibold text-base">Edit User  -  {editTarget.name}</h2>
+            <h2 className="text-white font-semibold text-base">Edit User — {editTarget.name}</h2>
             <button onClick={() => setShowEdit(false)} className="text-gray-400 hover:text-white">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

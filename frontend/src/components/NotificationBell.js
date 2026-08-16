@@ -1,6 +1,28 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { notificationService } from "../services/api";
 
+function scheduleNonCritical(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  if ("requestIdleCallback" in window) {
+    const idleId = window.requestIdleCallback(callback, { timeout: 2000 });
+    return () => window.cancelIdleCallback?.(idleId);
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 700);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+}
+
 export default function NotificationBell() {
   const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
@@ -28,9 +50,12 @@ export default function NotificationBell() {
 
   // Initial load + 30-second polling
   useEffect(() => {
-    fetchNotifications();
+    const cancelInitial = scheduleNonCritical(fetchNotifications);
     const id = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(id);
+    return () => {
+      cancelInitial?.();
+      clearInterval(id);
+    };
   }, [fetchNotifications]);
 
   // Refresh whenever the panel is opened so the list is always fresh

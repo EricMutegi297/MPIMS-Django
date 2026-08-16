@@ -1,10 +1,28 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
-import { caseService, teamService, attachmentService } from "../services/api";
+import React, { useEffect, useState, useCallback } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { caseService, caseBriefService, teamService, attachmentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
 }
 
 function normalizeDateForApi(value) {
@@ -16,14 +34,6 @@ function normalizeDateForApi(value) {
   if (isoPrefix) return isoPrefix[1];
   return text;
 }
-
-const COURT_MILESTONE_TYPES = [
-  { value: "mentioning", label: "Mentioning" },
-  { value: "hearing", label: "Hearing" },
-  { value: "defence", label: "Defence" },
-  { value: "ruling", label: "Ruling" },
-  { value: "judgment", label: "Judgment" },
-];
 
 const STATUS_COLORS = {
   new: "bg-gray-600 text-gray-200",
@@ -100,426 +110,6 @@ const FILTERS = [
   },
 ];
 
-function ErrMsg({ msg }) {
-  if (!msg) return null;
-  return <p className="text-red-400 text-xs mt-1">{msg}</p>;
-}
-
-// ── CourtMilestoneHistoryModal (read-only) ─────────────────────────────────────
-function CourtMilestoneHistoryModal({ caseObj, onClose }) {
-  const [milestones, setMilestones] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!caseObj?.id) return;
-    setLoading(true);
-    caseService.listCourtMilestones(caseObj.id)
-      .then((res) => {
-        const data = res.data;
-        const list = Array.isArray(data) ? data : (data.results || []);
-        setMilestones(list.sort((a, b) => a.id - b.id));
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [caseObj?.id]);
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-gray-800 rounded-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto p-6 space-y-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-white font-semibold">Court Milestones - {caseObj.case_number}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">&times;</button>
-        </div>
-        {loading ? (
-          <p className="text-gray-500 text-sm">Loading milestones...</p>
-        ) : milestones.length === 0 ? (
-          <p className="text-gray-500 text-sm italic">No milestones recorded yet.</p>
-        ) : (
-          <div className="space-y-3">
-            {milestones.map((m, idx) => {
-              const isCurrent = idx === milestones.length - 1;
-              return (
-                <div key={m.id} className={`rounded-lg p-4 space-y-2 ${isCurrent ? "bg-purple-900/30 border border-purple-700/40" : "bg-gray-700/40"}`}>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${isCurrent ? "bg-purple-600 text-white" : "bg-gray-600 text-gray-300"}`}>
-                      {m.milestone_type}
-                    </span>
-                    <span className="text-gray-400 text-xs">{m.scheduled_date ? new Date(m.scheduled_date).toLocaleDateString("en-GB") : "--"}</span>
-                    <span className="text-gray-500 text-xs">by {m.created_by_name || "--"}</span>
-                    {isCurrent && <span className="ml-auto text-[10px] bg-purple-700/50 text-purple-300 px-1.5 py-0.5 rounded font-medium">Current</span>}
-                  </div>
-                  {m.planning_comment && <p className="text-gray-300 text-sm">{m.planning_comment}</p>}
-                  {(m.action_remarks || (isCurrent && m.planning_comment)) && (
-                    <div className="text-xs text-gray-400 border-l-2 border-gray-600 pl-2">
-                      <span className="text-gray-500">Court Action: </span>{m.action_remarks || m.planning_comment}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── CourtMilestoneCell ──────────────────────────────────────────────────────────
-function CourtMilestoneCell({ caseObj, onViewHistory, onUpdate, onMilestonesLoaded }) {
-  const [milestones, setMilestones] = useState([]);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!caseObj?.id) return;
-    caseService.listCourtMilestones(caseObj.id)
-      .then((res) => {
-        const data = res.data;
-        const list = Array.isArray(data) ? data : (data.results || []);
-        const sorted = list.sort((a, b) => a.id - b.id);
-        setMilestones(sorted);
-        if (onMilestonesLoaded) onMilestonesLoaded(sorted);
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true));
-  }, [caseObj.id]);
-
-  const latest = milestones[milestones.length - 1] || null;
-
-  return (
-    <div className="flex flex-col gap-1.5 min-w-[150px]">
-      <button
-        type="button"
-        onClick={() => onViewHistory(caseObj)}
-        className="text-left hover:opacity-75 transition-opacity"
-        title="Click to view milestone history"
-      >
-        {!loaded ? (
-          <span className="text-xs text-gray-500">...</span>
-        ) : latest ? (
-          <div className="space-y-0.5">
-            <span className="text-[11px] px-1.5 py-0.5 rounded bg-purple-700/50 text-purple-300 capitalize inline-block">{latest.milestone_type}</span>
-            <div className="text-[10px] text-gray-400">{latest.scheduled_date ? new Date(latest.scheduled_date).toLocaleDateString("en-GB") : "--"}</div>
-            {(latest.action_remarks || latest.planning_comment) && (
-              <div className="text-[10px] text-gray-300 line-clamp-2 border-l-2 border-purple-700/50 pl-1.5 mt-0.5">{latest.action_remarks || latest.planning_comment}</div>
-            )}
-          </div>
-        ) : (
-          <span className="text-xs text-gray-500 italic">No milestones</span>
-        )}
-      </button>
-      {onUpdate && (
-        <button
-          type="button"
-          onClick={() => onUpdate(caseObj)}
-          className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap self-start"
-        >
-          Update
-        </button>
-      )}
-    </div>
-  );
-}
-
-function CourtMartialMilestoneModal({ caseObj, onClose, user }) {
-  const [courtMilestones, setCourtMilestones] = useState([]);
-  const [courtMilestonesLoading, setCourtMilestonesLoading] = useState(false);
-  const [courtMilestoneErr, setCourtMilestoneErr] = useState("");
-  const [courtMilestoneSuccess, setCourtMilestoneSuccess] = useState("");
-  const [milestoneType, setMilestoneType] = useState("mentioning");
-  const [milestoneDate, setMilestoneDate] = useState("");
-  const [milestoneComment, setMilestoneComment] = useState("");
-  const [milestoneSaving, setMilestoneSaving] = useState(false);
-  const [actionDrafts, setActionDrafts] = useState({});
-  const [actionSavingId, setActionSavingId] = useState(null);
-  const [editingActionMilestoneId, setEditingActionMilestoneId] = useState(null);
-  const actionSaveInFlightRef = useRef(new Set());
-  const actionInputRefs = useRef({});
-
-  const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
-  const isSuperuser = Boolean(user?.is_superuser);
-  const isInvestigator = user?.role === "investigator";
-
-  const latestCourtMilestoneId = courtMilestones.reduce((latestId, m) => {
-    if (latestId === null) return m.id;
-    const latest = courtMilestones.find((row) => row.id === latestId);
-    if (!latest) return m.id;
-    const currentDate = String(m.scheduled_date || "");
-    const latestDate = String(latest.scheduled_date || "");
-    if (currentDate > latestDate) return m.id;
-    if (currentDate === latestDate) {
-      const currentCreatedAt = String(m.created_at || "");
-      const latestCreatedAt = String(latest.created_at || "");
-      if (currentCreatedAt > latestCreatedAt) return m.id;
-      if (currentCreatedAt === latestCreatedAt && m.id > latest.id) return m.id;
-    }
-    return latestId;
-  }, null);
-
-  useEffect(() => {
-    if (!caseObj?.id) return;
-    setCourtMilestonesLoading(true);
-    setCourtMilestoneErr("");
-    caseService.listCourtMilestones(caseObj.id)
-      .then((res) => {
-        const rows = toArray(res.data);
-        setCourtMilestones(rows);
-        const drafts = {};
-        rows.forEach((m) => { drafts[m.id] = m.action_remarks || ""; });
-        setActionDrafts(drafts);
-      })
-      .catch(() => { setCourtMilestoneErr("Failed to load milestones."); })
-      .finally(() => setCourtMilestonesLoading(false));
-  }, [caseObj?.id]);
-
-  async function addCourtMilestone() {
-    if (!milestoneType) { setCourtMilestoneErr("Select a milestone type."); return; }
-    if (!milestoneDate) { setCourtMilestoneErr("Select a milestone date."); return; }
-    if (!milestoneComment.trim()) { setCourtMilestoneErr("Milestone comment is required."); return; }
-    setMilestoneSaving(true);
-    setCourtMilestoneErr("");
-    setCourtMilestoneSuccess("");
-    try {
-      const res = await caseService.addCourtMilestone(caseObj.id, {
-        milestone_type: milestoneType,
-        scheduled_date: normalizeDateForApi(milestoneDate),
-        planning_comment: milestoneComment,
-      });
-      const row = res.data;
-      setCourtMilestones((prev) => [...prev, row].sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date))));
-      setActionDrafts((prev) => ({ ...prev, [row.id]: row.action_remarks || "" }));
-      setMilestoneType("mentioning");
-      setMilestoneDate("");
-      setMilestoneComment("");
-      setCourtMilestoneSuccess("Milestone saved successfully.");
-    } catch (err) {
-      const d = err.response?.data;
-      setCourtMilestoneErr(d?.detail ? String(d.detail) : "Failed to save milestone.");
-    } finally {
-      setMilestoneSaving(false);
-    }
-  }
-
-  async function saveMilestoneAction(milestoneId) {
-    if (latestCourtMilestoneId && milestoneId !== latestCourtMilestoneId) {
-      setCourtMilestoneErr("Only the most current milestone can be edited for Court Action / Remarks.");
-      return;
-    }
-    if (actionSaveInFlightRef.current.has(milestoneId)) return;
-    const draft = (actionDrafts[milestoneId] || "").trim();
-    if (!draft) { setCourtMilestoneErr("Action remarks are required."); return; }
-    const existing = courtMilestones.find((m) => m.id === milestoneId);
-    if (existing && draft === String(existing.action_remarks || "").trim()) {
-      setCourtMilestoneSuccess("Action remarks already saved.");
-      return;
-    }
-    actionSaveInFlightRef.current.add(milestoneId);
-    setActionSavingId(milestoneId);
-    setCourtMilestoneErr("");
-    setCourtMilestoneSuccess("");
-    try {
-      const res = await caseService.updateCourtMilestone(caseObj.id, milestoneId, { action_remarks: draft });
-      setCourtMilestones((prev) => prev.map((m) => (m.id === milestoneId ? res.data : m)));
-      setActionDrafts((prev) => ({ ...prev, [milestoneId]: res.data.action_remarks || "" }));
-      setEditingActionMilestoneId(null);
-      setCourtMilestoneSuccess("Court action remarks saved successfully.");
-    } catch (err) {
-      const d = err.response?.data;
-      setCourtMilestoneErr(d?.detail ? String(d.detail) : "Failed to save action remarks.");
-    } finally {
-      actionSaveInFlightRef.current.delete(milestoneId);
-      setActionSavingId(null);
-    }
-  }
-
-  function startEditMilestoneAction(milestoneId) {
-    if (latestCourtMilestoneId && milestoneId !== latestCourtMilestoneId) {
-      setCourtMilestoneErr("Only the most current milestone can be edited.");
-      return;
-    }
-    setCourtMilestoneErr("");
-    setCourtMilestoneSuccess("");
-    setEditingActionMilestoneId(milestoneId);
-    setTimeout(() => { actionInputRefs.current[milestoneId]?.focus(); }, 0);
-  }
-
-  function cancelEditMilestoneAction(milestoneId) {
-    const existing = courtMilestones.find((m) => m.id === milestoneId);
-    setActionDrafts((prev) => ({ ...prev, [milestoneId]: existing?.action_remarks || "" }));
-    setEditingActionMilestoneId(null);
-  }
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4"
-      role="dialog"
-      aria-modal="true"
-    >
-      <div
-        className="w-full max-w-2xl bg-gray-800 rounded-2xl p-6 space-y-4 relative"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-
-        <h3 className="text-lg font-semibold text-white">Court Martial Milestones</h3>
-        <p className="text-xs text-gray-400">
-          Case: <span className="font-mono text-gray-300">{caseObj.case_number || "--"}</span>
-          {caseObj.accused_name && (
-            <> &mdash; {caseObj.accused_rank && <span className="text-gray-300">{caseObj.accused_rank} </span>}{caseObj.accused_name}</>
-          )}
-        </p>
-
-        {(isHqsAdmin || isSuperuser || isInvestigator) && (
-          <div className="bg-gray-700/40 rounded-lg p-4 space-y-3">
-            <p className="text-xs text-gray-400 uppercase tracking-wider">Add Milestone</p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Milestone Type *</label>
-                <select
-                  value={milestoneType}
-                  onChange={(e) => setMilestoneType(e.target.value)}
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                >
-                  {COURT_MILESTONE_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>{t.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Scheduled Date *</label>
-                <input
-                  type="date"
-                  value={milestoneDate}
-                  onChange={(e) => setMilestoneDate(e.target.value)}
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Planning Comment *</label>
-                <input
-                  type="text"
-                  value={milestoneComment}
-                  onChange={(e) => setMilestoneComment(e.target.value)}
-                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  placeholder="e.g. First mentioning before the bench"
-                />
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={addCourtMilestone}
-              disabled={milestoneSaving}
-              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded text-sm font-medium"
-            >
-              {milestoneSaving ? "Saving..." : "Add Milestone"}
-            </button>
-          </div>
-        )}
-
-        <div className="bg-gray-700/30 rounded-lg p-3 space-y-3">
-          <p className="text-xs text-gray-400 uppercase tracking-wider">Milestones and Court Action Remarks</p>
-          {courtMilestonesLoading ? (
-            <p className="text-sm text-gray-500">Loading milestones...</p>
-          ) : courtMilestones.length === 0 ? (
-            <p className="text-sm text-gray-500">No milestones set yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {courtMilestones.map((m) => {
-                const isLatest = m.id === latestCourtMilestoneId;
-                const isEditing = editingActionMilestoneId === m.id;
-                return (
-                  <div key={m.id} className="rounded bg-gray-800 px-3 py-3 border border-gray-700 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm text-white font-medium capitalize">
-                        {m.milestone_type} &mdash; {m.scheduled_date ? new Date(m.scheduled_date).toLocaleDateString("en-GB") : "--"}
-                      </p>
-                      <span className="text-[11px] text-gray-400">{m.created_by_name || "--"}</span>
-                    </div>
-                    <p className="text-xs text-gray-400">{m.planning_comment || "No planning comment"}</p>
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-end">
-                      <div>
-                        <label className="text-[11px] text-gray-500 block mb-1">Court Action / Remarks</label>
-                        <input
-                          type="text"
-                          ref={(el) => { actionInputRefs.current[m.id] = el; }}
-                          value={actionDrafts[m.id] ?? ""}
-                          onChange={(e) => {
-                            setActionDrafts((prev) => ({ ...prev, [m.id]: e.target.value }));
-                            if (courtMilestoneSuccess) setCourtMilestoneSuccess("");
-                          }}
-                          disabled={!isLatest || !isEditing || actionSavingId === m.id}
-                          className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                          placeholder="Enter action taken by Court Martial"
-                        />
-                      </div>
-                      {!isLatest && (
-                        <button type="button" disabled className="px-3 py-2 bg-indigo-600 disabled:opacity-40 text-white rounded text-xs font-medium">
-                          Save Action
-                        </button>
-                      )}
-                      {isLatest && !isEditing && (
-                        <button
-                          type="button"
-                          onClick={() => startEditMilestoneAction(m.id)}
-                          className="px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded text-xs font-medium"
-                        >
-                          Edit Action
-                        </button>
-                      )}
-                      {isLatest && isEditing && (
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => saveMilestoneAction(m.id)}
-                            disabled={actionSavingId === m.id}
-                            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-xs font-medium"
-                          >
-                            {actionSavingId === m.id ? "Saving..." : "Save Action"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => cancelEditMilestoneAction(m.id)}
-                            disabled={actionSavingId === m.id}
-                            className="px-3 py-2 bg-gray-600 hover:bg-gray-500 disabled:opacity-50 text-white rounded text-xs font-medium"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {!isLatest && (
-                      <p className="text-[11px] text-amber-400">Only the most current milestone can be edited.</p>
-                    )}
-                    {m.action_recorded_at && (
-                      <p className="text-[11px] text-gray-500">
-                        Last action: {new Date(m.action_recorded_at).toLocaleString("en-GB")} by {m.action_recorded_by_name || "--"}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {courtMilestoneSuccess && <p className="text-xs text-green-400">{courtMilestoneSuccess}</p>}
-          <ErrMsg msg={courtMilestoneErr} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function FilterCard({ cfg, value, isActive, loading, onClick }) {
   return (
     <button
@@ -536,13 +126,13 @@ function FilterCard({ cfg, value, isActive, loading, onClick }) {
           <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">active</span>
         )}
       </div>
-      <p className="text-xs text-gray-400 uppercase tracking-wider mb-1 leading-tight">{cfg.label}</p>
-      <p className={`text-2xl font-bold ${cfg.valueColor}`}>{loading ? "..." : value}</p>
+      <p className="min-h-[30px] text-xs text-gray-400 uppercase tracking-wider mb-1 leading-tight">{cfg.label}</p>
+      <p className={`min-h-[32px] text-2xl font-bold ${cfg.valueColor}`}>{loading ? "..." : value}</p>
     </button>
   );
 }
 
-// â"€â"€ Activity helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Activity helpers ──────────────────────────────────────────────────────────
 const ACTION_META = {
   case_created:          { color: "text-green-400",  bg: "bg-green-500/10",  label: "Case Created" },
   status_changed:        { color: "text-blue-400",   bg: "bg-blue-500/10",   label: "Status Changed" },
@@ -586,7 +176,7 @@ function fmtTime(ts) {
   return d.toLocaleDateString();
 }
 
-// â"€â"€ Attach Modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Attach Modal ─────────────────────────────────────────────────────────────
 function AttachModal({ caseObj, onClose, onUploaded }) {
   const [activeTab, setActiveTab] = useState("files");
   const [attachments, setAttachments] = useState([]);
@@ -596,6 +186,13 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [err, setErr] = useState("");
+  const [showBriefUpload, setShowBriefUpload] = useState(false);
+  const [briefSummary, setBriefSummary] = useState("");
+  const [briefFile, setBriefFile] = useState(null);
+  const [briefUploading, setBriefUploading] = useState(false);
+  const [briefUploadErr, setBriefUploadErr] = useState("");
+  useAutoDismiss(err, setErr);
+  useAutoDismiss(briefUploadErr, setBriefUploadErr);
 
   // Activity log state
   const [activityLog, setActivityLog] = useState([]);
@@ -639,6 +236,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
 
   const handleUpload = async (e) => {
     e.preventDefault();
+    if (caseObj.status === "closed") { setErr("Closed cases do not allow further uploads or attachment changes."); return; }
     if (!file) { setErr("Please select a file."); return; }
     setUploading(true);
     setErr("");
@@ -660,7 +258,45 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
     }
   };
 
+  const handleBriefToggle = () => {
+    setShowBriefUpload((prev) => !prev);
+    setBriefUploadErr("");
+    if (!showBriefUpload) {
+      setBriefSummary("");
+      setBriefFile(null);
+    }
+  };
+
+  const handleBriefUpload = async (e) => {
+    e.preventDefault();
+    if (caseObj.status === "closed") { setBriefUploadErr("Closed cases do not allow further uploads or attachment changes."); return; }
+    if (!briefFile) { setBriefUploadErr("Select a brief document to upload."); return; }
+    setBriefUploading(true);
+    setBriefUploadErr("");
+    try {
+      const fd = new FormData();
+      if (briefSummary.trim()) fd.append("summary", briefSummary.trim());
+      fd.append("file", briefFile);
+      await caseBriefService.upload(caseObj.id, fd);
+      setBriefSummary("");
+      setBriefFile(null);
+      setShowBriefUpload(false);
+      refreshActivity();
+      onUploaded();
+    } catch (ex) {
+      const data = ex?.response?.data;
+      const msgs = data?.summary?.[0] || data?.file?.[0] || data?.detail;
+      setBriefUploadErr(msgs || "Failed to upload brief.");
+    } finally {
+      setBriefUploading(false);
+    }
+  };
+
   const handleDelete = async (att) => {
+    if (caseObj.status === "closed") {
+      setErr("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
     setDeleting(att.id);
     try {
       await attachmentService.delete(caseObj.id, att.id);
@@ -683,16 +319,24 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
       url: caseObj.rfi_document || null,
       fileName: caseObj.rfi_document
         ? caseObj.rfi_document.split("/").pop()
-        : [caseObj.rfi_no, caseObj.rfi_date].filter(Boolean).join(" - ") || "RFI reference",
+        : [caseObj.rfi_no, caseObj.rfi_date].filter(Boolean).join(" • ") || "RFI reference",
       meta: !caseObj.rfi_document
         ? [caseObj.rfi_no && `No: ${caseObj.rfi_no}`, caseObj.rfi_date && `Date: ${caseObj.rfi_date}`].filter(Boolean).join(" | ")
         : "",
     },
     caseObj.tasking_letter && { key: "tasking", label: "Tasking Letter", url: caseObj.tasking_letter, fileName: caseObj.tasking_letter.split("/").pop() },
+    caseObj.brief && {
+      key: "brief",
+      label: "Brief",
+      url: caseObj.brief.file,
+      fileName: caseObj.brief.file?.split("/").pop() || "Brief document",
+      meta: caseObj.brief.summary ? `Summary: ${caseObj.brief.summary}` : "",
+    },
   ].filter(Boolean);
 
   const totalFileCount = systemFiles.length + attachments.length;
-  const canUpload = caseObj.status === "under_investigation" || caseObj.status === "pending";
+  const caseIsInvestigationScope = ["under_investigation", "tasked", "pending"].includes(caseObj.status);
+  const canUpload = caseIsInvestigationScope && caseObj.status !== "closed";
 
   const tabs = [
     { key: "files",    label: `Files (${totalFileCount})` },
@@ -736,10 +380,10 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
           ))}
         </div>
 
-        {/* â"€â"€ FILES TAB â"€â"€ */}
+        {/* ── FILES TAB ── */}
         {activeTab === "files" && (
           <>
-            {/* Upload form - only when case status allows uploads */}
+            {/* Upload form — only when case status allows uploads */}
             {canUpload ? (
               <form onSubmit={handleUpload} className="px-5 py-4 border-b border-gray-700 shrink-0 space-y-3">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Upload New File</p>
@@ -756,7 +400,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                       {file ? (
                         <span className="text-blue-400 truncate block">{file.name}</span>
                       ) : (
-                        <span className="text-gray-500">Click to select file...</span>
+                        <span className="text-gray-500">Click to select file…</span>
                       )}
                     </div>
                     <input
@@ -770,9 +414,49 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                     disabled={uploading || !file}
                     className="shrink-0 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
                   >
-                    {uploading ? "Uploading..." : "Upload"}
+                    {uploading ? "Uploading…" : "Upload"}
                   </button>
                 </div>
+                {caseIsInvestigationScope && caseObj.criminal_offence_type !== "dci_civ_police" && (
+                  <button
+                    type="button"
+                    onClick={handleBriefToggle}
+                    className="w-full text-left mt-3 text-indigo-300 hover:text-indigo-100 text-sm font-medium"
+                  >
+                    {showBriefUpload ? "Cancel Brief Upload" : "Upload Brief"}
+                  </button>
+                )}
+                {showBriefUpload && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief Summary</label>
+                      <textarea
+                        value={briefSummary}
+                        onChange={(e) => setBriefSummary(e.target.value)}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        rows={3}
+                        placeholder="Brief summary or notes (optional)"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Brief File</label>
+                      <input
+                        type="file"
+                        onChange={(e) => setBriefFile(e.target.files[0] || null)}
+                        className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-violet-600 file:text-white"
+                      />
+                    </div>
+                    {briefUploadErr && <p className="text-red-400 text-xs">{briefUploadErr}</p>}
+                    <button
+                      type="button"
+                      onClick={handleBriefUpload}
+                      disabled={briefUploading || !briefFile}
+                      className="w-full py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded-lg"
+                    >
+                      {briefUploading ? "Uploading…" : "Upload Brief"}
+                    </button>
+                  </div>
+                )}
                 {err && <p className="text-red-400 text-xs">{err}</p>}
               </form>
             ) : (
@@ -782,7 +466,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                   </svg>
                   <p className="text-xs text-gray-500">
-                    Uploads locked - case is <span className="capitalize font-medium text-gray-400">{caseObj.status?.replace(/_/g, " ")}</span>.
+                    Uploads locked — case is <span className="capitalize font-medium text-gray-400">{caseObj.status?.replace(/_/g, " ")}</span>.
                   </p>
                 </div>
               </div>
@@ -791,7 +475,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
             {/* Files list */}
             <div className="overflow-y-auto flex-1 px-5 py-4 space-y-5">
 
-              {/* â"€â"€ System files (read-only) â"€â"€ */}
+              {/* ── System files (read-only) ── */}
               {systemFiles.length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
@@ -846,7 +530,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                 </div>
               )}
 
-              {/* â"€â"€ Investigator uploads (deletable) â"€â"€ */}
+              {/* ── Investigator uploads (deletable) ── */}
               <div>
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                   Investigator Uploads
@@ -928,7 +612,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
           </>
         )}
 
-        {/* â"€â"€ ACTIVITY TAB â"€â"€ */}
+        {/* ── ACTIVITY TAB ── */}
         {activeTab === "activity" && (
           <div className="overflow-y-auto flex-1 px-5 py-4">
             {loadingActivity ? (
@@ -958,7 +642,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                       <div className="ml-2">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className={`text-xs font-semibold ${meta.color}`}>{meta.label}</span>
-                          <span className="text-gray-600 text-[10px]">.</span>
+                          <span className="text-gray-600 text-[10px]">·</span>
                           <span className="text-gray-500 text-[10px]">{fmtTime(entry.created_at)}</span>
                         </div>
                         {entry.detail && (
@@ -980,7 +664,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
   );
 }
 
-// â"€â"€ Abstract / attachment pill helper â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Abstract / attachment pill helper ────────────────────────────────────────
 function AbstractCell({ c, onAttach }) {
   const baseCount = ((c.rfi_document || c.rfi_no || c.rfi_date) ? 1 : 0) + (c.tasking_letter ? 1 : 0);
   const extraCount = c.extra_attachment_count || 0;
@@ -1002,7 +686,7 @@ function AbstractCell({ c, onAttach }) {
       {isLocked ? (
         <button
           onClick={() => onAttach(c)}
-          title="View documents (locked - case is served/closed)"
+          title="View documents (locked — case is served/closed)"
           className="text-gray-500 hover:text-gray-400 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1047,10 +731,11 @@ function DescriptionCell({ text }) {
   );
 }
 
-// â"€â"€ Resume Investigation Modal â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Resume Investigation Modal ────────────────────────────────────────────────
 function ResumeModal({ caseObj, onClose, onDone }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleResume = async () => {
     setSaving(true);
@@ -1071,20 +756,20 @@ function ResumeModal({ caseObj, onClose, onDone }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Resume Investigation</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
           <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-3 text-sm text-indigo-300">
-            Status will change from <strong>Pending</strong> -> <strong>Under Investigation</strong>.
+            Status will change from <strong>Pending</strong> → <strong>Under Investigation</strong>.
           </div>
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
         <div className="px-5 pb-4 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
           <button onClick={handleResume} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-colors">
-            {saving ? "Saving..." : "Resume Investigation"}
+            {saving ? "Saving…" : "Resume Investigation"}
           </button>
         </div>
       </div>
@@ -1098,6 +783,7 @@ function CaseUpdateModal({ caseObj, onClose, onDone }) {
   const [referencePdf, setReferencePdf] = useState(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleSave = async () => {
     if (!updateText.trim()) {
@@ -1146,7 +832,7 @@ function CaseUpdateModal({ caseObj, onClose, onDone }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Case Update</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
@@ -1202,12 +888,13 @@ function CaseUpdateModal({ caseObj, onClose, onDone }) {
   );
 }
 
-// â"€â"€ Close Case Modal (HQ Admin only) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Close Case Modal (HQ Admin only) ─────────────────────────────────────────
 function CloseModal({ caseObj, onClose, onDone }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
   const canClose = judgmentFiles.length > 0;
 
   const handleClose = async () => {
@@ -1244,9 +931,9 @@ function CloseModal({ caseObj, onClose, onDone }) {
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <div>
             <h3 className="text-white font-semibold">Close Case</h3>
-            <p className="text-gray-500 text-xs mt-0.5">Admin HQ - both documents required</p>
+            <p className="text-gray-500 text-xs mt-0.5">Admin HQ — both documents required</p>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
@@ -1271,7 +958,7 @@ function CloseModal({ caseObj, onClose, onDone }) {
         <div className="px-5 pb-4 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
           <button onClick={handleClose} disabled={saving || !canClose} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-green-700 hover:bg-green-600 disabled:opacity-50 transition-colors">
-            {saving ? "Closing..." : "Close Case"}
+            {saving ? "Closing…" : "Close Case"}
           </button>
         </div>
       </div>
@@ -1279,80 +966,42 @@ function CloseModal({ caseObj, onClose, onDone }) {
   );
 }
 
-// â"€â"€ Under-Investigation table (9 specific columns) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-// â"€â"€ Case Action Modals â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Under-Investigation table (9 specific columns) ────────────────────────────
+// ── Case Action Modals ────────────────────────────────────────────
 function ServeModal({ caseObj, attachCount, onClose, onDone }) {
   const isCourtMartial = caseObj?.criminal_offence_type === "court_martial";
   const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
-  const [rfiSaved, setRfiSaved] = useState(false);
-  const [rfiSavedMsg, setRfiSavedMsg] = useState("");
-  const [requestSent, setRequestSent] = useState(false);
-  const hasRfi = !!(caseObj?.rfi_no || caseObj?.rfi_document || caseObj?.rfi_date) || rfiSaved;
-  const canServe = isDciCiv ? hasRfi : attachCount > 3;
-  const [remarks, setRemarks] = useState("");
+  const canServe = isDciCiv ? true : attachCount > 3;
+  const [remarks, setRemarks] = useState(caseObj?.remarks || "");
   const [mentioningDate, setMentioningDate] = useState(normalizeDateForApi(caseObj?.mentioning_date));
   const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-
-  const [rfiNo, setRfiNo] = useState("");
-  const [rfiDate, setRfiDate] = useState("");
-  const [rfiFile, setRfiFile] = useState(null);
-  const [rfiSaving, setRfiSaving] = useState(false);
-  const [rfiErr, setRfiErr] = useState("");
-
-  const handleSaveRfi = async () => {
-    if (!rfiFile && !rfiDate) {
-      setRfiErr("Please select an RFI date or attach an RFI document before saving.");
-      return;
-    }
-    setRfiSaving(true);
-    setRfiErr("");
-    try {
-      const fd = new FormData();
-      if (rfiNo.trim()) fd.append("rfi_no", rfiNo.trim());
-      if (rfiDate) fd.append("rfi_date", rfiDate);
-      if (rfiFile) fd.append("rfi_document", rfiFile);
-      await caseService.update(caseObj.id, fd);
-      setRfiSaved(true);
-      setRfiSavedMsg("RFI saved successfully. You can now confirm the close request.");
-      onDone();
-    } catch (ex) {
-      const data = ex?.response?.data;
-      setRfiErr(data?.rfi_no?.[0] || data?.rfi_document?.[0] || data?.detail || "Failed to save RFI.");
-    } finally {
-      setRfiSaving(false);
-    }
-  };
+  useAutoDismiss(err, setErr);
 
   const handleServe = async () => {
     if (!canServe) return;
     setSaving(true);
     setErr("");
     try {
-      const payload = isDciCiv
-        ? {
-            close_requested: true,
-            remarks: remarks.trim(),
-          }
-        : {
-            status: "served",
-            remarks: remarks.trim(),
-          };
+      const payload = isDciCiv ? { close_requested: true } : { status: "served" };
+      const trimmedRemarks = remarks.trim();
+      if (trimmedRemarks) {
+        payload.remarks = trimmedRemarks;
+      }
       if (isCourtMartial) {
         const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
         if (normalizedMentioningDate) {
           payload.mentioning_date = normalizedMentioningDate;
         }
-        payload.mentioning_remarks = mentioningRemarks.trim();
+        const trimmedMentioningRemarks = mentioningRemarks.trim();
+        if (trimmedMentioningRemarks) {
+          payload.mentioning_remarks = trimmedMentioningRemarks;
+        }
       }
       await caseService.update(caseObj.id, payload);
       onDone();
-      if (isDciCiv) {
-        setRequestSent(true);
-      } else {
-        onClose();
-      }
+      onClose();
     } catch (ex) {
       const data = ex?.response?.data;
       if (data?.detail) {
@@ -1375,65 +1024,18 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">{isDciCiv ? "Request Close" : "Mark as Served"}</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
-          {requestSent ? (
-            <div className="bg-green-500/10 border border-green-500/40 rounded-lg p-4 text-sm text-green-400 text-center space-y-1">
-              <p className="font-semibold text-green-300 text-base">Close Request Sent</p>
-              <p>Your closure request for <span className="font-mono">{caseObj.case_number}</span> has been submitted to HQ for approval.</p>
-            </div>
-          ) : !canServe ? (
-            isDciCiv ? (
-              <div className="space-y-3">
-                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-400">
-                  (!) RFI is required before requesting case closure. Please fill in the RFI details below.
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">RFI Number <span className="text-gray-500">(optional)</span></label>
-                  <input
-                    type="text"
-                    value={rfiNo}
-                    onChange={(e) => { setRfiNo(e.target.value); setRfiErr(""); }}
-                    placeholder="e.g. RFI/2026/001"
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-gray-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">RFI Date <span className="text-red-400">*</span></label>
-                  <input
-                    type="date"
-                    value={rfiDate}
-                    onChange={(e) => { setRfiDate(e.target.value); setRfiErr(""); }}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">RFI Document (PDF)</label>
-                  <label className="cursor-pointer block">
-                    <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2 text-sm text-center transition-colors ${rfiFile ? "border-green-500/60" : "border-gray-500 hover:border-purple-500"}`}>
-                      {rfiFile ? <span className="text-green-400 truncate block">{rfiFile.name}</span> : <span className="text-gray-500">Click to select RFI PDF...</span>}
-                    </div>
-                    <input type="file" accept=".pdf" className="sr-only" onChange={(e) => { setRfiFile(e.target.files?.[0] || null); setRfiErr(""); }} />
-                  </label>
-                </div>
-                {rfiErr && <p className="text-red-400 text-xs">{rfiErr}</p>}
-              </div>
-            ) : (
+          {!canServe ? (
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
-              {`(!)  Cannot serve - needs more than 3 abstract documents (${attachCount} currently). Upload additional investigation documents first.`}
+              ⚠ Cannot serve — needs more than 3 abstract documents ({attachCount} currently). Upload additional investigation documents first.
             </div>
-            )
           ) : (
             <>
-              {rfiSavedMsg && (
-                <div className="bg-green-500/10 border border-green-500/40 rounded-lg p-3 text-sm text-green-400">
-                  {rfiSavedMsg}
-                </div>
-              )}
               <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-sm text-green-400">
-                (OK)  {attachCount} documents attached - {isDciCiv ? "you can now request HQ closure" : "case is eligible to be served"}.
+                ✓ {attachCount} documents attached — {isDciCiv ? "you can now request HQ closure" : "case is eligible to be served"}.
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">{isDciCiv ? "Close Request Remarks (optional)" : "Remarks (optional)"}</label>
@@ -1463,7 +1065,7 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
                       rows={3}
                       value={mentioningRemarks}
                       onChange={(e) => { setMentioningRemarks(e.target.value); setErr(""); }}
-                      placeholder="Enter mentioning remarks..."
+                      placeholder="Enter mentioning remarks…"
                       className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-purple-500 placeholder-gray-500 resize-none"
                     />
                   </div>
@@ -1474,15 +1076,10 @@ function ServeModal({ caseObj, attachCount, onClose, onDone }) {
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
         <div className="px-5 pb-4 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">{requestSent ? "Close" : "Cancel"}</button>
-          {!canServe && isDciCiv && !requestSent && (
-            <button onClick={handleSaveRfi} disabled={rfiSaving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors">
-              {rfiSaving ? "Saving..." : "Save RFI"}
-            </button>
-          )}
-          {canServe && !requestSent && (
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
+          {canServe && (
             <button onClick={handleServe} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 transition-colors">
-              {saving ? "Sending..." : isDciCiv ? "Confirm Close Request" : "Confirm Served"}
+              {saving ? "Saving..." : isDciCiv ? "Confirm Close Request" : "Confirm Served"}
             </button>
           )}
         </div>
@@ -1496,6 +1093,7 @@ function MentioningPromptModal({ caseObj, onClose, onSaved }) {
   const [mentioningRemarks, setMentioningRemarks] = useState(caseObj?.mentioning_remarks || "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handleSave = async () => {
     const normalizedMentioningDate = normalizeDateForApi(mentioningDate);
@@ -1537,7 +1135,7 @@ function MentioningPromptModal({ caseObj, onClose, onSaved }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Court Martial Mentioning Date</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">
@@ -1582,6 +1180,7 @@ function PendingModal({ caseObj, onClose, onDone }) {
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  useAutoDismiss(err, setErr);
 
   const handlePending = async () => {
     if (!reason.trim()) { setErr("A reason is required."); return; }
@@ -1603,7 +1202,7 @@ function PendingModal({ caseObj, onClose, onDone }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Mark as Pending</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
@@ -1613,7 +1212,7 @@ function PendingModal({ caseObj, onClose, onDone }) {
               rows={4}
               value={reason}
               onChange={(e) => { setReason(e.target.value); setErr(""); }}
-              placeholder="Enter reason why this case is being marked as pending..."
+              placeholder="Enter reason why this case is being marked as pending…"
               className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-orange-500 placeholder-gray-500 resize-none"
             />
           </div>
@@ -1622,7 +1221,7 @@ function PendingModal({ caseObj, onClose, onDone }) {
         <div className="px-5 pb-4 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">Cancel</button>
           <button onClick={handlePending} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-orange-600 hover:bg-orange-500 disabled:opacity-50 transition-colors">
-            {saving ? "Saving..." : "Mark Pending"}
+            {saving ? "Saving…" : "Mark Pending"}
           </button>
         </div>
       </div>
@@ -1630,11 +1229,13 @@ function PendingModal({ caseObj, onClose, onDone }) {
   );
 }
 
+// eslint-disable-next-line no-unused-vars
 function GuardroomModal({ caseObj, onClose, onDone }) {
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
+  useAutoDismiss(err, setErr);
 
   const handleRequest = async () => {
     if (!reason.trim()) { setErr("Please provide a reason for the guardroom request."); return; }
@@ -1656,7 +1257,7 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
       <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Request Guardroom</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">x</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           {done ? (
@@ -1666,14 +1267,14 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
             </div>
           ) : (
             <>
-              <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span> - <span className="text-gray-300">{caseObj.accused_name || ""}</span></p>
+              <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span> — <span className="text-gray-300">{caseObj.accused_name || ""}</span></p>
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">Reason / Justification <span className="text-red-400">*</span></label>
                 <textarea
                   rows={4}
                   value={reason}
                   onChange={(e) => { setReason(e.target.value); setErr(""); }}
-                  placeholder="State the reason for requesting guardroom detention..."
+                  placeholder="State the reason for requesting guardroom detention…"
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-red-500 placeholder-gray-500 resize-none"
                 />
               </div>
@@ -1685,7 +1286,7 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 transition-colors">{done ? "Close" : "Cancel"}</button>
           {!done && (
             <button onClick={handleRequest} disabled={saving} className="px-4 py-2 rounded-lg text-sm text-white font-medium bg-red-700 hover:bg-red-600 disabled:opacity-50 transition-colors">
-              {saving ? "Submitting..." : "Submit Request"}
+              {saving ? "Submitting…" : "Submit Request"}
             </button>
           )}
         </div>
@@ -1696,8 +1297,8 @@ function GuardroomModal({ caseObj, onClose, onDone }) {
 
 function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
   const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
-  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || c?.updated_at?.slice(0, 10) || "--";
-  const latestUpdateText = c?.action_taken || c?.remarks || "--";
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
       <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
@@ -1724,7 +1325,14 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
                 isDciCiv ? (
                   <>
                     <button onClick={() => onCaseUpdate(c)} className="text-[10px] px-2 py-0.5 rounded bg-cyan-700/80 hover:bg-cyan-600 text-white transition-colors whitespace-nowrap" title="Case Update">Case Update</button>
-                    <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Request Close">Request Close</button>
+                    <button
+                      onClick={() => onServe(c)}
+                      disabled={c.close_requested}
+                      className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors whitespace-nowrap"
+                      title="Request Close"
+                    >
+                      {c.close_requested ? "Requested" : "Request Close"}
+                    </button>
                   </>
                 ) : (
                   <>
@@ -1747,7 +1355,7 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
 function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1200px] text-sm">
+      <table className="min-w-[1080px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
@@ -1764,9 +1372,9 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />)
           )}
@@ -1776,7 +1384,7 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
   );
 }
 
-// â"€â"€ Pending cases table (dedicated columns) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Pending cases table (dedicated columns) ───────────────────────────────────
 function PendingRow({ c, onAttach, onResume }) {
   const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
   const latestUpdateText = c?.action_taken || "--";
@@ -1844,22 +1452,11 @@ function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
   );
 }
 
-// â"€â"€ Served cases table (dedicated columns) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-function ServedRow({ c, onAttach, onCloseCase, isHQAdmin, onMilestone, onViewHistory }) {
-  const isCourtMartial = c?.criminal_offence_type === "court_martial";
-  const [courtMilestones, setCourtMilestones] = useState([]);
-
+// ── Served cases table (dedicated columns) ────────────────────────────────────
+function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
   const dateServed = c.served_at?.slice(0, 10) || c.updated_at?.slice(0, 10) || "--";
-  const latestMilestone = courtMilestones.length > 0 ? courtMilestones[courtMilestones.length - 1] : null;
-  const latestUpdateDate = (isCourtMartial && latestMilestone)
-    ? (latestMilestone.action_remarks
-        ? latestMilestone.updated_at?.slice(0, 10)
-        : latestMilestone.scheduled_date?.slice(0, 10)) || "--"
-    : (normalizeDateForApi(c?.mentioning_date) || c?.served_at?.slice(0, 10) || c?.updated_at?.slice(0, 10) || "--");
-  const latestCourtAction = courtMilestones.length > 0
-    ? (courtMilestones[courtMilestones.length - 1].action_remarks || courtMilestones[courtMilestones.length - 1].planning_comment)
-    : null;
-  const latestUpdateText = (isCourtMartial && latestCourtAction) ? latestCourtAction : (c?.action_taken || c?.remarks || "--");
+  const latestUpdateDate = normalizeDateForApi(c?.mentioning_date) || "--";
+  const latestUpdateText = c?.action_taken || "--";
   return (
     <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
       <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
@@ -1879,18 +1476,6 @@ function ServedRow({ c, onAttach, onCloseCase, isHQAdmin, onMilestone, onViewHis
       <td className="px-3 py-3 text-gray-400 text-xs max-w-[120px]">
         <span className="line-clamp-2 block">{c.remarks || "--"}</span>
       </td>
-      {isCourtMartial ? (
-        <td className="px-3 py-3">
-          <CourtMilestoneCell
-            caseObj={c}
-            onViewHistory={(caseObj) => onViewHistory && onViewHistory(caseObj)}
-            onUpdate={(caseObj) => onMilestone && onMilestone(caseObj)}
-            onMilestonesLoaded={setCourtMilestones}
-          />
-        </td>
-      ) : (
-        <td className="px-3 py-3" />
-      )}
       <td className="px-3 py-3">
         {isHQAdmin ? (
           <button
@@ -1908,7 +1493,7 @@ function ServedRow({ c, onAttach, onCloseCase, isHQAdmin, onMilestone, onViewHis
   );
 }
 
-function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmin, onMilestone, onViewHistory }) {
+function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmin }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
       <table className="min-w-[1260px] text-sm">
@@ -1925,17 +1510,16 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
             <th className="text-left px-3 py-3">Abstract</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Date Served</th>
             <th className="text-left px-3 py-3">Remarks</th>
-            <th className="text-left px-3 py-3">Current Milestone</th>
             <th className="text-left px-3 py-3">Action</th>
           </tr>
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={13} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={13} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
-            cases.map((c) => <ServedRow key={c.id} c={c} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} onMilestone={onMilestone} onViewHistory={onViewHistory} />)
+            cases.map((c) => <ServedRow key={c.id} c={c} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />)
           )}
         </tbody>
       </table>
@@ -1943,7 +1527,64 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
   );
 }
 
-// â"€â"€ Generic table (all other filters) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Generic table (all other filters) ────────────────────────────────────────
+function ClosedRow({ c, onAttach }) {
+  const dateClosed = c.closed_at
+    ? new Date(c.closed_at).toLocaleDateString("en-GB")
+    : c.updated_at
+    ? new Date(c.updated_at).toLocaleDateString("en-GB")
+    : "--";
+
+  return (
+    <tr className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
+      <td className="px-3 py-3 text-blue-400 font-mono text-xs whitespace-nowrap">{c.case_number}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
+      <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
+      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3">
+        <AbstractCell c={c} onAttach={onAttach} />
+      </td>
+      <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{dateClosed}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[220px] max-w-[340px]">
+        <span className="line-clamp-3 whitespace-pre-wrap break-words">{c.action_taken || "--"}</span>
+      </td>
+    </tr>
+  );
+}
+
+function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
+  return (
+    <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+      <table className="min-w-[1280px] text-sm">
+        <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
+          <tr>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
+            <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Offence</th>
+            <th className="text-left px-3 py-3">Description</th>
+            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3 whitespace-nowrap">Date Closed</th>
+            <th className="text-left px-3 py-3">Action Taken</th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+          ) : cases.length === 0 ? (
+            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+          ) : (
+            cases.map((c) => <ClosedRow key={c.id} c={c} onAttach={onAttach} />)
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   const renderAction = () => {
     const isDciCiv = c?.criminal_offence_type === "dci_civ_police";
@@ -1960,10 +1601,11 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
             </button>
             <button
               onClick={() => onServe(c)}
-              className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap"
+              disabled={c.close_requested}
+              className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors whitespace-nowrap"
               title="Request Close"
             >
-              Request Close
+              {c.close_requested ? "Requested" : "Request Close"}
             </button>
           </div>
         );
@@ -2034,18 +1676,7 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-4 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.police_station || "--"}</td>
       <td className="px-4 py-3"><DescriptionCell text={c.description} /></td>
-      <td className="px-4 py-3 text-gray-300 text-xs max-w-[200px]">
-        {c.criminal_offence_type === "dci_civ_police" ? (
-          <div className="space-y-0.5">
-            <span className="line-clamp-2 block">{c.action_taken || "--"}</span>
-            {c.action_taken && (
-              <button type="button" onClick={() => onCaseUpdate(c)} className="text-[10px] text-cyan-400 hover:underline">Edit</button>
-            )}
-          </div>
-        ) : <span className="text-gray-600">--</span>}
-      </td>
       <td className="px-4 py-3">
         <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
           {c.status?.replace(/_/g, " ")}
@@ -2060,7 +1691,7 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
   );
 }
 
-function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin, onMilestone, onViewHistory }) {
+function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, isPending, isServed, isClosed, onServe, onMarkPending, onGuardroom, onResume, onCloseCase, onCaseUpdate, isHQAdmin }) {
   if (isUnderInvestigation) {
     return <UnderInvestigationTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />;
   }
@@ -2068,7 +1699,10 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
     return <PendingTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onResume={onResume} />;
   }
   if (isServed) {
-    return <ServedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} onMilestone={onMilestone} onViewHistory={onViewHistory} />;
+    return <ServedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />;
+  }
+  if (isClosed) {
+    return <ClosedTable cases={cases} loading={loading} emptyMsg={emptyMsg} onAttach={onAttach} />;
   }
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
@@ -2080,9 +1714,7 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
             <th className="text-left px-4 py-3">Rank</th>
             <th className="text-left px-4 py-3">Accused</th>
             <th className="text-left px-4 py-3">Offence</th>
-            <th className="text-left px-4 py-3 whitespace-nowrap">P/Station</th>
             <th className="text-left px-4 py-3">Description</th>
-            <th className="text-left px-4 py-3 whitespace-nowrap">Updates</th>
             <th className="text-left px-4 py-3">Status</th>
             <th className="text-left px-4 py-3">Abstract</th>
             <th className="text-left px-4 py-3">Date</th>
@@ -2091,9 +1723,9 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => (
               <GenericCaseRow
@@ -2116,7 +1748,7 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
   );
 }
 
-// â"€â"€ Footer â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Footer ───────────────────────────────────────────────────────────────────
 function Footer() {
   const [now, setNow] = React.useState(new Date());
   React.useEffect(() => {
@@ -2140,7 +1772,7 @@ function Footer() {
   );
 }
 
-// â"€â"€ Pagination Bar â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Pagination Bar ────────────────────────────────────────────────────────────
 const PAGE_SIZE = 25;
 
 function PaginationBar({ page, totalPages, totalCount, onChange }) {
@@ -2153,26 +1785,26 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
     for (let i = 1; i <= totalPages; i++) pages.push(i);
   } else {
     pages.push(1);
-    if (page > 3) pages.push("...");
+    if (page > 3) pages.push("…");
     for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) pages.push(i);
-    if (page < totalPages - 2) pages.push("...");
+    if (page < totalPages - 2) pages.push("…");
     pages.push(totalPages);
   }
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 mt-3 px-1 text-xs text-gray-500">
-      <span>Showing {start}-{end} of {totalCount} cases</span>
+      <span>Showing {start}–{end} of {totalCount} cases</span>
       <div className="flex items-center gap-1">
         <button
           onClick={() => onChange(page - 1)}
           disabled={page === 1}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          &lt;- Prev
+          ← Prev
         </button>
         {pages.map((p, i) =>
-          p === "..." ? (
-            <span key={`ellipsis-${i}`} className="px-1">...</span>
+          p === "…" ? (
+            <span key={`ellipsis-${i}`} className="px-1">…</span>
           ) : (
             <button
               key={p}
@@ -2192,15 +1824,16 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
           disabled={page === totalPages}
           className="px-2.5 py-1 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          Next ->
+          Next →
         </button>
       </div>
     </div>
   );
 }
 
-// â"€â"€ Main Component â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ── Main Component ─────────────────────────────────────────────────────────────
 export default function InvestigatorDashboard({ user }) {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [myTeams, setMyTeams] = useState([]);
   const [cases, setCases] = useState([]);
@@ -2211,12 +1844,9 @@ export default function InvestigatorDashboard({ user }) {
   const [mentioningPromptCase, setMentioningPromptCase] = useState(null);
   const [servingCase, setServingCase] = useState(null);
   const [pendingCase, setPendingCase] = useState(null);
-  const [guardroomCase, setGuardroomCase] = useState(null);
   const [updatingCase, setUpdatingCase] = useState(null);
   const [resumingCase, setResumingCase] = useState(null);
   const [closingCase, setClosingCase] = useState(null);
-  const [milestoneModalCase, setMilestoneModalCase] = useState(null);
-  const [historyModalData, setHistoryModalData] = useState(null); // { caseObj, milestones }
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [statusCounts, setStatusCounts] = useState({ all: 0, under_investigation: 0, pending: 0, served: 0, closed: 0 });
@@ -2254,16 +1884,17 @@ export default function InvestigatorDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, uiRes, peRes, seRes, clRes] = await Promise.all([
+      const [allRes, uiRes, taskedRes, peRes, seRes, clRes] = await Promise.all([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "under_investigation" }),
+        caseService.list({ page_size: 1, status: "tasked" }),
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
       ]);
       setStatusCounts({
         all:                allRes.data.count || 0,
-        under_investigation: uiRes.data.count || 0,
+        under_investigation: (uiRes.data.count || 0) + (taskedRes.data.count || 0),
         pending:            peRes.data.count || 0,
         served:             seRes.data.count || 0,
         closed:             clRes.data.count || 0,
@@ -2279,9 +1910,19 @@ export default function InvestigatorDashboard({ user }) {
     setLoadingCases(true);
     try {
       const params = { page, page_size: PAGE_SIZE };
-      if (activeFilter !== "all") params.status = activeFilter;
+      if (activeFilter !== "all") {
+        if (activeFilter === "under_investigation") {
+          params["status__in"] = "under_investigation,tasked";
+        } else {
+          params.status = activeFilter;
+        }
+      }
       const res = await caseService.list(params);
-      setCases(toArray(res.data));
+      const loadedCases = toArray(res.data);
+      const normalizedCases = activeFilter === "under_investigation"
+        ? loadedCases.map((c) => (c.status === "tasked" ? { ...c, status: "under_investigation" } : c))
+        : loadedCases;
+      setCases(normalizedCases);
       setTotalCount(res.data.count || 0);
     } catch {
       setCases([]);
@@ -2291,14 +1932,12 @@ export default function InvestigatorDashboard({ user }) {
     }
   }, [page, activeFilter]);
 
-  useEffect(() => {
+  useEffect(() => scheduleAfterPaint(() => {
     loadTeams();
     loadCounts();
-  }, [loadTeams, loadCounts]);
+  }), [loadTeams, loadCounts]);
 
-  useEffect(() => {
-    loadCases();
-  }, [loadCases]);
+  useEffect(() => scheduleAfterPaint(loadCases), [loadCases]);
 
   // With server-side pagination `cases` is only one page, so team-case counts
   // are shown without a per-team breakdown (team cards focus on team composition)
@@ -2427,7 +2066,7 @@ export default function InvestigatorDashboard({ user }) {
             {activeFilterCfg?.label}
           </h3>
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[activeFilter] || "bg-gray-700 text-gray-400"}`}>
-            {loadingCounts ? "..." : `${totalCount} total`}
+            {loadingCounts ? "…" : `${totalCount} total`}
           </span>
         </div>
         <CasesTable
@@ -2437,15 +2076,14 @@ export default function InvestigatorDashboard({ user }) {
           isUnderInvestigation={activeFilter === "under_investigation"}
           isPending={activeFilter === "pending"}
           isServed={activeFilter === "served"}
+          isClosed={activeFilter === "closed"}
           onServe={(c) => setServingCase(c)}
           onMarkPending={(c) => setPendingCase(c)}
-          onGuardroom={(c) => setGuardroomCase(c)}
+          onGuardroom={(c) => navigate(`/dashboard/guardrooms?case=${c.id}`)}
           onCaseUpdate={(c) => setUpdatingCase(c)}
           onResume={(c) => setResumingCase(c)}
           onCloseCase={(c) => setClosingCase(c)}
           isHQAdmin={isHQAdmin}
-          onMilestone={(c) => setMilestoneModalCase(c)}
-          onViewHistory={(caseObj) => setHistoryModalData({ caseObj })}
           emptyMsg={
             activeFilter === "all"
               ? "No cases associated with your teams or assignments yet."
@@ -2465,21 +2103,6 @@ export default function InvestigatorDashboard({ user }) {
           caseObj={attachingCase}
           onClose={() => setAttachingCase(null)}
           onUploaded={handleAttachmentChanged}
-        />
-      )}
-
-      {milestoneModalCase && (
-        <CourtMartialMilestoneModal
-          caseObj={milestoneModalCase}
-          onClose={() => setMilestoneModalCase(null)}
-          user={user}
-        />
-      )}
-
-      {historyModalData && (
-        <CourtMilestoneHistoryModal
-          caseObj={historyModalData.caseObj}
-          onClose={() => setHistoryModalData(null)}
         />
       )}
 
@@ -2508,14 +2131,6 @@ export default function InvestigatorDashboard({ user }) {
         <PendingModal
           caseObj={pendingCase}
           onClose={() => setPendingCase(null)}
-          onDone={handleAttachmentChanged}
-        />
-      )}
-
-      {guardroomCase && (
-        <GuardroomModal
-          caseObj={guardroomCase}
-          onClose={() => setGuardroomCase(null)}
           onDone={handleAttachmentChanged}
         />
       )}

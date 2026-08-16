@@ -140,7 +140,7 @@ export default function Analytics() {
       {/* Team performance */}
       <div>
         <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">
-          Team Performance (assignment-to-close)
+          Investigation Performance (assignment-to-close)
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <MetricCard

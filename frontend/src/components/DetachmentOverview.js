@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import api from "../axiosConfig";
-import { caseService } from "../services/api";
+import { caseService, formationService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 /* ─────────────────────── constants ────────────────────────────── */
 
@@ -33,11 +34,22 @@ const DRILLDOWN_STATUSES = [
   { value: "closed",              label: "Closed" },
   { value: "referred",            label: "Referred" },
 ];
+const COMPANY_OPTIONS = ["A", "B", "C", "D"];
+const EMPTY_COMPANY = { company: "A", name: "", aor: "", mobile_no: "", email: "" };
 
 /* ─────────────────────── small helpers ────────────────────────── */
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function companyLabel(det) {
+  const company = det?.company ? `${det.company} Coy` : "Coy";
+  return det?.name ? `${company} - ${det.name}` : company;
+}
+
+function battalionAllowsCompanies(battalion) {
+  return String(battalion?.battalion_type || "normal").toLowerCase() === "normal";
 }
 
 function ClickPill({ value, style, onClick, title }) {
@@ -85,7 +97,7 @@ function DrilldownPanel({ drill, onClose }) {
   const [search, setSearch]       = useState("");
   const panelRef                  = useRef(null);
 
-  /* fetch cases whenever detachment or status filter changes */
+  /* fetch cases whenever company or status filter changes */
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -121,7 +133,7 @@ function DrilldownPanel({ drill, onClose }) {
     );
   });
 
-  /* print  -  opens formatted page in new window */
+  /* print — opens formatted page in new window */
   const handlePrint = () => {
     const win = window.open("", "_blank", "width=900,height=700");
     if (!win) return;
@@ -156,7 +168,7 @@ function DrilldownPanel({ drill, onClose }) {
   </style>
 </head>
 <body>
-  <h2>Cases \u2014 ${drill.detName} (Coy ${drill.company})</h2>
+  <h2>Cases \u2014 ${drill.detName}</h2>
   <p>Filter: ${statusLabel} &nbsp;|&nbsp; ${filtered.length} case${filtered.length !== 1 ? "s" : ""}
      &nbsp;|&nbsp; Printed: ${new Date().toLocaleString("en-GB")}</p>
   <table>
@@ -165,7 +177,7 @@ function DrilldownPanel({ drill, onClose }) {
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <script>window.onload=function(){window.print();}<\/script>
+  <script>window.onload=function(){window.print();}</script>
 </body>
 </html>`);
     win.document.close();
@@ -189,13 +201,10 @@ function DrilldownPanel({ drill, onClose }) {
           <div>
             <h3 className="text-base font-bold text-white">
               {drill.detName}
-              <span className="ml-2 text-xs font-normal text-gray-400">
-                Coy {drill.company}
-              </span>
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
               {loading
-                ? "Loading cases..."
+                ? "Loading cases…"
                 : `${filtered.length} case${filtered.length !== 1 ? "s" : ""} shown`}
             </p>
           </div>
@@ -228,7 +237,7 @@ function DrilldownPanel({ drill, onClose }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search case #, title, accused..."
+              placeholder="Search case #, title, accused…"
               className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-8 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
             {search && (
@@ -348,26 +357,72 @@ function CaseTableHead() {
 /* ─────────────────────── main export ──────────────────────────── */
 
 export default function DetachmentOverview({ user }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState("");
-  const [drill, setDrill]     = useState(null); // { detId, detName, company, status }
+  const isSuperuser = Boolean(user?.is_superuser);
+  const initialBattalion = String(user?.battalion ?? user?.battalion_id ?? "");
+  const [data, setData]                         = useState(null);
+  const [loading, setLoading]                   = useState(true);
+  const [error, setError]                       = useState("");
+  const [message, setMessage]                   = useState("");
+  const [battalions, setBattalions]             = useState([]);
+  const [selectedBattalion, setSelectedBattalion] = useState(initialBattalion);
+  const [battalionLoading, setBattalionLoading] = useState(false);
+  const [drill, setDrill]                       = useState(null); // { detId, detName, company, status }
+  const [companyModal, setCompanyModal]         = useState(null);
+  const [companySaving, setCompanySaving]       = useState(false);
+  const [companyDeleteId, setCompanyDeleteId]   = useState(null);
+  useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
+
+  const selectedBattalionId = String(selectedBattalion || "");
+  const selectedBattalionRecord = battalions.find((b) => String(b.id) === selectedBattalionId);
+  const canManageCompanies = isSuperuser && selectedBattalionId && battalionAllowsCompanies(selectedBattalionRecord);
+
+  const loadBattalionOptions = useCallback(async () => {
+    setBattalionLoading(true);
+    try {
+      const res = await formationService.battalions({ page_size: 200 });
+      const items = toArray(res.data);
+      setBattalions(items);
+      setSelectedBattalion((current) => {
+        if (current) return current;
+        const firstWithCompanies = items.find((b) => (b.detachments || []).length > 0);
+        return String((firstWithCompanies || items[0])?.id ?? "");
+      });
+      return items;
+    } catch {
+      setError("Failed to load battalions.");
+      return [];
+    } finally {
+      setBattalionLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSuperuser) return;
+    loadBattalionOptions();
+  }, [isSuperuser, loadBattalionOptions]);
 
   const load = useCallback(async () => {
+    if (isSuperuser && !selectedBattalionId) {
+      setData({ detachments: [] });
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const res = await api.get("/api/cases/detachment-summary/");
+      const params = isSuperuser ? { battalion: selectedBattalionId } : undefined;
+      const res = await api.get("/api/cases/detachment-summary/", { params });
       setData(res.data);
     } catch (e) {
       setError(
         e?.response?.data?.detail ||
-        "Failed to load detachment summary. Check your permissions."
+        "Failed to load company summary. Check your permissions."
       );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isSuperuser, selectedBattalionId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -379,7 +434,76 @@ export default function DetachmentOverview({ user }) {
   const grandTotal    = detachments.reduce((s, d) => s + (d.total || 0), 0);
 
   const openDrill = (det, status) =>
-    setDrill({ detId: det.id, detName: det.name, company: det.company, status });
+    setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
+
+  const openCompanyModal = (detachment = null) => {
+    if (!selectedBattalionId) return;
+    const fullDetachment = detachment
+      ? (selectedBattalionRecord?.detachments || []).find((d) => String(d.id) === String(detachment.id)) || detachment
+      : null;
+    setCompanyModal(fullDetachment ? {
+      mode: "edit",
+      id: fullDetachment.id,
+      company: fullDetachment.company || "A",
+      name: fullDetachment.name || "",
+      aor: fullDetachment.aor || "",
+      mobile_no: fullDetachment.mobile_no || "",
+      email: fullDetachment.email || "",
+    } : {
+      mode: "add",
+      ...EMPTY_COMPANY,
+    });
+  };
+
+  const saveCompany = async (form) => {
+    if (!selectedBattalionId) return;
+    setCompanySaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const { id, mode: formMode, ...values } = form;
+      const payload = {
+        ...values,
+        battalion: Number(selectedBattalionId),
+      };
+      if (formMode === "edit" && id) {
+        await formationService.updateDetachment(id, payload);
+        setMessage("Company updated.");
+      } else {
+        await formationService.createDetachment(payload);
+        setMessage("Company created.");
+      }
+      setCompanyModal(null);
+      await load();
+      await loadBattalionOptions();
+    } catch (err) {
+      const d = err.response?.data;
+      setError(
+        d?.battalion?.[0] ||
+        d?.company?.[0] ||
+        d?.name?.[0] ||
+        d?.aor?.[0] ||
+        d?.detail ||
+        "Failed to create company."
+      );
+    } finally {
+      setCompanySaving(false);
+    }
+  };
+
+  const deleteCompany = async () => {
+    setError("");
+    setMessage("");
+    try {
+      await formationService.deleteDetachment(companyDeleteId);
+      setCompanyDeleteId(null);
+      setMessage("Company deleted.");
+      await load();
+      await loadBattalionOptions();
+    } catch {
+      setError("Failed to delete company.");
+    }
+  };
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -387,19 +511,50 @@ export default function DetachmentOverview({ user }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">COY Overview</h2>
+          <h2 className="text-2xl font-bold text-white">Companies Overview</h2>
           <p className="text-sm text-gray-400 mt-0.5">
             Click any count or company name to drill into the cases
           </p>
         </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="p-2 rounded-lg bg-gray-800 border border-gray-700 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors disabled:opacity-40"
-          title="Refresh"
-        >
-          <RefreshIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
+        <div className="flex items-center gap-2">
+          {isSuperuser && (
+            <select
+              value={selectedBattalion}
+              onChange={(e) => {
+                setSelectedBattalion(e.target.value);
+                setDrill(null);
+              }}
+              disabled={battalionLoading}
+              className="h-9 max-w-[220px] rounded-lg border border-gray-700 bg-gray-800 px-3 text-sm text-gray-200 outline-none focus:border-blue-500 disabled:opacity-50"
+            >
+              <option value="">{battalionLoading ? "Loading battalions..." : "Select battalion"}</option>
+              {battalions.map((b) => (
+                <option key={b.id} value={String(b.id)}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {isSuperuser && (
+            <button
+              type="button"
+              onClick={() => openCompanyModal()}
+              disabled={!canManageCompanies}
+              title={canManageCompanies ? "Add company to selected battalion" : "Select a normal battalion"}
+              className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-40"
+            >
+              + Add Coy
+            </button>
+          )}
+          <button
+            onClick={load}
+            disabled={loading || (isSuperuser && !selectedBattalionId)}
+            className="p-2 rounded-lg bg-gray-800 border border-gray-700 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors disabled:opacity-40"
+            title="Refresh"
+          >
+            <RefreshIcon className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}
@@ -449,12 +604,17 @@ export default function DetachmentOverview({ user }) {
           {error}
         </div>
       )}
+      {message && (
+        <div className="bg-green-900/30 border border-green-700/50 rounded-xl p-5 text-green-300 text-sm">
+          {message}
+        </div>
+      )}
 
       {/* Summary table */}
       <div className="bg-gray-800 rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700/60">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            COY Case Summary
+            Company Case Summary
           </h3>
           {!loading && (
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-gray-700 text-gray-400">
@@ -465,10 +625,10 @@ export default function DetachmentOverview({ user }) {
 
         {loading ? (
           <table className="w-full text-sm">
-            <SummaryTableHead />
+            <SummaryTableHead showActions={canManageCompanies} />
             <tbody>
               {[1, 2, 3, 4].map((i) => (
-                <SkeletonRow key={i} />
+                <SkeletonRow key={i} cols={canManageCompanies ? 8 : 7} />
               ))}
             </tbody>
           </table>
@@ -478,27 +638,27 @@ export default function DetachmentOverview({ user }) {
           </p>
         ) : !error ? (
           <table className="w-full text-sm">
-            <SummaryTableHead />
+            <SummaryTableHead showActions={canManageCompanies} />
             <tbody>
               {detachments.map((det) => (
                 <tr
                   key={det.id}
                   className="border-b border-gray-700/40 hover:bg-gray-700/20 transition-colors"
                 >
-                  {/* name -> all cases */}
+                  {/* name → all cases */}
                   <td className="px-5 py-3">
                     <button
                       onClick={() => openDrill(det, "all")}
                       className="text-gray-200 font-medium hover:text-blue-400 transition-colors text-left"
                     >
-                      {det.name}
+                      {det.company ? `${det.company} Coy` : "Coy"}
                     </button>
                   </td>
 
                   {/* company badge */}
                   <td className="px-5 py-3 text-gray-400 text-center">
                     <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 text-xs">
-                      Coy {det.company}
+                      {det.name || "--"}
                     </span>
                   </td>
 
@@ -507,7 +667,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.tasked}
                       style={STATUS_PILL.tasked}
-                      title={`${det.tasked} tasked  -  click to view`}
+                      title={`${det.tasked} tasked — click to view`}
                       onClick={() => openDrill(det, "tasked")}
                     />
                   </td>
@@ -517,7 +677,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.under_investigation}
                       style={STATUS_PILL.under_investigation}
-                      title={`${det.under_investigation} under investigation  -  click to view`}
+                      title={`${det.under_investigation} under investigation — click to view`}
                       onClick={() => openDrill(det, "under_investigation")}
                     />
                   </td>
@@ -527,7 +687,7 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.pending}
                       style={STATUS_PILL.pending}
-                      title={`${det.pending} pending  -  click to view`}
+                      title={`${det.pending} pending — click to view`}
                       onClick={() => openDrill(det, "pending")}
                     />
                   </td>
@@ -537,12 +697,12 @@ export default function DetachmentOverview({ user }) {
                     <ClickPill
                       value={det.closed}
                       style={STATUS_PILL.closed}
-                      title={`${det.closed} closed  -  click to view`}
+                      title={`${det.closed} closed — click to view`}
                       onClick={() => openDrill(det, "closed")}
                     />
                   </td>
 
-                  {/* total -> all */}
+                  {/* total → all */}
                   <td className="px-5 py-3 text-center">
                     <button
                       onClick={() => openDrill(det, "all")}
@@ -552,6 +712,26 @@ export default function DetachmentOverview({ user }) {
                       {det.total ?? 0}
                     </button>
                   </td>
+                  {canManageCompanies && (
+                    <td className="px-5 py-3">
+                      <div className="flex items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => openCompanyModal(det)}
+                          className="text-xs font-medium text-blue-400 transition-colors hover:text-blue-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCompanyDeleteId(det.id)}
+                          className="text-xs font-medium text-red-400 transition-colors hover:text-red-300"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
 
@@ -586,6 +766,7 @@ export default function DetachmentOverview({ user }) {
                 <td className="px-5 py-3 text-center">
                   <span className="text-white font-bold">{grandTotal}</span>
                 </td>
+                {canManageCompanies && <td className="px-5 py-3" />}
               </tr>
             </tbody>
           </table>
@@ -602,23 +783,124 @@ export default function DetachmentOverview({ user }) {
       {drill && (
         <DrilldownPanel drill={drill} onClose={() => setDrill(null)} />
       )}
+      {companyModal && (
+        <CompanyCreateModal
+          mode={companyModal.mode || "add"}
+          battalionName={selectedBattalionRecord?.name || "Selected Battalion"}
+          initial={companyModal}
+          saving={companySaving}
+          onSave={saveCompany}
+          onClose={() => setCompanyModal(null)}
+        />
+      )}
+      {companyDeleteId && (
+        <ConfirmDelete
+          label="company"
+          onConfirm={deleteCompany}
+          onCancel={() => setCompanyDeleteId(null)}
+        />
+      )}
     </div>
   );
 }
 
 /* ─────────────────────── sub-components ───────────────────────── */
 
-function SummaryTableHead() {
+function CompanyCreateModal({ mode = "add", battalionName, initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-xl bg-gray-800 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-700 px-6 py-4">
+          <h3 className="text-base font-semibold text-white">{mode === "add" ? "Add Coy" : "Edit Coy"}</h3>
+          <button type="button" onClick={onClose} className="text-lg text-gray-400 hover:text-white">
+            x
+          </button>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3 px-6 py-4">
+          <div>
+            <label className="text-xs text-gray-400">Battalion</label>
+            <div className="mt-1 rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
+              {battalionName}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400">Coy *</label>
+            <select
+              value={form.company || "A"}
+              onChange={s("company")}
+              required
+              className="mt-1 w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+            >
+              {COMPANY_OPTIONS.map((company) => (
+                <option key={company} value={company}>{company} Coy</option>
+              ))}
+            </select>
+          </div>
+          <CompanyInput label="Company Name *" value={form.name || ""} onChange={s("name")} required />
+          <CompanyInput label="AOR *" value={form.aor || ""} onChange={s("aor")} required />
+          <CompanyInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+          <CompanyInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+            <button
+              type="submit"
+              disabled={saving || !form.company || !form.name?.trim() || !form.aor?.trim()}
+              className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDelete({ label, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-sm rounded-xl bg-gray-800 p-6 shadow-2xl">
+        <h3 className="mb-2 font-semibold text-white">Delete {label}?</h3>
+        <p className="mb-5 text-sm text-gray-400">This action cannot be undone.</p>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+          <button type="button" onClick={onConfirm} className="rounded bg-red-600 px-4 py-2 text-sm text-white hover:bg-red-700">Delete</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CompanyInput({ label, type = "text", value, onChange, required }) {
+  return (
+    <div>
+      <label className="text-xs text-gray-400">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        required={required}
+        className="mt-1 w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none"
+      />
+    </div>
+  );
+}
+
+function SummaryTableHead({ showActions = false }) {
   return (
     <thead>
       <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
-        <th className="text-left   px-5 py-3 font-medium">Detachment</th>
-        <th className="text-center px-5 py-3 font-medium">Company</th>
+        <th className="text-left   px-5 py-3 font-medium">Company</th>
+        <th className="text-center px-5 py-3 font-medium">Name</th>
         <th className="text-center px-5 py-3 font-medium">Tasked</th>
         <th className="text-center px-5 py-3 font-medium">Under Investigation</th>
         <th className="text-center px-5 py-3 font-medium">Pending</th>
         <th className="text-center px-5 py-3 font-medium">Closed</th>
         <th className="text-center px-5 py-3 font-medium">Total Cases</th>
+        {showActions && <th className="text-center px-5 py-3 font-medium">Actions</th>}
       </tr>
     </thead>
   );

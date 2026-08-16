@@ -1,5 +1,8 @@
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
+
+from apps.common.fields import EncryptedTextField
 
 
 def case_attachment_path(instance, filename):
@@ -19,12 +22,12 @@ def case_activity_reference_path(instance, filename):
 
 def case_brief_path(instance, filename):
     case_ref = instance.case.case_number or "draft"
-    return f"cases/{case_ref}/briefs/{filename}"
+    return f"cases/{case_ref}/brief/{filename}"
 
 
 def case_back_brief_path(instance, filename):
     case_ref = instance.brief.case.case_number or "draft"
-    return f"cases/{case_ref}/back_briefs/{filename}"
+    return f"cases/{case_ref}/back-brief/{filename}"
 
 
 def exhibit_photo_path(instance, filename):
@@ -67,7 +70,7 @@ class Case(models.Model):
 
     case_number = models.CharField(max_length=30, unique=True, blank=True)
     title = models.CharField(max_length=200, blank=True)
-    description = models.TextField(blank=True)
+    description = EncryptedTextField(blank=True)
     status = models.CharField(max_length=25, choices=Status.choices, default=Status.NEW)
     offence = models.CharField(max_length=200, blank=True)
     offence_ref = models.ForeignKey(
@@ -80,8 +83,6 @@ class Case(models.Model):
     criminal_offence_type = models.CharField(
         max_length=20, choices=CriminalOffenceType.choices, blank=True
     )
-    police_station = models.CharField(max_length=200, blank=True)
-    place_of_offence = models.CharField(max_length=200, blank=True)
     accused_name = models.CharField(max_length=120, blank=True)
     accused_service_number = models.CharField(max_length=20, blank=True)
     accused_rank = models.CharField(max_length=60, blank=True)
@@ -94,6 +95,8 @@ class Case(models.Model):
     accused_unit = models.ForeignKey(
         "formations.Unit", null=True, blank=True, on_delete=models.SET_NULL, related_name="cases"
     )
+    police_station = models.CharField(max_length=200, blank=True, default="")
+    place_of_offence = models.CharField(max_length=200, blank=True, default="")
     tasked_battalion = models.ForeignKey(
         "formations.Battalion",
         null=True,
@@ -134,12 +137,12 @@ class Case(models.Model):
         on_delete=models.SET_NULL,
         related_name="tasked_cases",
     )
-    action_taken = models.TextField(blank=True)
-    remarks = models.TextField(blank=True)
+    action_taken = EncryptedTextField(blank=True)
+    remarks = EncryptedTextField(blank=True)
     chargesheet = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
-    part_two_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
-    mentioning_remarks = models.TextField(blank=True)
+    mentioning_remarks = EncryptedTextField(blank=True)
     close_requested = models.BooleanField(default=False)
     close_requested_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
@@ -163,6 +166,36 @@ class Case(models.Model):
 
     def __str__(self):
         return f"{self.case_number} — {self.title}"
+
+
+class CaseAccused(models.Model):
+    case = models.ForeignKey(
+        Case,
+        on_delete=models.CASCADE,
+        related_name="accused_entries",
+    )
+    name = models.CharField(max_length=120, blank=True)
+    rank = models.CharField(max_length=60, blank=True)
+    service_number = models.CharField(max_length=20, blank=True)
+    service = models.CharField(max_length=5, choices=Case.Service.choices, blank=True)
+    unit = models.ForeignKey(
+        "formations.Unit",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="accused_cases",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "case_accused"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        if self.name:
+            return f"{self.name} ({self.service_number or 'No Service No'})"
+        return f"Unidentified accused on {self.case.case_number}"
 
 
 class CaseAttachment(models.Model):
@@ -191,123 +224,6 @@ class CaseAttachment(models.Model):
         return f"{self.case.case_number} – {self.label or self.file.name}"
 
 
-class CaseAccused(models.Model):
-    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="accused_entries")
-    name = models.CharField(max_length=120, blank=True)
-    rank = models.CharField(max_length=60, blank=True)
-    service_number = models.CharField(max_length=20, blank=True)
-    service = models.CharField(max_length=5, choices=Case.Service.choices, blank=True)
-    unit = models.ForeignKey(
-        "formations.Unit",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="accused_cases",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "case_accused"
-        ordering = ["created_at"]
-
-    def __str__(self):
-        return self.name or self.service_number or f"Accused {self.pk}"
-
-
-class CaseCourtMartialHearing(models.Model):
-    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_hearings")
-    hearing_date = models.DateField()
-    remarks = models.TextField(blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "case_court_martial_hearings"
-        ordering = ["hearing_date", "created_at"]
-
-    def __str__(self):
-        return f"{self.case.case_number} hearing on {self.hearing_date}"
-
-
-class CaseCourtMartialMilestone(models.Model):
-    class MilestoneType(models.TextChoices):
-        MENTIONING = "mentioning", "Mentioning"
-        HEARING = "hearing", "Hearing"
-        DEFENCE = "defence", "Defence"
-        RULING = "ruling", "Ruling"
-        JUDGMENT = "judgment", "Judgment"
-
-    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_milestones")
-    milestone_type = models.CharField(max_length=20, choices=MilestoneType.choices)
-    scheduled_date = models.DateField()
-    planning_comment = models.TextField(blank=True)
-    action_remarks = models.TextField(blank=True)
-    action_recorded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="court_martial_actions_recorded",
-    )
-    action_recorded_at = models.DateTimeField(null=True, blank=True)
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="court_martial_milestones_created",
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "case_court_martial_milestones"
-        ordering = ["scheduled_date", "created_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["case", "milestone_type", "scheduled_date"],
-                name="uniq_case_milestone_type_date",
-            )
-        ]
-
-    def __str__(self):
-        return f"{self.case.case_number} {self.milestone_type} on {self.scheduled_date}"
-
-
-def court_martial_attachment_path(instance, filename):
-    case_number = instance.milestone.case.case_number or "draft"
-    return f"cases/{case_number}/court_martial_attachments/{filename}"
-
-
-class CaseCourtMartialAttachment(models.Model):
-    milestone = models.ForeignKey(
-        CaseCourtMartialMilestone,
-        on_delete=models.CASCADE,
-        related_name="attachments",
-    )
-    file = models.FileField(upload_to=court_martial_attachment_path)
-    file_name = models.CharField(max_length=255, blank=True)
-    uploaded_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="court_martial_attachments_uploaded",
-    )
-    uploaded_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "case_court_martial_attachments"
-        ordering = ["-uploaded_at"]
-
-    def __str__(self):
-        return f"{self.milestone} – {self.file_name or self.file.name}"
-
-
 class CaseBrief(models.Model):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -322,12 +238,20 @@ class CaseBrief(models.Model):
         ADJ = "adj", "Adjutant"
         TWO_IC = "2ic", "2IC"
 
-    case = models.OneToOneField(Case, on_delete=models.CASCADE, related_name="brief")
+    case = models.OneToOneField(
+        Case,
+        on_delete=models.CASCADE,
+        related_name="brief",
+    )
     file = models.FileField(upload_to=case_brief_path)
-    summary = models.TextField(blank=True)
+    summary = EncryptedTextField(blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    forwarded_to_role = models.CharField(max_length=20, choices=ForwardRole.choices, blank=True)
-    forwarded_note = models.TextField(blank=True)
+    forwarded_to_role = models.CharField(
+        max_length=20,
+        choices=ForwardRole.choices,
+        blank=True,
+    )
+    forwarded_note = EncryptedTextField(blank=True)
     forwarded_at = models.DateTimeField(null=True, blank=True)
     forwarded_from_role = models.CharField(max_length=20, blank=True)
     forwarded_by = models.ForeignKey(
@@ -345,7 +269,7 @@ class CaseBrief(models.Model):
         related_name="approved_case_briefs",
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    approved_note = models.TextField(blank=True)
+    approved_note = EncryptedTextField(blank=True)
     revision = models.PositiveIntegerField(default=1)
     attached_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -362,11 +286,15 @@ class CaseBrief(models.Model):
         ordering = ["-updated_at"]
 
     def __str__(self):
-        return f"{self.case.case_number} brief"
+        return f"Brief for {self.case.case_number}"
 
 
 class CaseBriefForward(models.Model):
-    brief = models.ForeignKey(CaseBrief, on_delete=models.CASCADE, related_name="forward_history")
+    brief = models.ForeignKey(
+        CaseBrief,
+        on_delete=models.CASCADE,
+        related_name="forward_history",
+    )
     from_role = models.CharField(max_length=20, blank=True)
     to_role = models.CharField(max_length=20, choices=CaseBrief.ForwardRole.choices)
     forwarded_by = models.ForeignKey(
@@ -376,9 +304,9 @@ class CaseBriefForward(models.Model):
         on_delete=models.SET_NULL,
         related_name="case_brief_forwards",
     )
-    note = models.TextField(blank=True)
+    note = EncryptedTextField(blank=True)
     revision = models.PositiveIntegerField(default=1)
-    forwarded_at = models.DateTimeField(auto_now_add=True)
+    forwarded_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         db_table = "case_brief_forwards"
@@ -391,13 +319,17 @@ class CaseBriefForward(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.brief} to {self.to_role}"
+        return f"{self.brief} to {self.to_role} by {self.forwarded_by}"
 
 
 class CaseBackBrief(models.Model):
-    brief = models.OneToOneField(CaseBrief, on_delete=models.CASCADE, related_name="back_brief")
+    brief = models.OneToOneField(
+        CaseBrief,
+        on_delete=models.CASCADE,
+        related_name="back_brief",
+    )
     file = models.FileField(upload_to=case_back_brief_path)
-    note = models.TextField(blank=True)
+    note = EncryptedTextField(blank=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -413,7 +345,7 @@ class CaseBackBrief(models.Model):
         ordering = ["-uploaded_at"]
 
     def __str__(self):
-        return f"{self.brief} back brief"
+        return f"Back-brief for {self.brief.case.case_number}"
 
 
 class ExhibitStorageRequest(models.Model):
@@ -452,7 +384,7 @@ class ExhibitStorageRequest(models.Model):
         related_name="additional_requests",
     )
     exhibit_name = models.CharField(max_length=150)
-    description = models.TextField(blank=True)
+    description = EncryptedTextField(blank=True)
     quantity = models.PositiveIntegerField(default=1)
     photo = models.FileField(upload_to=exhibit_photo_path, null=True, blank=True)
     storage_scope = models.CharField(max_length=25, choices=StorageScope.choices)
@@ -491,21 +423,17 @@ class ExhibitStorageRequest(models.Model):
         on_delete=models.SET_NULL,
         related_name="stored_exhibit_storage_requests",
     )
-    reviewer_comments = models.TextField(blank=True)
-    decline_reason = models.TextField(blank=True)
+    reviewer_comments = EncryptedTextField(blank=True)
+    decline_reason = EncryptedTextField(blank=True)
     storage_reference = models.CharField(max_length=100, blank=True)
     physical_location = models.CharField(max_length=200, blank=True)
     lifecycle_action = models.CharField(max_length=25, choices=LifecycleAction.choices, blank=True)
-    lifecycle_reason = models.TextField(blank=True)
+    lifecycle_reason = EncryptedTextField(blank=True)
     lifecycle_recipient_name = models.CharField(max_length=150, blank=True)
     lifecycle_recipient_identifier = models.CharField(max_length=100, blank=True)
     lifecycle_authority = models.CharField(max_length=150, blank=True)
     lifecycle_disposal_mode = models.CharField(max_length=150, blank=True)
-    lifecycle_attachment = models.FileField(
-        upload_to=exhibit_lifecycle_document_path,
-        null=True,
-        blank=True,
-    )
+    lifecycle_attachment = models.FileField(upload_to=exhibit_lifecycle_document_path, null=True, blank=True)
     lifecycle_requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -520,8 +448,8 @@ class ExhibitStorageRequest(models.Model):
         on_delete=models.SET_NULL,
         related_name="reviewed_exhibit_lifecycle_actions",
     )
-    lifecycle_review_comments = models.TextField(blank=True)
-    lifecycle_decline_reason = models.TextField(blank=True)
+    lifecycle_review_comments = EncryptedTextField(blank=True)
+    lifecycle_decline_reason = EncryptedTextField(blank=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
     stored_at = models.DateTimeField(null=True, blank=True)
     lifecycle_requested_at = models.DateTimeField(null=True, blank=True)
@@ -534,7 +462,70 @@ class ExhibitStorageRequest(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.exhibit_name} ({self.case.case_number})"
+        return f"{self.exhibit_name} - {self.case.case_number} ({self.status})"
+
+
+class CaseCourtMartialHearing(models.Model):
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_hearings")
+    hearing_date = models.DateField()
+    remarks = EncryptedTextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "case_court_martial_hearings"
+        ordering = ["hearing_date", "created_at"]
+
+    def __str__(self):
+        return f"{self.case.case_number} hearing on {self.hearing_date}"
+
+
+class CaseCourtMartialMilestone(models.Model):
+    class MilestoneType(models.TextChoices):
+        MENTIONING = "mentioning", "Mentioning"
+        HEARING = "hearing", "Hearing"
+        DEFENCE = "defence", "Defence"
+        RULING = "ruling", "Ruling"
+        JUDGMENT = "judgment", "Judgment"
+
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="court_martial_milestones")
+    milestone_type = models.CharField(max_length=20, choices=MilestoneType.choices)
+    scheduled_date = models.DateField()
+    planning_comment = EncryptedTextField(blank=True)
+    action_remarks = EncryptedTextField(blank=True)
+    action_recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="court_martial_actions_recorded",
+    )
+    action_recorded_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="court_martial_milestones_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "case_court_martial_milestones"
+        ordering = ["scheduled_date", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["case", "milestone_type", "scheduled_date"],
+                name="uniq_case_milestone_type_date",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.case.case_number} {self.milestone_type} on {self.scheduled_date}"
 
 
 class CaseActivityLog(models.Model):
@@ -556,7 +547,7 @@ class CaseActivityLog(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL
     )
     action = models.CharField(max_length=30, choices=Action.choices)
-    detail = models.TextField(blank=True)
+    detail = EncryptedTextField(blank=True)
     reference_pdf = models.FileField(upload_to=case_activity_reference_path, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -99,14 +99,14 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
   const [actionTaken, setActionTaken] = useState(caseObj?.action_taken || "");
   const [chargesheetFile, setChargesheetFile] = useState(null);
-  const [partTwoOrdersFile, setPartTwoOrdersFile] = useState(null);
+  const [partOneOrdersFile, setPartOneOrdersFile] = useState(null);
   const [rfiFile, setRfiFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
   const closureFileLabel = isDciCiv ? "Closure Files" : "Judgment Files";
-  const hasReport = Boolean(chargesheetFile || partTwoOrdersFile || caseObj?.chargesheet || caseObj?.part_two_orders);
+  const hasReport = Boolean(chargesheetFile || partOneOrdersFile || caseObj?.chargesheet || caseObj?.part_one_orders);
   const hasRfi = Boolean(rfiFile || caseObj?.rfi_document);
   const canClose = judgmentFiles.length > 0 && String(actionTaken).trim() && hasReport && hasRfi;
   useAutoDismiss(err, setErr);
@@ -145,7 +145,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
       fd.append("status", "closed");
       fd.append("action_taken", actionTaken.trim());
       if (chargesheetFile) fd.append("chargesheet", chargesheetFile);
-      if (partTwoOrdersFile) fd.append("part_two_orders", partTwoOrdersFile);
+      if (partOneOrdersFile) fd.append("part_one_orders", partOneOrdersFile);
       if (rfiFile) fd.append("rfi_document", rfiFile);
       await caseService.close(caseObj.id, fd);
       onClosed();
@@ -195,11 +195,11 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Part Two Orders</label>
+              <label className="block text-xs text-gray-400 mb-1.5">Part One Orders</label>
               <input
                 type="file"
                 accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                onChange={(e) => { setPartTwoOrdersFile(e.target.files?.[0] || null); setErr(""); }}
+                onChange={(e) => { setPartOneOrdersFile(e.target.files?.[0] || null); setErr(""); }}
                 className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
               />
             </div>
@@ -303,11 +303,6 @@ function PaginationBar({ page, totalPages, totalCount, onChange }) {
 export default function HQDashboard({ user }) {
   const navigate = useNavigate();
   const isCorpsCommander = user?.role === "corps_cmd";
-  const isHqsAdmin =
-    user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const isMpcHqsAdmin =
-    user?.role === "mpc_hqs" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const canCloseCases = Boolean(user?.is_superuser || isHqsAdmin || isMpcHqsAdmin);
 
   const [cases, setCases]             = useState([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -409,12 +404,11 @@ export default function HQDashboard({ user }) {
   const isServedFilter = activeFilter === "served";
   const isClosedFilter = activeFilter === "closed";
   const showCloseRequestActionColumn =
-    canCloseCases &&
     !isTaskedFilter &&
     !isServedFilter &&
     !isClosedFilter &&
     cases.some((c) => c.criminal_offence_type === "dci_civ_police" && c.status === "under_investigation" && c.close_requested);
-  const showActionColumn = canCloseCases && (isServedFilter || showCloseRequestActionColumn);
+  const showActionColumn = isServedFilter || showCloseRequestActionColumn;
   const handleClosedCase = () => {
     loadCases();
     loadCounts();

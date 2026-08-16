@@ -6,13 +6,29 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+}
+
 const ROLE_LABELS = {
-  admin: "Admin", co: "Commanding Officer", corps_cmd: "Corps Commander",
+  admin: "Admin", co: "Commanding Officer", oc: "Officer Commanding", corps_cmd: "Corps Commander",
   investigator: "Investigator", duty_officer: "Duty Officer", guardroom_ic: "Guardroom IC",
-  detachment: "Detachment IC", personnel: "Personnel", legal: "Legal Officer",
+  detachment: "IC COY", personnel: "Personnel", legal: "Legal Officer",
   order_nco: "Order NCO", mpc_hqs: "MPC HQS Admin", bsm: "BSM", cop: "COP",
-  adj: "Adjutant", "2ic": "2nd in Command", so1_legal: "SO 1 Legal",
-  so1_ops: "SO 1 OPs", so2_legal: "SO 2 Legal", so2_ops: "SO 2 OPs",
+  adj: "Adjutant", "2ic": "2nd in Command",
 };
 
 const CASE_STATUS_STYLE = {
@@ -53,15 +69,15 @@ function StatCard({ icon, label, value, sub, accent, loading, onClick }) {
   return (
     <Tag
       onClick={onClick}
-      className={`bg-gray-800 rounded-xl p-5 border-l-4 ${accent} flex flex-col gap-1 text-left w-full${
+      className={`min-h-[132px] bg-gray-800 rounded-xl p-5 border-l-4 ${accent} flex flex-col gap-1 text-left w-full${
         onClick ? " cursor-pointer hover:bg-gray-700 transition-colors" : ""
       }`}
     >
       <div className="flex items-center justify-between">
         <span className="text-gray-400">{icon}</span>
-        {sub && <span className="text-[11px] text-gray-500">{sub}</span>}
+        <span className="min-h-[14px] text-[11px] text-gray-500">{sub || ""}</span>
       </div>
-      <p className="text-3xl font-bold text-white mt-1">
+      <p className="min-h-[36px] text-3xl font-bold text-white mt-1">
         {loading ? <span className="animate-pulse text-gray-600">--</span> : value}
       </p>
       <p className="text-xs text-gray-400 uppercase tracking-wider">{label}</p>
@@ -83,7 +99,7 @@ export default function Overview({ user }) {
   const [loading, setLoading] = useState(true);
   const [expandedDesc, setExpandedDesc] = useState({});
 
-  useEffect(() => {
+  useEffect(() => scheduleAfterPaint(() => {
     Promise.all([
       caseService.list({ page_size: 200 }).catch(() => null),
       incidentService.list({ page_size: 200 }).catch(() => null),
@@ -94,7 +110,7 @@ export default function Overview({ user }) {
       setUsers(toArray(uRes?.data));
       setLoading(false);
     });
-  }, []);
+  }), []);
 
   const roleLabel = user?.is_superuser ? "Superuser" : ROLE_LABELS[user?.role] || user?.role;
   const today = new Date().toLocaleDateString("en-GB", {
@@ -102,6 +118,7 @@ export default function Overview({ user }) {
   });
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const displayName = [user?.rank, user?.name || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   const openCases         = cases.filter((c) => ["new", "open", "tasked", "under_investigation", "pending"].includes(c.status));
   const closedCases       = cases.filter((c) => ["closed", "served"].includes(c.status));
@@ -141,7 +158,7 @@ export default function Overview({ user }) {
         <div>
           <h2 className="text-2xl font-bold text-white">
             {greeting},{" "}
-            <span className="text-blue-400">{user?.name || user?.service_number}</span>
+            <span className="text-blue-400">{displayName}</span>
           </h2>
           <p className="text-sm text-gray-500 mt-0.5">
             {roleLabel}

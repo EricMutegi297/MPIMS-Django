@@ -12,26 +12,17 @@ from .models import (
     CaseBackBrief,
     CaseBrief,
     CaseBriefForward,
-    CaseCourtMartialAttachment,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
     ExhibitStorageRequest,
     InvestigationTeam,
 )
-from .field_crypto import decrypt_text
 from apps.formations.models import Battalion, Unit
 from apps.users.models import User
 
 
 CLOSED_CASE_FILE_ERROR = "Closed cases do not allow further uploads or attachment changes."
-CASE_FILE_FIELDS = {"tasking_letter", "rfi_document", "chargesheet", "part_two_orders"}
-
-
-def _decrypt_mapping_fields(data, fields):
-    for field in fields:
-        if field in data:
-            data[field] = decrypt_text(data[field])
-    return data
+CASE_FILE_FIELDS = {"tasking_letter", "rfi_document", "chargesheet", "part_one_orders"}
 
 
 class CaseAttachmentSerializer(serializers.ModelSerializer):
@@ -69,10 +60,6 @@ class CaseCourtMartialHearingSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["case", "created_by", "created_by_name", "created_at", "updated_at"]
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["remarks"])
-
 
 class CaseAccusedSerializer(serializers.ModelSerializer):
     unit_name = serializers.SerializerMethodField()
@@ -89,19 +76,6 @@ class CaseAccusedSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         return str(obj.created_by) if obj.created_by else None
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["name", "rank", "service_number"])
-
-    def validate(self, attrs):
-        service = attrs.get("service", getattr(self.instance, "service", ""))
-        unit = attrs.get("unit", getattr(self.instance, "unit", None))
-        if service and unit and unit.service != service:
-            raise serializers.ValidationError({
-                "unit": "Selected accused unit must belong to the selected service."
-            })
-        return attrs
 
 
 class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
@@ -142,42 +116,6 @@ class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
     def get_action_recorded_by_name(self, obj):
         return str(obj.action_recorded_by) if obj.action_recorded_by else None
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["planning_comment", "action_remarks"])
-
-
-class CaseCourtMartialAttachmentSerializer(serializers.ModelSerializer):
-    uploaded_by_name = serializers.SerializerMethodField()
-    file_url = serializers.SerializerMethodField()
-    file_name_display = serializers.SerializerMethodField()
-
-    class Meta:
-        model = CaseCourtMartialAttachment
-        fields = [
-            "id",
-            "milestone",
-            "file",
-            "file_name",
-            "file_url",
-            "file_name_display",
-            "uploaded_by",
-            "uploaded_by_name",
-            "uploaded_at",
-        ]
-        read_only_fields = ["milestone", "uploaded_by", "uploaded_by_name", "uploaded_at"]
-
-    def get_uploaded_by_name(self, obj):
-        return str(obj.uploaded_by) if obj.uploaded_by else None
-
-    def get_file_url(self, obj):
-        return obj.file.url if obj.file else None
-
-    def get_file_name_display(self, obj):
-        if obj.file_name:
-            return obj.file_name
-        return obj.file.name.split("/")[-1] if obj.file else None
-
 
 class CaseBackBriefSerializer(serializers.ModelSerializer):
     uploaded_by_name = serializers.SerializerMethodField()
@@ -204,10 +142,6 @@ class CaseBackBriefSerializer(serializers.ModelSerializer):
 
     def get_uploaded_by_name(self, obj):
         return str(obj.uploaded_by) if obj.uploaded_by else None
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["note"])
 
 
 class CaseBriefSerializer(serializers.ModelSerializer):
@@ -275,10 +209,6 @@ class CaseBriefSerializer(serializers.ModelSerializer):
         events = obj.forward_history.select_related("forwarded_by").all()
         return CaseBriefForwardSerializer(events, many=True, context=self.context).data
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["summary", "forwarded_note", "approved_note"])
-
 
 class CaseBriefForwardSerializer(serializers.ModelSerializer):
     forwarded_by_name = serializers.SerializerMethodField()
@@ -299,10 +229,6 @@ class CaseBriefForwardSerializer(serializers.ModelSerializer):
 
     def get_forwarded_by_name(self, obj):
         return str(obj.forwarded_by) if obj.forwarded_by else None
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["note"])
 
 
 class ExhibitStorageRequestSerializer(serializers.ModelSerializer):
@@ -454,30 +380,6 @@ class ExhibitStorageRequestSerializer(serializers.ModelSerializer):
     def get_target_battalion_name(self, obj):
         return obj.target_battalion.name if obj.target_battalion else None
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(
-            data,
-            [
-                "case_offence",
-                "case_accused",
-                "case_accused_service_number",
-                "exhibit_name",
-                "description",
-                "reviewer_comments",
-                "decline_reason",
-                "storage_reference",
-                "physical_location",
-                "lifecycle_reason",
-                "lifecycle_recipient_name",
-                "lifecycle_recipient_identifier",
-                "lifecycle_authority",
-                "lifecycle_disposal_mode",
-                "lifecycle_review_comments",
-                "lifecycle_decline_reason",
-            ],
-        )
-
     def _case_assigned_to_user(self, case, user):
         if not case or not user:
             return False
@@ -608,10 +510,6 @@ class CaseActivityLogSerializer(serializers.ModelSerializer):
         if not obj.reference_pdf:
             return None
         return obj.reference_pdf.name.split("/")[-1]
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        return _decrypt_mapping_fields(data, ["detail"])
 
 
 class InvestigationTeamSerializer(serializers.ModelSerializer):
@@ -818,14 +716,6 @@ class CaseSerializer(serializers.ModelSerializer):
             "criminal_offence_type",
             getattr(instance, "criminal_offence_type", ""),
         )
-        accused_service = attrs.get(
-            "accused_service",
-            getattr(instance, "accused_service", ""),
-        )
-        accused_unit = attrs.get(
-            "accused_unit",
-            getattr(instance, "accused_unit", None),
-        )
         status_in_payload = "status" in attrs
         target_status = attrs.get("status", getattr(instance, "status", None))
         prev_status = getattr(instance, "status", None)
@@ -860,11 +750,6 @@ class CaseSerializer(serializers.ModelSerializer):
                 ):
                     filtered_entries.append(item)
             attrs["accused_entries"] = filtered_entries
-
-        if accused_service and accused_unit and accused_unit.service != accused_service:
-            raise serializers.ValidationError({
-                "accused_unit": "Selected accused unit must belong to the selected service."
-            })
 
         if self.instance is None:
             # Force status to "new" on creation
@@ -989,10 +874,10 @@ class CaseSerializer(serializers.ModelSerializer):
 
             if not (
                 attrs.get("chargesheet") or getattr(instance, "chargesheet", None)
-                or attrs.get("part_two_orders") or getattr(instance, "part_two_orders", None)
+                or attrs.get("part_one_orders") or getattr(instance, "part_one_orders", None)
             ):
                 raise serializers.ValidationError(
-                    {"chargesheet": "Attach a Chargesheet, report, or Part Two Orders before closing this case."}
+                    {"chargesheet": "Attach a Chargesheet or report before closing this case."}
                 )
 
             if not (attrs.get("rfi_document") or getattr(instance, "rfi_document", None)):
@@ -1120,8 +1005,8 @@ class CaseSerializer(serializers.ModelSerializer):
     def get_latest_update(self, obj):
         latest = self._latest_case_update_log(obj)
         if latest and latest.detail:
-            return decrypt_text(latest.detail)
-        return decrypt_text(obj.action_taken or obj.mentioning_remarks or obj.remarks or "")
+            return latest.detail
+        return obj.action_taken or obj.mentioning_remarks or obj.remarks or ""
 
     def get_latest_update_at(self, obj):
         latest = self._latest_case_update_log(obj)
@@ -1135,21 +1020,4 @@ class CaseSerializer(serializers.ModelSerializer):
             data.get("offence"),
             instance.offence_ref,
         )
-        return _decrypt_mapping_fields(
-            data,
-            [
-                "title",
-                "description",
-                "offence",
-                "police_station",
-                "place_of_offence",
-                "accused_name",
-                "accused_service_number",
-                "accused_rank",
-                "rfi_no",
-                "action_taken",
-                "remarks",
-                "mentioning_remarks",
-                "latest_update",
-            ],
-        )
+        return data

@@ -2,25 +2,67 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function userLabel(user) {
+  if (!user) return "";
+  const name = [user.rank, user.name].filter(Boolean).join(" ").trim();
+  const serviceNumber = user.service_number ? ` (${user.service_number})` : "";
+  return `${name || user.service_number || "Unknown"}${name ? serviceNumber : ""}`;
+}
+
+function userWorkload(user, workloadMap) {
+  return workloadMap[user?.id] ?? 0;
+}
+
+function userLabelWithWorkload(user, workloadMap) {
+  const load = userWorkload(user, workloadMap);
+  return `${userLabel(user)} - ${load} active case${load !== 1 ? "s" : ""}`;
+}
+
+function sortUsersByWorkload(workloadMap) {
+  return (a, b) =>
+    userWorkload(a, workloadMap) - userWorkload(b, workloadMap) ||
+    userLabel(a).localeCompare(userLabel(b));
+}
+
+function scheduleAfterPaint(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 0);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+}
+
 function StatCard({ icon, label, value, accent, loading, onClick }) {
   return (
     <div
-      className={`bg-gray-800 rounded-xl p-4 flex items-start gap-4 ${onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""}`}
+      className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 ${onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""}`}
       onClick={onClick}
     >
       <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>{icon}</div>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-gray-500 truncate">{label}</p>
-        {loading ? (
-          <div className="h-7 w-12 bg-gray-700 rounded animate-pulse mt-1" />
-        ) : (
-          <p className="text-2xl font-bold text-white mt-0.5">{value ?? 0}</p>
-        )}
+        <div className="min-h-[30px] mt-0.5 flex items-center">
+          {loading ? (
+            <div className="h-7 w-12 bg-gray-700 rounded animate-pulse" />
+          ) : (
+            <p className="text-2xl font-bold text-white">{value ?? 0}</p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -50,6 +92,7 @@ function Footer() {
 export default function DetachmentDashboard({ user }) {
   const navigate = useNavigate();
   const detachmentId = user?.detachment_id ?? user?.detachment;
+  const canManageDetachmentTeams = user?.role === "detachment";
 
   // Cases
   const [cases, setCases]               = useState([]);
@@ -64,12 +107,15 @@ export default function DetachmentDashboard({ user }) {
   const [teams, setTeams]               = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
 
-  // Detachment users (for team creation)
+  // Company users (for team creation)
   const [detUsers, setDetUsers]         = useState([]);
+  const [workload, setWorkload]         = useState([]);
 
   // Assign team modal
   const [assignModal, setAssignModal]   = useState(null); // case object
+  const [assignmentMode, setAssignmentMode] = useState("io");
   const [selTeam, setSelTeam]           = useState("");
+  const [selIo, setSelIo]               = useState("");
   const [deadline, setDeadline]         = useState("");
   const [assigning, setAssigning]       = useState(false);
   const [assignError, setAssignError]   = useState("");
@@ -81,6 +127,11 @@ export default function DetachmentDashboard({ user }) {
   const [newTeamMembers, setNewTeamMembers] = useState([]);
   const [creatingTeam, setCreatingTeam]     = useState(false);
   const [createTeamError, setCreateTeamError] = useState("");
+  useAutoDismiss(assignError, setAssignError);
+  useAutoDismiss(createTeamError, setCreateTeamError);
+  const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
+  const sortedDetUsers = [...detUsers].sort(sortUsersByWorkload(workloadMap));
+  const investigators = sortedDetUsers.filter((u) => u.role === "investigator" && u.is_active !== false);
 
   const loadCases = useCallback(async () => {
     setLoadingCases(true);
@@ -135,49 +186,75 @@ export default function DetachmentDashboard({ user }) {
     }
   }, []);
 
-  useEffect(() => {
+  const loadWorkload = useCallback(async () => {
+    try {
+      const res = await teamService.workload();
+      setWorkload(toArray(res.data));
+    } catch {
+      setWorkload([]);
+    }
+  }, []);
+
+  useEffect(() => scheduleAfterPaint(() => {
     loadCases();
     loadCounts();
     loadTeams();
-  }, [loadCases, loadCounts, loadTeams]);
+    loadWorkload();
+  }), [loadCases, loadCounts, loadTeams, loadWorkload]);
 
   useEffect(() => {
-    if (detachmentId) {
+    if (canManageDetachmentTeams && detachmentId) {
       userService.list({ detachment: detachmentId, page_size: 200 })
         .then((r) => setDetUsers(toArray(r.data)))
         .catch(() => {});
     }
-  }, [detachmentId]);
+  }, [canManageDetachmentTeams, detachmentId]);
 
   // Assign team
   const openAssignModal = (c) => {
+    if (!canManageDetachmentTeams) return;
     setShowCreateTeam(false);
     setAssignModal(c);
-    setSelTeam(c.assigned_team || "");
+    setAssignmentMode(c?.assigned_team ? "team" : "io");
+    setSelTeam(c?.assigned_team ? String(c.assigned_team) : "");
+    setSelIo(c?.assigned_to ? String(c.assigned_to) : "");
     setDeadline(c.investigation_deadline || "");
     setAssignError("");
   };
 
   const handleAssignTeam = async () => {
-    if (!selTeam) { setAssignError("Please select a team."); return; }
+    if (!canManageDetachmentTeams) { setAssignError("Only IC COY can assign cases."); return; }
+    if (assignmentMode === "team" && !selTeam) { setAssignError("Please select a team."); return; }
+    if (assignmentMode === "io" && !selIo) { setAssignError("Please select an IO."); return; }
     if (!deadline) { setAssignError("Investigation deadline is required."); return; }
     setAssigning(true);
     setAssignError("");
     try {
-      await caseService.update(assignModal.id, {
-        assigned_team: selTeam,
+      const payload = {
         investigation_deadline: deadline,
-      });
+      };
+      if (assignmentMode === "io") {
+        payload.assigned_to = selIo;
+        payload.assigned_team = null;
+      } else {
+        payload.assigned_team = selTeam;
+        payload.assigned_to = null;
+      }
+      await caseService.update(assignModal.id, payload);
       setAssignModal(null);
       loadCases();
       loadCounts();
+      loadWorkload();
     } catch (e) {
       const data = e?.response?.data;
       setAssignError(
         data?.detail ||
         data?.non_field_errors?.[0] ||
+        data?.assignment?.[0] ||
+        data?.assigned_to?.[0] ||
+        data?.assigned_team?.[0] ||
         data?.investigation_deadline?.[0] ||
-        "Failed to assign team."
+        "Failed to assign case."
       );
     } finally {
       setAssigning(false);
@@ -192,6 +269,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleCreateTeam = async () => {
+    if (!canManageDetachmentTeams) { setCreateTeamError("Only IC COY can create investigation teams."); return; }
     if (!newTeamName.trim()) { setCreateTeamError("Team name is required."); return; }
     if (newTeamMembers.length < 2) { setCreateTeamError("Team must have at least 2 members."); return; }
     setCreatingTeam(true);
@@ -207,6 +285,7 @@ export default function DetachmentDashboard({ user }) {
       setNewTeamIC("");
       setNewTeamMembers([]);
       loadTeams();
+      loadWorkload();
     } catch (e) {
       const data = e?.response?.data;
       setCreateTeamError(
@@ -221,7 +300,7 @@ export default function DetachmentDashboard({ user }) {
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const displayName = user?.name?.split(" ")[0] || "Officer";
+  const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -234,8 +313,8 @@ export default function DetachmentDashboard({ user }) {
           </h2>
           <p className="text-sm text-gray-400 mt-0.5">
             {user?.detachment_name
-              ? `${user.detachment_name}  -  Detachment Dashboard`
-              : "Detachment Dashboard"}
+              ? `${user.detachment_name} — Company Dashboard`
+              : "Company Dashboard"}
           </p>
         </div>
         <NotificationBell />
@@ -285,11 +364,10 @@ export default function DetachmentDashboard({ user }) {
             onClick={() => navigate("/dashboard/cases")}
             className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
           >
-            View All ->
+            View All →
           </button>
         </div>
         <div className="bg-gray-800 rounded-xl overflow-hidden">
-              setAssignModal(null);
           {loadingCases ? (
             <div className="p-4 space-y-3">
               {[1,2,3].map((i) => (
@@ -310,7 +388,7 @@ export default function DetachmentDashboard({ user }) {
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Tasking Letter</th>
-                  <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Detachment</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Tasked Battalion/Company</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Deadline</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Actions</th>
                 </tr>
@@ -372,16 +450,22 @@ export default function DetachmentDashboard({ user }) {
                     <td className="px-3 md:px-5 py-3 text-xs text-gray-400">
                       {c.investigation_deadline
                         ? new Date(c.investigation_deadline).toLocaleDateString("en-GB")
-                        : <span className="text-gray-600"> - </span>}
+                        : <span className="text-gray-600">—</span>}
                     </td>
                     <td className="px-3 md:px-5 py-3">
-                      {c.status === "tasked" && (
+                      {canManageDetachmentTeams && c.status === "tasked" && !c.assigned_team && !c.assigned_to && (
                         <button
                           onClick={() => openAssignModal(c)}
                           className="px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
                         >
-                          Assign Team
+                          Assign IO / Team
                         </button>
+                      )}
+                      {c.assigned_to && (
+                        <span className="text-xs text-indigo-300">{c.assigned_to_name || "Assigned IO"}</span>
+                      )}
+                      {c.assigned_team && (
+                        <span className="text-xs text-cyan-300">{c.assigned_team_name || "Assigned Team"}</span>
                       )}
                       {c.status === "under_investigation" && (
                         <span className="text-xs text-indigo-400">Investigating</span>
@@ -402,18 +486,20 @@ export default function DetachmentDashboard({ user }) {
           <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
             Investigation Teams
           </h3>
-          <button
-            onClick={() => {
-              setShowCreateTeam(true);
-              setNewTeamName("");
-              setNewTeamIC("");
-              setNewTeamMembers([]);
-              setCreateTeamError("");
-            }}
-            className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-          >
-            + Create Team
-          </button>
+          {canManageDetachmentTeams && (
+            <button
+              onClick={() => {
+                setShowCreateTeam(true);
+                setNewTeamName("");
+                setNewTeamIC("");
+                setNewTeamMembers([]);
+                setCreateTeamError("");
+              }}
+              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+            >
+              + Create Team
+            </button>
+          )}
         </div>
         {loadingTeams ? (
           <div className="space-y-2">
@@ -432,7 +518,7 @@ export default function DetachmentDashboard({ user }) {
                 <div>
                   <p className="text-white font-medium">{t.name}</p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    {t.team_ic_detail?.name ? `IC: ${t.team_ic_detail.name}` : "No IC assigned"} .{" "}
+                    {t.team_ic_detail?.name ? `IC: ${t.team_ic_detail.name}` : "No IC assigned"} ·{" "}
                     {t.members?.length ?? 0} member{t.members?.length !== 1 ? "s" : ""}
                   </p>
                 </div>
@@ -447,8 +533,8 @@ export default function DetachmentDashboard({ user }) {
 
       <Footer />
 
-      {/* Assign Team Modal */}
-      {assignModal && (
+      {/* Assign IO or Team Modal */}
+      {canManageDetachmentTeams && assignModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
           onClick={() => setAssignModal(null)}
@@ -457,25 +543,70 @@ export default function DetachmentDashboard({ user }) {
             className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-bold text-white mb-1">Assign Investigation Team</h2>
+            <h2 className="text-lg font-bold text-white mb-1">Assign Case</h2>
             <p className="text-sm text-gray-400 mb-5">
               Case <span className="font-mono text-gray-300">{assignModal.case_number}</span>:{" "}
               {assignModal.title || assignModal.offence}
             </p>
 
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
-              Investigation Team
-            </label>
-            <select
-              value={selTeam}
-              onChange={(e) => setSelTeam(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
-            >
-              <option value="">-- Select Team --</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-gray-900 p-1 border border-gray-700 mb-4">
+              <button
+                type="button"
+                onClick={() => setAssignmentMode("io")}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                  assignmentMode === "io"
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-400 hover:text-white hover:bg-gray-700"
+                }`}
+              >
+                Single IO
+              </button>
+              <button
+                type="button"
+                onClick={() => setAssignmentMode("team")}
+                className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+                  assignmentMode === "team"
+                    ? "bg-indigo-600 text-white"
+                    : "text-gray-400 hover:text-white hover:bg-gray-700"
+                }`}
+              >
+                Team
+              </button>
+            </div>
+
+            {assignmentMode === "io" ? (
+              <>
+                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+                  Investigating Officer
+                </label>
+                <select
+                  value={selIo}
+                  onChange={(e) => setSelIo(e.target.value)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+                >
+                  <option value="">-- Select IO --</option>
+                  {investigators.map((io) => (
+                    <option key={io.id} value={io.id}>{userLabelWithWorkload(io, workloadMap)}</option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <>
+                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+                  Investigation Team
+                </label>
+                <select
+                  value={selTeam}
+                  onChange={(e) => setSelTeam(e.target.value)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 mb-4"
+                >
+                  <option value="">-- Select Team --</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>{t.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
 
             <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
               Investigation Deadline <span className="text-red-400">*</span>
@@ -491,6 +622,12 @@ export default function DetachmentDashboard({ user }) {
             {assignError && (
               <p className="text-xs text-red-400 mb-4">{assignError}</p>
             )}
+            {assignmentMode === "io" && investigators.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No investigators found in this company.</p>
+            )}
+            {assignmentMode === "team" && teams.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No investigation teams found in this company.</p>
+            )}
 
             <div className="flex gap-3 justify-end">
               <button
@@ -501,10 +638,10 @@ export default function DetachmentDashboard({ user }) {
               </button>
               <button
                 onClick={handleAssignTeam}
-                disabled={assigning || !selTeam || !deadline}
+                disabled={assigning || !deadline || (assignmentMode === "io" ? !selIo : !selTeam)}
                 className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {assigning ? "Assigning..." : "Assign Team"}
+                {assigning ? "Assigning..." : "Assign Case"}
               </button>
             </div>
           </div>
@@ -512,7 +649,7 @@ export default function DetachmentDashboard({ user }) {
       )}
 
       {/* Create Team Modal */}
-      {showCreateTeam && (
+      {canManageDetachmentTeams && showCreateTeam && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
           onClick={() => setShowCreateTeam(false)}
@@ -543,9 +680,9 @@ export default function DetachmentDashboard({ user }) {
               className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
             >
               <option value="">-- Select IC --</option>
-              {detUsers.map((u) => (
+              {sortedDetUsers.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.rank ? `${u.rank} ` : ""}{u.name} ({u.service_number})
+                  {userLabelWithWorkload(u, workloadMap)}
                 </option>
               ))}
             </select>
@@ -554,10 +691,10 @@ export default function DetachmentDashboard({ user }) {
               Members <span className="text-gray-600">(select at least 2)</span>
             </label>
             <div className="bg-gray-700 rounded-lg p-3 max-h-52 overflow-y-auto space-y-1 mb-4">
-              {detUsers.length === 0 ? (
-                <p className="text-xs text-gray-500">No users found in this detachment.</p>
+              {sortedDetUsers.length === 0 ? (
+                <p className="text-xs text-gray-500">No users found in this company.</p>
               ) : (
-                detUsers.map((u) => (
+                sortedDetUsers.map((u) => (
                   <label key={u.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-600/40 px-2 py-1 rounded">
                     <input
                       type="checkbox"
@@ -568,7 +705,9 @@ export default function DetachmentDashboard({ user }) {
                     <span className="text-sm text-gray-200">
                       {u.rank ? `${u.rank} ` : ""}{u.name}
                     </span>
-                    <span className="text-xs text-gray-500 ml-auto">{u.service_number}</span>
+                    <span className="text-xs text-gray-500 ml-auto">
+                      {u.service_number || "--"} - {userWorkload(u, workloadMap)} active
+                    </span>
                   </label>
                 ))
               )}

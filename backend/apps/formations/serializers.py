@@ -3,16 +3,18 @@ from .models import Formation, Battalion, Unit, Detachment
 
 
 class DetachmentSerializer(serializers.ModelSerializer):
+    case_count = serializers.IntegerField(read_only=True)
+
     def validate_battalion(self, battalion):
         if battalion.battalion_type != Battalion.BattalionType.NORMAL:
             raise serializers.ValidationError(
-                "Detachments can only be added to Normal battalions."
+                "Companies can only be added to Normal battalions."
             )
         return battalion
 
     class Meta:
         model = Detachment
-        fields = ["id", "battalion", "company", "name", "aor", "mobile_no", "email"]
+        fields = ["id", "battalion", "company", "name", "aor", "mobile_no", "email", "case_count"]
 
 
 class UnitSerializer(serializers.ModelSerializer):

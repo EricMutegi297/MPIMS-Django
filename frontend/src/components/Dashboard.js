@@ -1,39 +1,115 @@
-import React, { useEffect, useState } from "react";
+import React, { Suspense, lazy, useEffect, useState } from "react";
 import { Routes, Route, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { authService, notificationService, offenceService } from "../services/api";
-import Overview from "./Overview";
-import HQDashboard from "./HQDashboard";
-import Cases from "./Cases";
-import Incidents from "./Incidents";
-import MorningBriefs from "./MorningBriefs";
-import Guardrooms from "./Guardrooms";
-import Users from "./Users";
-import Notifications from "./Notifications";
-import Formations from "./Formations";
-import Battalions from "./Battalions";
-import Offences from "./Offences";
-import OffenceModal from "./OffenceModal";
-import ChangePassword from "./ChangePassword";
-import MfaSetup from "./MfaSetup";
-import InvestigatorDashboard from "./InvestigatorDashboard";
-import BattalionDashboard from "./BattalionDashboard";
-import DetachmentDashboard from "./DetachmentDashboard";
-import Teams from "./Teams";
-import Analytics from "./Analytics";
-import Statistics from "./Statistics";
-import DetachmentOverview from "./DetachmentOverview";
-import useInactivityLogout from "../hooks/useInactivityLogout";
 
-const INACTIVITY_LOGOUT_MS = 15 * 60 * 1000;
+const Overview = lazy(() => import("./Overview"));
+const HQDashboard = lazy(() => import("./HQDashboard"));
+const InvestigatorDashboard = lazy(() => import("./InvestigatorDashboard"));
+const BattalionDashboard = lazy(() => import("./BattalionDashboard"));
+const DetachmentDashboard = lazy(() => import("./DetachmentDashboard"));
+const Cases = lazy(() => import("./Cases"));
+const Incidents = lazy(() => import("./Incidents"));
+const MorningBriefs = lazy(() => import("./MorningBriefs"));
+const Guardrooms = lazy(() => import("./Guardrooms"));
+const DutyRoom = lazy(() => import("./DutyRoom"));
+const Exhibits = lazy(() => import("./Exhibits"));
+const Briefs = lazy(() => import("./Briefs"));
+const BackBriefs = lazy(() => import("./BackBriefs"));
+const Users = lazy(() => import("./Users"));
+const Notifications = lazy(() => import("./Notifications"));
+const AuditLogs = lazy(() => import("./AuditLogs"));
+const Formations = lazy(() => import("./Formations"));
+const Offences = lazy(() => import("./Offences"));
+const OffenceModal = lazy(() => import("./OffenceModal"));
+const ChangePassword = lazy(() => import("./ChangePassword"));
+const Authenticator = lazy(() => import("./Authenticator"));
+const Teams = lazy(() => import("./Teams"));
+const Analytics = lazy(() => import("./Analytics"));
+const Statistics = lazy(() => import("./Statistics"));
+const Graphs = lazy(() => import("./Graphs"));
+const DetachmentOverview = lazy(() => import("./DetachmentOverview"));
+
+const USER_CACHE_KEY = "mpims_user_cache";
+const DEFAULT_DASHBOARD_IDLE_TIMEOUT_MINUTES = 15;
+const configuredIdleTimeoutMinutes = Number(process.env.REACT_APP_DASHBOARD_IDLE_TIMEOUT_MINUTES);
+const DASHBOARD_IDLE_TIMEOUT_MS = (
+  Number.isFinite(configuredIdleTimeoutMinutes) && configuredIdleTimeoutMinutes > 0
+    ? configuredIdleTimeoutMinutes
+    : DEFAULT_DASHBOARD_IDLE_TIMEOUT_MINUTES
+) * 60 * 1000;
+const DASHBOARD_ACTIVITY_EVENTS = ["click", "keydown", "mousedown", "mousemove", "scroll", "touchstart", "wheel"];
+
+function readCachedUser() {
+  try {
+    const cached = sessionStorage.getItem(USER_CACHE_KEY);
+    return cached ? JSON.parse(cached) : null;
+  } catch (_) {
+    sessionStorage.removeItem(USER_CACHE_KEY);
+    return null;
+  }
+}
+
+function cacheUser(user) {
+  if (user) sessionStorage.setItem(USER_CACHE_KEY, JSON.stringify(user));
+}
+
+function clearCachedUser() {
+  sessionStorage.removeItem(USER_CACHE_KEY);
+}
+
+function needsTotpSetup(user) {
+  return Boolean(user?.totp_required && !user?.totp_configured);
+}
+
+function scheduleNonCritical(callback) {
+  if (typeof window === "undefined") {
+    callback();
+    return undefined;
+  }
+
+  if ("requestIdleCallback" in window) {
+    const idleId = window.requestIdleCallback(callback, { timeout: 2000 });
+    return () => window.cancelIdleCallback?.(idleId);
+  }
+
+  let timeoutId;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, 700);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId) window.clearTimeout(timeoutId);
+  };
+}
+
+function ModuleFallback() {
+  return (
+    <div className="min-h-screen bg-gray-900 p-4 md:p-6 space-y-6">
+      <div className="space-y-2">
+        <div className="h-8 w-56 max-w-[70vw] rounded bg-gray-800 animate-pulse" />
+        <div className="h-4 w-44 max-w-[60vw] rounded bg-gray-800 animate-pulse" />
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-4">
+        {[1, 2, 3, 4, 5, 6].map((item) => (
+          <div key={item} className="h-[82px] rounded-xl bg-gray-800 animate-pulse" />
+        ))}
+      </div>
+      <div className="h-52 rounded-xl bg-gray-800 animate-pulse" />
+    </div>
+  );
+}
 
 const ROLE_LABELS = {
   admin: "Admin",
   co: "Commanding Officer",
+  oc: "Officer Commanding",
   corps_cmd: "Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
+  hod: "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment: "Detachment IC",
+  detachment: "IC COY",
   personnel: "Personnel",
   legal: "Legal Officer",
   order_nco: "Order NCO",
@@ -42,39 +118,15 @@ const ROLE_LABELS = {
   cop: "COP",
   adj: "Adjutant",
   "2ic": "2nd in Command",
-  so1_legal: "SO 1 Legal",
-  so1_ops: "SO 1 OPs",
-  so2_legal: "SO 2 Legal",
-  so2_ops: "SO 2 OPs",
 };
-
-const HQ_DASHBOARD_ROLES = ["corps_cmd", "cop", "so1_legal", "so1_ops", "so2_legal", "so2_ops"];
-const CASE_ACCESS_ROLES = [
-  "admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop",
-  "so1_legal", "so1_ops", "so2_legal", "so2_ops",
-];
-const INCIDENT_ACCESS_ROLES = [
-  "admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop",
-  "so1_ops", "so2_ops",
-];
-const MORNING_BRIEF_ACCESS_ROLES = [
-  "admin", "co", "corps_cmd", "detachment", "mpc_hqs", "bsm", "so1_ops", "so2_ops",
-];
-const STATISTICS_ACCESS_ROLES = [
-  "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
-  "duty_officer", "so1_legal", "so1_ops", "so2_legal", "so2_ops",
-];
-const ANALYTICS_ACCESS_ROLES = [
-  "admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator",
-  "so1_legal", "so1_ops", "so2_legal", "so2_ops",
-];
 
 // Navigation items in sidebar order
 function getNavItems(user) {
   const isSuperuser = !!user?.is_superuser;
   const isHqsBnAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const isBattalionAdmin = !isSuperuser && user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
+  const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
+  const isBattalionCommand = ["admin", "co", "hod", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
@@ -85,7 +137,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "cases", label: "Cases", path: "/dashboard/cases", show: CASE_ACCESS_ROLES.includes(user?.role),
+      key: "cases", label: "Cases", path: "/dashboard/cases", show: ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
@@ -93,7 +145,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: INCIDENT_ACCESS_ROLES.includes(user?.role),
+      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: ["admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop", "adj"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -101,7 +153,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "morning-briefs", label: "Morning Briefs", path: "/dashboard/morning-briefs", show: MORNING_BRIEF_ACCESS_ROLES.includes(user?.role),
+      key: "morning-briefs", label: "Morning Briefs", path: "/dashboard/morning-briefs", show: true,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -109,10 +161,42 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "so1_ops", "so2_ops"].includes(user?.role),
+      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "co", "2ic", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "corps_cmd", "adj", "detachment"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      ),
+    },
+    {
+      key: "duty-room", label: "Duty Room", path: "/dashboard/duty-room", show: true,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3M5 11h14M6 21h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2zm3-6h6m-6 3h4" />
+        </svg>
+      ),
+    },
+    {
+      key: "exhibits", label: "Exhibits", path: "/dashboard/exhibits", show: user?.role !== "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0v10l-8 4m8-14l-8 4m0 10L4 17V7m8 4L4 7m8 4v10" />
+        </svg>
+      ),
+    },
+    {
+      key: "briefs", label: "Briefs", path: "/dashboard/briefs", show: user?.role !== "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      ),
+    },
+    {
+      key: "back-briefs", label: "Back-Briefs", path: "/dashboard/back-briefs", show: user?.role !== "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 17l-5-5m0 0l5-5m-5 5h12M19 21H7a2 2 0 01-2-2v-2m14-10V5a2 2 0 00-2-2H7" />
         </svg>
       ),
     },
@@ -126,9 +210,9 @@ function getNavItems(user) {
     },
     {
       key: "battalion-detachments",
-      label: "COY",
+      label: "Companies",
       path: "/dashboard/battalion-detachments",
-      show: (user?.role === "admin" || isSuperuser) && !isHqsBnAdmin,
+      show: (isBattalionCommand || isSuperuser) && !isHqsBnAdmin,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -137,7 +221,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "battalions", label: "Battalions", path: "/dashboard/Battalions", show: ((["admin", "Superuser"].includes(user?.role) || isSuperuser) && !isBattalionAdmin),
+      key: "battalions", label: "Battalions", path: "/dashboard/battalions", show: isSuperuser || ((["admin", "corps_cmd", "Superuser"].includes(user?.role)) && !isBattalionAdmin),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" />
@@ -145,7 +229,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "formations", label: "Formations", path: "/dashboard/formations", show: ((["admin", "Superuser"].includes(user?.role) || isSuperuser) && !isHqsBnAdmin && !isBattalionAdmin),
+      key: "formations", label: "Formations", path: "/dashboard/formations", show: isSuperuser,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 01-8 0M12 3v4m0 0a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h1a4 4 0 014 4z" />
@@ -172,10 +256,18 @@ function getNavItems(user) {
       ),
     },
     {
+      key: "my-team", label: "My Team", path: "/dashboard/my-team", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+        </svg>
+      ),
+    },
+    {
       key: "court-martial",
       label: "Court Martial",
       path: "/dashboard/court-martial",
-      show: isSuperuser || CASE_ACCESS_ROLES.includes(user?.role),
+      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
@@ -186,7 +278,7 @@ function getNavItems(user) {
       key: "dci-civ-police",
       label: "DCI/Civ Police",
       path: "/dashboard/dci-civ-police",
-      show: isSuperuser || CASE_ACCESS_ROLES.includes(user?.role),
+      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -194,10 +286,42 @@ function getNavItems(user) {
       ),
     },
     {
+      key: "guardrooms-investigator", label: "Guardrooms", path: "/dashboard/guardrooms", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        </svg>
+      ),
+    },
+    {
+      key: "exhibits-investigator", label: "Exhibits", path: "/dashboard/exhibits", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0v10l-8 4m8-14l-8 4m0 10L4 17V7m8 4L4 7m8 4v10" />
+        </svg>
+      ),
+    },
+    {
+      key: "briefs-investigator", label: "Briefs", path: "/dashboard/briefs", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      ),
+    },
+    {
+      key: "back-briefs-investigator", label: "Back-Briefs", path: "/dashboard/back-briefs", show: user?.role === "investigator",
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 17l-5-5m0 0l5-5m-5 5h12M19 21H7a2 2 0 01-2-2v-2m14-10V5a2 2 0 00-2-2H7" />
+        </svg>
+      ),
+    },
+    {
       key: "statistics",
       label: "Statistics",
       path: "/dashboard/statistics",
-      show: isSuperuser || STATISTICS_ACCESS_ROLES.includes(user?.role),
+      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer", "adj"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -205,10 +329,32 @@ function getNavItems(user) {
       ),
     },
     {
+      key: "graphs",
+      label: "Graphs",
+      path: "/dashboard/graphs",
+      show: true,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 19V5m0 14h16M8 16l3-4 3 2 5-7m-1 0h-4m4 0v4" />
+        </svg>
+      ),
+    },
+    {
+      key: "logs",
+      label: "Logs",
+      path: "/dashboard/logs",
+      show: isSuperuser,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17h6M9 13h6m-7 8h8a2 2 0 002-2V7.8a2 2 0 00-.59-1.41l-3.8-3.8A2 2 0 0012.2 2H8a2 2 0 00-2 2v15a2 2 0 002 2z" />
+        </svg>
+      ),
+    },
+    {
       key: "analytics",
       label: "Analytics",
       path: "/dashboard/analytics",
-      show: isSuperuser || ANALYTICS_ACCESS_ROLES.includes(user?.role),
+      show: false,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -230,6 +376,18 @@ function getNavItems(user) {
       },
     ] : []),
     {
+      key: "security",
+      label: "Authenticator",
+      path: "/dashboard/authenticator",
+      show: false,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3l7 3v5c0 4.6-2.9 8.6-7 10-4.1-1.4-7-5.4-7-10V6l7-3z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l-4 4-2-2" />
+        </svg>
+      ),
+    },
+    {
       key: "notifications", label: "Notifications", path: "/dashboard/notifications", show: true,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -244,14 +402,17 @@ function getNavItems(user) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [initialUser] = useState(() => readCachedUser());
+  const [user, setUser] = useState(initialUser);
+  const [loading, setLoading] = useState(!initialUser);
   const [unreadCount, setUnreadCount] = useState(0);
   const [offences, setOffences] = useState([]);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [offenceModalOpen, setOffenceModalOpen] = useState(false);
+  const idleTimerRef = React.useRef(null);
+  const idleLogoutStartedRef = React.useRef(false);
 
   const closeAllModules = React.useCallback(() => {
     setMobileNavOpen(false);
@@ -266,6 +427,7 @@ export default function Dashboard() {
 
   const openOffenceModal = () => {
     closeAllModules();
+    if (!offences.length) loadOffences();
     setOffenceModalOpen(true);
   };
 
@@ -274,6 +436,22 @@ export default function Dashboard() {
     setLogoutConfirmOpen(true);
   };
 
+  const completeIdleLogout = React.useCallback(async () => {
+    if (idleLogoutStartedRef.current) return;
+    idleLogoutStartedRef.current = true;
+    closeAllModules();
+    try {
+      await authService.logout();
+    } catch (_) {
+      clearCachedUser();
+    } finally {
+      setUser(null);
+      setUnreadCount(0);
+      setLoggingOut(false);
+      navigate("/login", { replace: true });
+    }
+  }, [closeAllModules, navigate]);
+
   const loadOffences = React.useCallback(() => {
     offenceService.list().then((r) => setOffences(Array.isArray(r.data) ? r.data : r.data?.results ?? [])).catch(() => {});
   }, []);
@@ -281,37 +459,68 @@ export default function Dashboard() {
   useEffect(() => {
     authService
       .me()
-      .then((res) => setUser(res.data))
-      .catch(() => navigate("/login"))
+      .then((res) => {
+        setUser(res.data);
+        cacheUser(res.data);
+      })
+      .catch(() => {
+        clearCachedUser();
+        navigate("/login");
+      })
       .finally(() => setLoading(false));
   }, [navigate]);
 
   useEffect(() => {
-    if (user?.must_change_password && location.pathname !== "/dashboard/change-password") {
-      navigate("/dashboard/change-password", { replace: true });
-    }
-  }, [user, location.pathname, navigate]);
+    idleLogoutStartedRef.current = false;
+  }, [user?.id]);
 
   useEffect(() => {
-    if (!user || user.must_change_password || user.mfa_enabled) return;
-    if (location.pathname !== "/dashboard/setup-mfa" && location.pathname !== "/dashboard/change-password") {
-      navigate("/dashboard/setup-mfa", { replace: true });
-    }
-  }, [user, location.pathname, navigate]);
+    if (!user) return undefined;
 
-  const handlePasswordChanged = React.useCallback(() => {
-    setUser((currentUser) =>
-      currentUser ? { ...currentUser, must_change_password: false } : currentUser
-    );
-  }, []);
+    let lastActivityAt = Date.now();
 
-  const handleMfaVerified = React.useCallback((updatedUser) => {
-    setUser((currentUser) => ({
-      ...(currentUser || {}),
-      ...(updatedUser || {}),
-      mfa_enabled: true,
-    }));
-  }, []);
+    const clearIdleTimer = () => {
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+    };
+
+    const scheduleIdleLogout = () => {
+      clearIdleTimer();
+      const remainingMs = Math.max(0, DASHBOARD_IDLE_TIMEOUT_MS - (Date.now() - lastActivityAt));
+      idleTimerRef.current = window.setTimeout(completeIdleLogout, remainingMs);
+    };
+
+    const markActive = () => {
+      if (idleLogoutStartedRef.current) return;
+      lastActivityAt = Date.now();
+      scheduleIdleLogout();
+    };
+
+    const checkIdleOnReturn = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastActivityAt >= DASHBOARD_IDLE_TIMEOUT_MS) {
+        completeIdleLogout();
+        return;
+      }
+      markActive();
+    };
+
+    scheduleIdleLogout();
+    DASHBOARD_ACTIVITY_EVENTS.forEach((eventName) => {
+      window.addEventListener(eventName, markActive, { passive: true });
+    });
+    document.addEventListener("visibilitychange", checkIdleOnReturn);
+
+    return () => {
+      clearIdleTimer();
+      DASHBOARD_ACTIVITY_EVENTS.forEach((eventName) => {
+        window.removeEventListener(eventName, markActive);
+      });
+      document.removeEventListener("visibilitychange", checkIdleOnReturn);
+    };
+  }, [user, completeIdleLogout]);
 
   const refreshUnreadCount = React.useCallback(() => {
     const access = sessionStorage.getItem("access_token");
@@ -328,27 +537,27 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!user || user.must_change_password || !user.mfa_enabled) return;
-    refreshUnreadCount();
+    if (!user) return;
+    if (needsTotpSetup(user)) {
+      setUnreadCount(0);
+      return;
+    }
+    const cancelInitial = scheduleNonCritical(refreshUnreadCount);
     const id = setInterval(refreshUnreadCount, 30000);
-    return () => clearInterval(id);
+    return () => {
+      cancelInitial?.();
+      clearInterval(id);
+    };
   }, [user, refreshUnreadCount]);
 
-  const performLogout = React.useCallback(async (reason = "manual") => {
-    try {
-      await authService.logout();
-    } catch {
-      // Still clear local credentials if the logout request cannot complete.
-    } finally {
-      sessionStorage.removeItem("access_token");
-      sessionStorage.removeItem("refresh_token");
-      setUser(null);
-      setUnreadCount(0);
-      navigate(reason === "inactive" ? "/login?timeout=1" : "/login", { replace: true });
+  useEffect(() => {
+    if (!user || user.must_change_password) return;
+    const setupRequired = needsTotpSetup(user);
+    const allowedPath = ["/dashboard/authenticator", "/dashboard/change-password"].includes(location.pathname);
+    if (setupRequired && !allowedPath) {
+      navigate("/dashboard/authenticator", { replace: true });
     }
-  }, [navigate]);
-
-  useInactivityLogout(() => performLogout("inactive"), INACTIVITY_LOGOUT_MS, Boolean(user));
+  }, [user, location.pathname, navigate]);
 
   const handleLogout = () => {
     openLogoutConfirm();
@@ -357,7 +566,8 @@ export default function Dashboard() {
   const confirmLogout = async () => {
     setLoggingOut(true);
     try {
-      await performLogout();
+      await authService.logout();
+      navigate("/login");
     } finally {
       setLoggingOut(false);
       setLogoutConfirmOpen(false);
@@ -367,13 +577,20 @@ export default function Dashboard() {
   const handleOffenceSave = (data) => {
     return offenceService.create(data)
       .then(() => { loadOffences(); })
-      .catch(() => {});
+      .catch((err) => { throw err; });
   };
 
-  // Load offences for all authenticated users
-  React.useEffect(() => {
-    if (user && !user.must_change_password && user.mfa_enabled) loadOffences();
-  }, [user, loadOffences]);
+  const handleOffenceUpdate = (id, data) => {
+    return offenceService.update(id, data)
+      .then(() => { loadOffences(); })
+      .catch((err) => { throw err; });
+  };
+
+  const handleOffenceDelete = (id) => {
+    return offenceService.delete(id)
+      .then(() => { loadOffences(); })
+      .catch((err) => { throw err; });
+  };
 
   React.useEffect(() => {
     setMobileNavOpen(false);
@@ -389,9 +606,10 @@ export default function Dashboard() {
 
   // Show HQDashboard for HQ battalion admins, Overview for others
   const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
-  const isHqStaffRole = HQ_DASHBOARD_ROLES.includes(user?.role);
+  const isCorpsCommander = user?.role === "corps_cmd";
+  const isInvestigator = user?.role === "investigator";
 
-  // Roles that are scoped to either a detachment or a battalion
+  // Roles that are scoped to either a company or a battalion
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
   const hasDetachment = !!user?.detachment;
@@ -402,10 +620,16 @@ export default function Dashboard() {
   const roleLabel = !!user?.is_superuser
     ? "Superuser"
     : ROLE_LABELS[user?.role] || user?.role;
-  const battalionLabel = user?.role === "investigator"
-    ? "Investigator Dashboard"
+  const battalionLabel = isInvestigator
+    ? user?.detachment_name
+      ? `${user.detachment_name} Investigator Dashboard`
+      : user?.battalion_name
+      ? `${user.battalion_name} Investigator Dashboard`
+      : "Investigator Dashboard"
     : isDetachmentLevelRole && hasDetachment && user?.detachment_name
-    ? `${user.detachment_name} Detachment Dashboard`
+    ? `${user.detachment_name} Company Dashboard`
+    : isCorpsCommander
+    ? "Corps Command Dashboard"
     : user?.battalion_name && String(user?.battalion_type || "").toLowerCase() === "hqs"
     ? `${user.battalion_name} Dashboard`
     : user?.battalion_name
@@ -413,15 +637,39 @@ export default function Dashboard() {
     : "General Dashboard";
 
   if (location.pathname === "/dashboard/change-password") {
-    return <ChangePassword user={user} onChanged={handlePasswordChanged} />;
+    return (
+      <Suspense fallback={<ModuleFallback />}>
+        <ChangePassword
+          user={user}
+          onPasswordChanged={(nextUser) => {
+            if (nextUser) {
+              setUser(nextUser);
+              cacheUser(nextUser);
+            }
+          }}
+        />
+      </Suspense>
+    );
   }
 
-  if (location.pathname === "/dashboard/setup-mfa") {
-    return <MfaSetup user={user} onVerified={handleMfaVerified} />;
+  if (location.pathname === "/dashboard/authenticator") {
+    return (
+      <Suspense fallback={<ModuleFallback />}>
+        <Authenticator
+          user={user}
+          onTotpChanged={(nextUser) => {
+            if (nextUser) {
+              setUser(nextUser);
+              cacheUser(nextUser);
+            }
+          }}
+        />
+      </Suspense>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 flex">
+    <div className="dashboard-light min-h-screen bg-gray-900 flex">
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-56 bg-gray-800 flex-col">
         <div className="px-5 py-4 border-b border-gray-700">
@@ -524,7 +772,7 @@ export default function Dashboard() {
                 className="w-8 h-8 rounded bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
                 aria-label="Close menu"
               >
-                x
+                ×
               </button>
             </div>
             <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
@@ -580,40 +828,84 @@ export default function Dashboard() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto bg-gray-900 pt-14 lg:pt-0">
-        <Routes>
-          <Route path="/" element={
-            isHqsAdmin ? <HQDashboard user={user} /> :
-            isHqStaffRole ? <HQDashboard user={user} /> :
-            user?.role === "investigator" ? <InvestigatorDashboard user={user} /> :
-            (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
-            (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
-            user?.battalion_type ? <BattalionDashboard user={user} /> :
-            <Overview user={user} />
-          } />
-          <Route path="/cases/*" element={<Cases user={user} />} />
-          <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
-          <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />
-          <Route path="/incidents/*" element={<Incidents user={user} />} />
-          <Route path="/morning-briefs/*" element={<MorningBriefs user={user} />} />
-          <Route path="/guardrooms/*" element={<Guardrooms user={user} />} />
-          <Route path="/users/*" element={<Users user={user} />} />
-          <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
-          <Route path="/Battalions" element={<Battalions user={user} />} />
-          <Route path="/formations" element={<Formations user={user} />} />
-          <Route path="/formations-btn" element={<Offences user={user} />} />
-          <Route
-            path="/notifications"
-            element={<Notifications onRead={refreshUnreadCount} />}
-          />
-          <Route path="/change-password" element={<ChangePassword user={user} onChanged={handlePasswordChanged} />} />
-          <Route path="/setup-mfa" element={<MfaSetup user={user} onVerified={handleMfaVerified} />} />
-          <Route path="/det-teams" element={<Teams user={user} />} />
-          <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
-          <Route path="/statistics" element={<Statistics user={user} />} />
-          <Route path="/analytics" element={<Analytics user={user} />} />
-          <Route path="/battalion-detachments" element={<DetachmentOverview user={user} />} />
-        </Routes>
-        <OffenceModal open={offenceModalOpen} onClose={() => setOffenceModalOpen(false)} onSave={handleOffenceSave} user={user} offences={offences} />
+        <Suspense fallback={<ModuleFallback />}>
+          <Routes>
+            <Route path="/" element={
+              isInvestigator ? <InvestigatorDashboard user={user} /> :
+              (isHqsAdmin || isCorpsCommander) ? <HQDashboard user={user} /> :
+              (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
+              (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
+              user?.battalion_type ? <BattalionDashboard user={user} /> :
+              <Overview user={user} />
+            } />
+            <Route path="/cases/*" element={<Cases user={user} />} />
+            <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
+            <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />
+            <Route path="/incidents/*" element={<Incidents user={user} />} />
+            <Route path="/morning-briefs/*" element={<MorningBriefs user={user} />} />
+            <Route path="/guardrooms/*" element={<Guardrooms user={user} />} />
+            <Route path="/duty-room" element={<DutyRoom user={user} />} />
+            <Route path="/exhibits" element={<Exhibits user={user} />} />
+            <Route path="/briefs" element={<Briefs user={user} />} />
+            <Route path="/back-briefs" element={<BackBriefs user={user} />} />
+            <Route path="/users/*" element={<Users user={user} />} />
+            <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
+            <Route path="/battalions" element={<Formations user={user} mode="battalions" />} />
+            <Route path="/Battalions" element={<Formations user={user} mode="battalions" />} />
+            <Route path="/formations" element={<Formations user={user} mode="formations" />} />
+            <Route path="/formations-btn" element={<Offences user={user} />} />
+            <Route
+              path="/notifications"
+              element={<Notifications onRead={refreshUnreadCount} />}
+            />
+            <Route
+              path="/change-password"
+              element={
+                <ChangePassword
+                  user={user}
+                  onPasswordChanged={(nextUser) => {
+                    if (nextUser) {
+                      setUser(nextUser);
+                      cacheUser(nextUser);
+                    }
+                  }}
+                />
+              }
+            />
+            <Route
+              path="/authenticator"
+              element={
+                <Authenticator
+                  user={user}
+                  onTotpChanged={(nextUser) => {
+                    if (nextUser) {
+                      setUser(nextUser);
+                      cacheUser(nextUser);
+                    }
+                  }}
+                />
+              }
+            />
+            <Route path="/det-teams" element={<Teams user={user} />} />
+            <Route path="/my-team" element={<InvestigatorDashboard user={user} />} />
+            <Route path="/statistics" element={<Statistics user={user} />} />
+            <Route path="/graphs" element={<Graphs user={user} />} />
+            <Route path="/logs" element={<AuditLogs user={user} />} />
+            <Route path="/analytics" element={<Analytics user={user} />} />
+            <Route path="/battalion-detachments" element={<DetachmentOverview user={user} />} />
+          </Routes>
+          {offenceModalOpen && (
+            <OffenceModal
+              open={offenceModalOpen}
+              onClose={() => setOffenceModalOpen(false)}
+              onSave={handleOffenceSave}
+              onUpdate={handleOffenceUpdate}
+              onDelete={handleOffenceDelete}
+              user={user}
+              offences={offences}
+            />
+          )}
+        </Suspense>
       </main>
 
       {logoutConfirmOpen && (

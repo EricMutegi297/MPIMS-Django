@@ -1,74 +1,86 @@
 from rest_framework import viewsets, permissions, status as http_status
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from django.http import HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
-from django.db.models import Avg, Count, Q, F, ExpressionWrapper, IntegerField, FloatField
+from django.db import transaction
+from django.db.models import Avg, Count, Q, F, ExpressionWrapper, IntegerField, FloatField, Prefetch
+from django.db.models.functions import TruncMonth
 from datetime import date
 from .models import (
     Case,
     CaseActivityLog,
     CaseAttachment,
+    CaseBackBrief,
     CaseBrief,
     CaseBriefForward,
-    CaseCourtMartialAttachment,
     CaseCourtMartialHearing,
     CaseCourtMartialMilestone,
+    ExhibitStorageRequest,
     InvestigationTeam,
 )
 from .serializers import (
     CaseActivityLogSerializer,
     CaseAttachmentSerializer,
+    CaseBackBriefSerializer,
     CaseBriefSerializer,
-    CaseCourtMartialAttachmentSerializer,
     CaseCourtMartialHearingSerializer,
     CaseCourtMartialMilestoneSerializer,
+    ExhibitStorageRequestSerializer,
     CaseSerializer,
     CLOSED_CASE_FILE_ERROR,
     InvestigationTeamSerializer,
 )
 from apps.formations.models import Battalion
 from apps.notifications.models import Notification
+from apps.users.access import (
+    battalion_scope_q,
+    command_read_only_message,
+    has_global_read_access,
+    is_hqs_admin,
+    is_battalion_command,
+    should_block_command_write,
+)
 from apps.users.models import User
 
 
-GLOBAL_CASE_VIEW_ROLES = {
-    User.Role.CORPS_CMD,
-    User.Role.COP,
-    User.Role.SO1_LEGAL,
-    User.Role.SO1_OPS,
-    User.Role.SO2_LEGAL,
-    User.Role.SO2_OPS,
-}
-
-
-def _is_hqs_case_admin(user):
-    return (
-        user.role in {User.Role.ADMIN, User.Role.MPC_HQS}
-        and user.battalion
-        and str(user.battalion.battalion_type).lower() == "hqs"
-    )
-
-
-def _has_global_case_visibility(user):
-    return (
-        user
-        and user.is_authenticated
-        and (user.is_superuser or user.role in GLOBAL_CASE_VIEW_ROLES or _is_hqs_case_admin(user))
-    )
+def ensure_case_accepts_file_changes(case):
+    if case and case.status == Case.Status.CLOSED:
+        raise ValidationError({"case": CLOSED_CASE_FILE_ERROR})
 
 
 class InvestigationTeamViewSet(viewsets.ModelViewSet):
     serializer_class = InvestigationTeamSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def _can_manage_teams(self, user):
+        if user.is_superuser:
+            return True
+        if user.role == User.Role.DETACHMENT and user.detachment_id:
+            return True
+        if (
+            user.role == User.Role.ADMIN
+            and user.battalion_id
+            and getattr(user.battalion, "battalion_type", "") == Battalion.BattalionType.SPECIAL
+        ):
+            return True
+        return False
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        if should_block_command_write(request.user, request.method):
+            raise PermissionDenied(command_read_only_message(request.user))
+        if request.method not in permissions.SAFE_METHODS and not self._can_manage_teams(request.user):
+            raise PermissionDenied("Only IC COY or Special Battalion Admin can create or manage investigation teams.")
+
     def perform_create(self, serializer):
         user = self.request.user
-        # IC Det creates teams scoped to their detachment
+        # IC COY creates teams scoped to their company record
         if user.role == "detachment" and user.detachment_id:
             serializer.save(battalion=user.battalion, detachment=user.detachment)
         else:
@@ -76,28 +88,32 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        if user.is_superuser:
+        if has_global_read_access(user):
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").all()
-        # IC Det sees only their detachment's teams
+        if user.role == User.Role.INVESTIGATOR:
+            return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(
+                Q(team_ic=user) | Q(members=user)
+            ).distinct()
+        # IC COY sees only their company teams
         if user.role == "detachment" and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
         if user.battalion_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(battalion_id=user.battalion_id)
         return InvestigationTeam.objects.none()
 
-    _ACTIVE = ["under_investigation"]
+    _ACTIVE = [Case.Status.UNDER_INVESTIGATION, Case.Status.PENDING]
 
     @action(detail=False, methods=["get"], url_path="user-workload")
     def user_workload(self, request):
         """
         Returns all personnel (in the requester's scope) ranked by active-case
-        engagement: each active case their team is assigned counts once,
-        whether they are Team IC or a team member.
+        engagement: direct IO assignments plus active cases assigned to their
+        team, whether they are Team IC or a team member.
         """
         user = request.user
 
-        # Scope the user pool to same detachment / battalion
-        if user.is_superuser:
+        # Scope the user pool to same company / battalion
+        if has_global_read_access(user):
             base_users = User.objects.all()
         elif user.role == "detachment" and user.detachment_id:
             base_users = User.objects.filter(detachment_id=user.detachment_id)
@@ -117,9 +133,14 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
                 filter=Q(investigation_teams__assigned_cases__status__in=self._ACTIVE),
                 distinct=True,
             ),
+            direct_cases=Count(
+                "assigned_cases__id",
+                filter=Q(assigned_cases__status__in=self._ACTIVE),
+                distinct=True,
+            ),
         ).annotate(
             total_engagement=ExpressionWrapper(
-                F("ic_cases") + F("member_cases"),
+                F("ic_cases") + F("member_cases") + F("direct_cases"),
                 output_field=IntegerField(),
             )
         ).order_by("-total_engagement", "name")
@@ -133,6 +154,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
                 "role": u.role,
                 "ic_cases": u.ic_cases,
                 "member_cases": u.member_cases,
+                "direct_cases": u.direct_cases,
                 "total_engagement": u.total_engagement,
             }
             for u in qs
@@ -140,41 +162,717 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         return Response(data)
 
 
+class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
+    serializer_class = ExhibitStorageRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    filterset_fields = ["status", "case", "storage_scope", "target_detachment", "target_battalion"]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        is_adj_release_authorization = (
+            getattr(self, "action", None) in {"approve_lifecycle", "decline_lifecycle"}
+            and getattr(request.user, "role", None) == User.Role.ADJ
+        )
+        if should_block_command_write(request.user, request.method) and not is_adj_release_authorization:
+            raise PermissionDenied(command_read_only_message(request.user))
+
+    def get_queryset(self):
+        qs = ExhibitStorageRequest.objects.select_related(
+            "case",
+            "case__assigned_to",
+            "case__assigned_team",
+            "case__assigned_team__team_ic",
+            "case__tasked_battalion",
+            "case__tasked_detachment",
+            "target_detachment",
+            "target_battalion",
+            "requested_by",
+            "reviewed_by",
+            "stored_by",
+            "lifecycle_requested_by",
+            "lifecycle_reviewed_by",
+            "parent_request",
+            "parent_request__case",
+        ).prefetch_related(
+            "case__assigned_team__members",
+            "case__accused_entries",
+        )
+        user = self.request.user
+        if has_global_read_access(user):
+            return qs
+        if user.role == User.Role.INVESTIGATOR:
+            return qs.filter(
+                Q(requested_by=user)
+                | Q(case__assigned_to=user)
+                | Q(case__assigned_team__team_ic=user)
+                | Q(case__assigned_team__members=user)
+            ).distinct()
+        if user.role == User.Role.DETACHMENT and user.detachment_id:
+            return qs.filter(
+                Q(target_detachment_id=user.detachment_id)
+                | Q(case__tasked_detachment_id=user.detachment_id)
+                | Q(case__assigned_team__detachment_id=user.detachment_id)
+            ).distinct()
+        if user.role == User.Role.ADMIN and user.battalion_id:
+            return qs.filter(
+                Q(target_battalion_id=user.battalion_id)
+                | Q(case__tasked_battalion_id=user.battalion_id)
+                | Q(case__tasked_detachment__battalion_id=user.battalion_id)
+                | Q(case__assigned_team__battalion_id=user.battalion_id)
+            ).distinct()
+        if user.battalion_id:
+            return qs.filter(
+                Q(case__tasked_battalion_id=user.battalion_id)
+                | Q(case__tasked_detachment__battalion_id=user.battalion_id)
+                | Q(case__assigned_team__battalion_id=user.battalion_id)
+            ).distinct()
+        return qs.filter(requested_by=user)
+
+    def perform_create(self, serializer):
+        ensure_case_accepts_file_changes(serializer.validated_data.get("case"))
+        exhibit = serializer.save(requested_by=self.request.user)
+        self._notify_approvers(exhibit)
+
+    @action(detail=False, methods=["get"], url_path="eligible-cases")
+    def eligible_cases(self, request):
+        if request.user.role != User.Role.INVESTIGATOR:
+            return Response([])
+        qs = Case.objects.select_related(
+            "assigned_to",
+            "assigned_team",
+            "assigned_team__team_ic",
+            "tasked_battalion",
+            "tasked_detachment",
+            "accused_unit",
+        ).prefetch_related("assigned_team__members", "accused_entries")
+        qs = qs.filter(
+            Q(assigned_to=request.user)
+            | Q(assigned_team__team_ic=request.user)
+            | Q(assigned_team__members=request.user)
+        ).distinct().order_by("-created_at")
+        return Response(CaseSerializer(qs, many=True, context={"request": request}).data)
+
+    @action(detail=False, methods=["get"], url_path="storage-destinations")
+    def storage_destinations(self, request):
+        if request.user.role != User.Role.INVESTIGATOR:
+            return Response({"detachment": None, "battalions": []})
+
+        detachment = None
+        if request.user.detachment_id:
+            det = request.user.detachment
+            detachment = {
+                "id": det.id,
+                "name": det.name,
+                "battalion": det.battalion_id,
+                "battalion_name": det.battalion.name if det.battalion else None,
+            }
+
+        battalions = Battalion.objects.order_by("name").values(
+            "id",
+            "name",
+            "battalion_type",
+        )
+        return Response({
+            "detachment": detachment,
+            "battalions": list(battalions),
+        })
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        exhibit = self.get_object()
+        self._ensure_can_review(request.user, exhibit)
+        if exhibit.status != ExhibitStorageRequest.Status.PENDING:
+            raise ValidationError({"status": "Only pending exhibit storage requests can be approved."})
+        exhibit.status = ExhibitStorageRequest.Status.APPROVED
+        exhibit.reviewed_by = request.user
+        exhibit.reviewed_at = timezone.now()
+        exhibit.reviewer_comments = str(request.data.get("comments") or "").strip()
+        exhibit.decline_reason = ""
+        exhibit.save(update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "reviewer_comments",
+            "decline_reason",
+            "updated_at",
+        ])
+        self._notify_requester(exhibit, "approved")
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=True, methods=["post"])
+    def decline(self, request, pk=None):
+        exhibit = self.get_object()
+        self._ensure_can_review(request.user, exhibit)
+        if exhibit.status != ExhibitStorageRequest.Status.PENDING:
+            raise ValidationError({"status": "Only pending exhibit storage requests can be declined."})
+        reason = str(request.data.get("reason") or request.data.get("decline_reason") or "").strip()
+        if not reason:
+            raise ValidationError({"reason": "Reason for declining exhibit storage is required."})
+        exhibit.status = ExhibitStorageRequest.Status.DECLINED
+        exhibit.reviewed_by = request.user
+        exhibit.reviewed_at = timezone.now()
+        exhibit.reviewer_comments = str(request.data.get("comments") or "").strip()
+        exhibit.decline_reason = reason
+        exhibit.save(update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "reviewer_comments",
+            "decline_reason",
+            "updated_at",
+        ])
+        self._notify_requester(exhibit, "declined")
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=True, methods=["post"])
+    def store(self, request, pk=None):
+        exhibit = self.get_object()
+        self._ensure_can_store(request.user, exhibit)
+        if exhibit.status != ExhibitStorageRequest.Status.APPROVED:
+            raise ValidationError({"status": "Only approved exhibits can be marked as stored."})
+        physical_location = str(request.data.get("physical_location") or "").strip()
+        if not physical_location:
+            raise ValidationError({"physical_location": "Enter the physical storage location after receiving the exhibit."})
+        exhibit.status = ExhibitStorageRequest.Status.STORED
+        exhibit.stored_by = request.user
+        exhibit.stored_at = timezone.now()
+        exhibit.physical_location = physical_location
+        exhibit.storage_reference = str(request.data.get("storage_reference") or "").strip()
+        exhibit.save(update_fields=[
+            "status",
+            "stored_by",
+            "stored_at",
+            "physical_location",
+            "storage_reference",
+            "updated_at",
+        ])
+        self._notify_requester(exhibit, "stored")
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=True, methods=["post"], url_path="request-lifecycle")
+    def request_lifecycle(self, request, pk=None):
+        exhibit = self.get_object()
+        ensure_case_accepts_file_changes(exhibit.case)
+        self._ensure_can_request_lifecycle(request.user, exhibit)
+        if exhibit.status != ExhibitStorageRequest.Status.STORED:
+            raise ValidationError({"status": "Only stored exhibits can be released."})
+
+        lifecycle_action = str(request.data.get("action") or request.data.get("lifecycle_action") or "").strip()
+        release_actions = {
+            ExhibitStorageRequest.LifecycleAction.RETURN_OWNER,
+            ExhibitStorageRequest.LifecycleAction.DISPOSE,
+        }
+        if lifecycle_action not in release_actions:
+            raise ValidationError({"action": "Select Return to the Owner or Dispose as the mode of release."})
+        request_status = self._lifecycle_request_status(lifecycle_action)
+        if not request_status:
+            raise ValidationError({"action": "Select a valid release action."})
+
+        reason = str(request.data.get("reason") or request.data.get("lifecycle_reason") or "").strip()
+        if not reason:
+            raise ValidationError({"reason": "Reason for release is required."})
+
+        recipient_name = str(request.data.get("recipient_name") or request.data.get("lifecycle_recipient_name") or "").strip()
+        recipient_identifier = str(request.data.get("recipient_identifier") or request.data.get("lifecycle_recipient_identifier") or "").strip()
+        authority = str(request.data.get("authority") or request.data.get("lifecycle_authority") or "").strip()
+        disposal_mode = str(request.data.get("disposal_mode") or request.data.get("lifecycle_disposal_mode") or "").strip()
+        lifecycle_attachment = request.FILES.get("attachment") or request.FILES.get("lifecycle_attachment")
+        if not lifecycle_attachment:
+            raise ValidationError({"attachment": "Evidence document is required before requesting exhibit release."})
+        if lifecycle_action == ExhibitStorageRequest.LifecycleAction.RETURN_OWNER:
+            accused_name = (exhibit.case.accused_name or "").strip()
+            accused_service_number = (exhibit.case.accused_service_number or "").strip()
+            if not accused_name and not accused_service_number:
+                raise ValidationError({"action": "Return to the Owner is invalid because the case has no accused name or service number recorded."})
+            recipient_name = accused_name or "NIL"
+            recipient_identifier = accused_service_number or "NIL"
+        if lifecycle_action == ExhibitStorageRequest.LifecycleAction.DISPOSE and not disposal_mode:
+            raise ValidationError({"disposal_mode": "Mode of disposal is required when disposing an exhibit."})
+        if lifecycle_action == ExhibitStorageRequest.LifecycleAction.DISPOSE:
+            recipient_name = ""
+            recipient_identifier = ""
+        else:
+            disposal_mode = ""
+
+        exhibit.status = request_status
+        exhibit.lifecycle_action = lifecycle_action
+        exhibit.lifecycle_reason = reason
+        exhibit.lifecycle_recipient_name = recipient_name
+        exhibit.lifecycle_recipient_identifier = recipient_identifier
+        exhibit.lifecycle_authority = authority
+        exhibit.lifecycle_disposal_mode = disposal_mode
+        exhibit.lifecycle_requested_by = request.user
+        exhibit.lifecycle_requested_at = timezone.now()
+        exhibit.lifecycle_reviewed_by = None
+        exhibit.lifecycle_reviewed_at = None
+        exhibit.lifecycle_review_comments = ""
+        exhibit.lifecycle_decline_reason = ""
+        exhibit.lifecycle_attachment = lifecycle_attachment
+        exhibit.save(update_fields=[
+            "status",
+            "lifecycle_action",
+            "lifecycle_reason",
+            "lifecycle_recipient_name",
+            "lifecycle_recipient_identifier",
+            "lifecycle_authority",
+            "lifecycle_disposal_mode",
+            "lifecycle_requested_by",
+            "lifecycle_requested_at",
+            "lifecycle_reviewed_by",
+            "lifecycle_reviewed_at",
+            "lifecycle_review_comments",
+            "lifecycle_decline_reason",
+            "lifecycle_attachment",
+            "updated_at",
+        ])
+        self._notify_lifecycle_approvers(exhibit)
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=True, methods=["post"], url_path="approve-lifecycle")
+    def approve_lifecycle(self, request, pk=None):
+        exhibit = self.get_object()
+        self._ensure_can_authorize_release(request.user, exhibit)
+        if exhibit.status not in self._lifecycle_pending_statuses():
+            raise ValidationError({"status": "Only pending exhibit release requests can be approved."})
+
+        final_status = self._lifecycle_final_status(exhibit.lifecycle_action)
+        if not final_status:
+            raise ValidationError({"action": "This exhibit has no valid pending release request."})
+
+        exhibit.status = final_status
+        exhibit.lifecycle_reviewed_by = request.user
+        exhibit.lifecycle_reviewed_at = timezone.now()
+        exhibit.lifecycle_review_comments = str(request.data.get("comments") or "").strip()
+        exhibit.lifecycle_decline_reason = ""
+        exhibit.save(update_fields=[
+            "status",
+            "lifecycle_reviewed_by",
+            "lifecycle_reviewed_at",
+            "lifecycle_review_comments",
+            "lifecycle_decline_reason",
+            "updated_at",
+        ])
+        self._notify_lifecycle_requester(exhibit, "approved")
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=True, methods=["post"], url_path="decline-lifecycle")
+    def decline_lifecycle(self, request, pk=None):
+        exhibit = self.get_object()
+        self._ensure_can_authorize_release(request.user, exhibit)
+        if exhibit.status not in self._lifecycle_pending_statuses():
+            raise ValidationError({"status": "Only pending exhibit release requests can be declined."})
+
+        reason = str(request.data.get("reason") or request.data.get("decline_reason") or "").strip()
+        if not reason:
+            raise ValidationError({"reason": "Reason for declining the exhibit release is required."})
+
+        exhibit.status = ExhibitStorageRequest.Status.STORED
+        exhibit.lifecycle_reviewed_by = request.user
+        exhibit.lifecycle_reviewed_at = timezone.now()
+        exhibit.lifecycle_review_comments = str(request.data.get("comments") or "").strip()
+        exhibit.lifecycle_decline_reason = reason
+        exhibit.save(update_fields=[
+            "status",
+            "lifecycle_reviewed_by",
+            "lifecycle_reviewed_at",
+            "lifecycle_review_comments",
+            "lifecycle_decline_reason",
+            "updated_at",
+        ])
+        self._notify_lifecycle_requester(exhibit, "declined")
+        return Response(self.get_serializer(exhibit).data)
+
+    @action(detail=False, methods=["post"], url_path="scan-release-document")
+    def scan_release_document(self, request):
+        self._ensure_can_scan_release_document(request.user)
+        content, filename, content_type = self._scan_release_document()
+        response = HttpResponse(content, content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    def _ensure_can_review(self, user, exhibit):
+        if user.is_superuser:
+            return
+        if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT:
+            if user.role == User.Role.DETACHMENT and user.detachment_id == exhibit.target_detachment_id:
+                return
+            raise PermissionDenied("Only the target IC COY can review this exhibit storage request.")
+        if exhibit.storage_scope in {
+            ExhibitStorageRequest.StorageScope.BATTALION,
+            ExhibitStorageRequest.StorageScope.SPECIAL_BATTALION,
+        }:
+            if user.role == User.Role.ADMIN and user.battalion_id == exhibit.target_battalion_id:
+                return
+            raise PermissionDenied("Only the target battalion admin can review this exhibit storage request.")
+        raise PermissionDenied("You cannot review this exhibit storage request.")
+
+    def _ensure_can_store(self, user, exhibit):
+        self._ensure_can_review(user, exhibit)
+
+    def _ensure_can_authorize_release(self, user, exhibit):
+        if user.is_superuser:
+            return
+
+        if (
+            user.role == User.Role.DETACHMENT
+            and user.detachment_id
+            and exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT
+            and user.detachment_id == exhibit.target_detachment_id
+        ):
+            return
+
+        command_roles = {
+            User.Role.ADMIN,
+            User.Role.ADJ,
+            User.Role.HOD,
+            User.Role.OC,
+            User.Role.CO,
+            User.Role.TWO_IC,
+        }
+        if user.role in command_roles and user.battalion_id:
+            battalion_ids = {exhibit.target_battalion_id}
+            if exhibit.target_detachment_id and exhibit.target_detachment:
+                battalion_ids.add(exhibit.target_detachment.battalion_id)
+            if user.battalion_id in battalion_ids:
+                return
+
+        raise PermissionDenied("Only Admin, IC COY, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
+
+    def _ensure_can_scan_release_document(self, user):
+        allowed_roles = {
+            User.Role.INVESTIGATOR,
+            User.Role.ADMIN,
+            User.Role.DETACHMENT,
+            User.Role.ADJ,
+            User.Role.HOD,
+            User.Role.OC,
+            User.Role.CO,
+            User.Role.TWO_IC,
+        }
+        if user.is_superuser or user.role in allowed_roles:
+            return
+        raise PermissionDenied("You cannot scan exhibit release documents.")
+
+    def _ensure_can_request_lifecycle(self, user, exhibit):
+        if user.is_superuser:
+            return
+        if user.role != User.Role.INVESTIGATOR:
+            raise PermissionDenied("Only investigators can request exhibit release.")
+        if exhibit.case.assigned_to_id == user.id:
+            return
+        team = getattr(exhibit.case, "assigned_team", None)
+        if team:
+            if team.team_ic_id == user.id:
+                return
+            if team.members.filter(id=user.id).exists():
+                return
+        raise PermissionDenied("You can only request exhibit release for cases assigned to you or your investigation team.")
+
+    def _lifecycle_pending_statuses(self):
+        return {
+            ExhibitStorageRequest.Status.RETURN_REQUESTED,
+            ExhibitStorageRequest.Status.DISPOSAL_REQUESTED,
+            ExhibitStorageRequest.Status.TRANSFER_REQUESTED,
+            ExhibitStorageRequest.Status.RETENTION_REQUESTED,
+        }
+
+    def _lifecycle_request_status(self, lifecycle_action):
+        return {
+            ExhibitStorageRequest.LifecycleAction.RETURN_ACCUSED: ExhibitStorageRequest.Status.RETURN_REQUESTED,
+            ExhibitStorageRequest.LifecycleAction.RETURN_OWNER: ExhibitStorageRequest.Status.RETURN_REQUESTED,
+            ExhibitStorageRequest.LifecycleAction.DISPOSE: ExhibitStorageRequest.Status.DISPOSAL_REQUESTED,
+            ExhibitStorageRequest.LifecycleAction.TRANSFER: ExhibitStorageRequest.Status.TRANSFER_REQUESTED,
+            ExhibitStorageRequest.LifecycleAction.RETAIN: ExhibitStorageRequest.Status.RETENTION_REQUESTED,
+        }.get(lifecycle_action)
+
+    def _lifecycle_final_status(self, lifecycle_action):
+        return {
+            ExhibitStorageRequest.LifecycleAction.RETURN_ACCUSED: ExhibitStorageRequest.Status.RETURNED,
+            ExhibitStorageRequest.LifecycleAction.RETURN_OWNER: ExhibitStorageRequest.Status.RETURNED,
+            ExhibitStorageRequest.LifecycleAction.DISPOSE: ExhibitStorageRequest.Status.DISPOSED,
+            ExhibitStorageRequest.LifecycleAction.TRANSFER: ExhibitStorageRequest.Status.TRANSFERRED,
+            ExhibitStorageRequest.LifecycleAction.RETAIN: ExhibitStorageRequest.Status.RETAINED,
+        }.get(lifecycle_action)
+
+    def _lifecycle_action_label(self, lifecycle_action):
+        labels = {
+            ExhibitStorageRequest.LifecycleAction.RETURN_OWNER: "Return to the Owner",
+            ExhibitStorageRequest.LifecycleAction.DISPOSE: "Dispose",
+        }
+        if lifecycle_action in labels:
+            return labels[lifecycle_action]
+        try:
+            return ExhibitStorageRequest.LifecycleAction(lifecycle_action).label
+        except ValueError:
+            return lifecycle_action or "Exhibit release"
+
+    def _scan_release_document(self):
+        try:
+            import win32com.client
+        except ImportError as exc:
+            raise ValidationError({
+                "scanner": (
+                    "Direct scanner access requires Windows scanner support on the server "
+                    "running MPIMS. Install/configure the scanner driver and pywin32, then try again."
+                )
+            }) from exc
+
+        try:
+            dialog = win32com.client.Dispatch("WIA.CommonDialog")
+            image = dialog.ShowAcquireImage()
+        except Exception as exc:
+            raise ValidationError({
+                "scanner": "Unable to scan from the connected scanner. Check that the scanner is connected, powered on, and available to this computer."
+            }) from exc
+
+        try:
+            data = bytes(image.FileData.BinaryData)
+        except Exception as exc:
+            raise ValidationError({"scanner": "The scanner did not return a readable document."}) from exc
+
+        extension = str(getattr(image, "FileExtension", "") or "jpg").lower().lstrip(".")
+        content_types = {
+            "bmp": "image/bmp",
+            "gif": "image/gif",
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "png": "image/png",
+            "tif": "image/tiff",
+            "tiff": "image/tiff",
+        }
+        content_type = content_types.get(extension, "application/octet-stream")
+        filename = f"release_evidence_scan_{timezone.now().strftime('%Y%m%d_%H%M%S')}.{extension}"
+        return data, filename, content_type
+
+    def _approvers_for_exhibit(self, exhibit):
+        if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT and exhibit.target_detachment_id:
+            return list(User.objects.filter(
+                role=User.Role.DETACHMENT,
+                detachment_id=exhibit.target_detachment_id,
+                is_active=True,
+            ))
+        if exhibit.target_battalion_id:
+            return list(User.objects.filter(
+                role=User.Role.ADMIN,
+                battalion_id=exhibit.target_battalion_id,
+                is_active=True,
+            ))
+        return []
+
+    def _case_team_recipients(self, exhibit):
+        recipients = set()
+        for user in [exhibit.requested_by, exhibit.case.assigned_to]:
+            if user and user.is_active:
+                recipients.add(user)
+        team = getattr(exhibit.case, "assigned_team", None)
+        if team:
+            if team.team_ic and team.team_ic.is_active:
+                recipients.add(team.team_ic)
+            for member in team.members.filter(is_active=True):
+                recipients.add(member)
+        return recipients
+
+    def _notify_approvers(self, exhibit):
+        recipients = self._approvers_for_exhibit(exhibit)
+
+        if not recipients:
+            return
+        destination = exhibit.target_detachment or exhibit.target_battalion
+        prefix = "Additional exhibit storage request" if exhibit.parent_request_id else "Exhibit storage request"
+        message = (
+            f"{prefix} for {exhibit.case.case_number} awaits review: "
+            f"{exhibit.exhibit_name} to be stored at {destination}."
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="exhibit_storage_request",
+                related_id=exhibit.id,
+            )
+            for user in recipients
+        ])
+        self._send_email(recipients, f"[MPIMS] Exhibit storage request {exhibit.case.case_number}", message)
+
+    def _notify_requester(self, exhibit, event):
+        recipients = self._case_team_recipients(exhibit)
+        actor = exhibit.stored_by if event == "stored" else exhibit.reviewed_by
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+        if event == "approved":
+            message = (
+                f"Exhibit storage request for {exhibit.case.case_number} was approved. "
+                f"Deliver '{exhibit.exhibit_name}' physically for storage confirmation."
+            )
+        elif event == "declined":
+            message = (
+                f"Exhibit storage request for {exhibit.case.case_number} was declined. "
+                f"Reason: {exhibit.decline_reason}"
+            )
+        else:
+            message = (
+                f"Exhibit '{exhibit.exhibit_name}' for {exhibit.case.case_number} has been physically received "
+                f"and stored at {exhibit.physical_location}."
+            )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="exhibit_storage_request",
+                related_id=exhibit.id,
+            )
+            for user in recipients
+        ])
+        self._send_email(list(recipients), f"[MPIMS] Exhibit storage {event}", message)
+
+    def _release_approvers_for_exhibit(self, exhibit):
+        recipients = set()
+        if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT and exhibit.target_detachment_id:
+            recipients.update(User.objects.filter(
+                role=User.Role.DETACHMENT,
+                detachment_id=exhibit.target_detachment_id,
+                is_active=True,
+            ))
+
+        battalion_id = exhibit.target_battalion_id
+        if not battalion_id and exhibit.target_detachment_id and exhibit.target_detachment:
+            battalion_id = exhibit.target_detachment.battalion_id
+
+        if battalion_id:
+            recipients.update(User.objects.filter(
+                role__in=[
+                    User.Role.ADMIN,
+                    User.Role.ADJ,
+                    User.Role.HOD,
+                    User.Role.OC,
+                    User.Role.CO,
+                    User.Role.TWO_IC,
+                ],
+                battalion_id=battalion_id,
+                is_active=True,
+            ))
+        return list(recipients)
+
+    def _notify_lifecycle_approvers(self, exhibit):
+        recipients = self._release_approvers_for_exhibit(exhibit)
+        if exhibit.lifecycle_requested_by:
+            recipients = [user for user in recipients if user.id != exhibit.lifecycle_requested_by_id]
+        if not recipients:
+            return
+        action_label = self._lifecycle_action_label(exhibit.lifecycle_action)
+        message = (
+            f"{action_label} request for exhibit '{exhibit.exhibit_name}' "
+            f"on {exhibit.case.case_number} awaits approval."
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="exhibit_storage_request",
+                related_id=exhibit.id,
+            )
+            for user in recipients
+        ])
+        self._send_email(recipients, f"[MPIMS] Exhibit release request {exhibit.case.case_number}", message)
+
+    def _notify_lifecycle_requester(self, exhibit, event):
+        recipients = self._case_team_recipients(exhibit)
+        if exhibit.lifecycle_reviewed_by:
+            recipients.discard(exhibit.lifecycle_reviewed_by)
+        if not recipients:
+            return
+        action_label = self._lifecycle_action_label(exhibit.lifecycle_action)
+        if event == "approved":
+            message = (
+                f"{action_label} request for exhibit '{exhibit.exhibit_name}' "
+                f"on {exhibit.case.case_number} was approved. Current status: {exhibit.get_status_display()}."
+            )
+        else:
+            message = (
+                f"{action_label} request for exhibit '{exhibit.exhibit_name}' "
+                f"on {exhibit.case.case_number} was declined. Reason: {exhibit.lifecycle_decline_reason}"
+            )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="exhibit_storage_request",
+                related_id=exhibit.id,
+            )
+            for user in recipients
+        ])
+        self._send_email(list(recipients), f"[MPIMS] Exhibit release {event}", message)
+
+    def _send_email(self, users, subject, message):
+        recipients = [user.email for user in users if getattr(user, "email", "")]
+        if not recipients:
+            return
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=django_settings.DEFAULT_FROM_EMAIL,
+                recipient_list=recipients,
+                fail_silently=True,
+            )
+        except Exception:
+            pass
+
+
 class CaseViewSet(viewsets.ModelViewSet):
-    queryset = Case.objects.select_related(
-        "assigned_to",
-        "created_by",
-        "accused_unit",
-        "brief",
-        "brief__attached_by",
-        "brief__forwarded_by",
-        "brief__approved_by",
-    ).prefetch_related(
-        "extra_attachments",
-        "court_martial_hearings",
-        "court_martial_milestones",
-        "accused_entries__unit",
-        "brief__forward_history__forwarded_by",
+    queryset = Case.objects.select_related("assigned_to", "created_by", "accused_unit").prefetch_related(
+        "extra_attachments", "court_martial_hearings", "court_martial_milestones", "accused_entries"
     ).all()
     serializer_class = CaseSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filterset_fields = [
-        "status",
-        "assigned_to",
-        "accused_unit",
-        "tasked_detachment",
-        "tasked_battalion",
-        "criminal_offence_type",
-    ]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = {
+        "status": ["exact", "in"],
+        "assigned_to": ["exact"],
+        "accused_unit": ["exact"],
+        "tasked_detachment": ["exact"],
+        "tasked_battalion": ["exact"],
+        "criminal_offence_type": ["exact"],
+    }
     search_fields = ["case_number", "title", "accused_name", "accused_service_number"]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        command_write_allowed = (
+            getattr(self, "action", None) == "approve_brief"
+            and request.method == "POST"
+            and getattr(request.user, "role", None) == User.Role.CORPS_CMD
+        ) or (
+            getattr(self, "action", None) == "brief"
+            and request.method == "PATCH"
+            and getattr(request.user, "role", None) == User.Role.ADJ
+        )
+        if should_block_command_write(request.user, request.method) and not command_write_allowed:
+            raise PermissionDenied(command_read_only_message(request.user))
 
     def _can_view_case_progress(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
-        if _has_global_case_visibility(user):
+        if has_global_read_access(user):
             return True
+        if user.role == User.Role.INVESTIGATOR:
+            if case_obj.assigned_to_id == user.id:
+                return True
+            if case_obj.assigned_team_id:
+                team = case_obj.assigned_team
+                return bool(team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()))
+            return False
         if case_obj.tasked_battalion_id and user.battalion_id == case_obj.tasked_battalion_id:
+            return True
+        if case_obj.tasked_detachment_id and user.battalion_id == getattr(case_obj.tasked_detachment, "battalion_id", None):
             return True
         if case_obj.tasked_detachment_id and user.detachment_id == case_obj.tasked_detachment_id:
             return True
@@ -194,43 +892,58 @@ class CaseViewSet(viewsets.ModelViewSet):
             "accused_unit",
             "tasked_battalion",
             "tasked_detachment",
-            "brief",
-            "brief__attached_by",
-            "brief__forwarded_by",
-            "brief__approved_by",
         ).prefetch_related(
             "extra_attachments",
             "court_martial_hearings",
             "court_martial_milestones",
-            "accused_entries__unit",
-            "brief__forward_history__forwarded_by",
+            Prefetch(
+                "activity_logs",
+                queryset=CaseActivityLog.objects.filter(
+                    action=CaseActivityLog.Action.CASE_UPDATED
+                ).order_by("-created_at"),
+                to_attr="case_update_logs",
+            ),
         )
 
         if not user.is_authenticated:
             return base_qs.none()
 
-        if _has_global_case_visibility(user):
+        if has_global_read_access(user):
             return base_qs.all()
 
-        # Normal / Special battalion admin sees their battalion's cases
-        if user.role == "admin" and user.battalion_id:
-            return base_qs.filter(tasked_battalion_id=user.battalion_id)
-
-        # Detachment IC (role=detachment) sees cases tasked to their detachment
-        if user.role == "detachment" and user.detachment_id:
-            return base_qs.filter(tasked_detachment_id=user.detachment_id)
-
-        # Investigators only see cases explicitly assigned to them or their team
-        if user.role == "investigator":
+        if user.role == User.Role.INVESTIGATOR:
             return base_qs.filter(
                 Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
             ).distinct()
 
+        # Battalion command users see cases tasked to their battalion or its companies.
+        if is_battalion_command(user):
+            return base_qs.filter(
+                battalion_scope_q(
+                    user,
+                    battalion_field="tasked_battalion_id",
+                    detachment_field="tasked_detachment",
+                )
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+            ).distinct()
+
+        # IC COY (role=detachment) sees cases tasked to their company record
+        if user.role == "detachment" and user.detachment_id:
+            return base_qs.filter(
+                Q(tasked_detachment_id=user.detachment_id)
+                | Q(assigned_to__detachment_id=user.detachment_id)
+                | Q(assigned_team__detachment_id=user.detachment_id)
+            ).distinct()
+
         if user.battalion_id:
             return base_qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
+                | Q(tasked_detachment__battalion_id=user.battalion_id)
                 | Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
@@ -248,19 +961,21 @@ class CaseViewSet(viewsets.ModelViewSet):
         return " ".join(parts) or actor.service_number
 
     def _notify_team(self, case, actor, message):
-        """Create dashboard notifications + send email to every active team member / IC,
+        """Create dashboard notifications + send email to every active IO / team member / IC,
         excluding the actor who triggered the action."""
-        if not case.assigned_team_id:
-            return
-        try:
-            team = case.assigned_team
-        except Exception:
-            return
         recipients = set()
-        if team.team_ic and team.team_ic.is_active:
-            recipients.add(team.team_ic)
-        for m in team.members.filter(is_active=True):
-            recipients.add(m)
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
+        if case.assigned_team_id:
+            try:
+                team = case.assigned_team
+            except Exception:
+                team = None
+            if team:
+                if team.team_ic and team.team_ic.is_active:
+                    recipients.add(team.team_ic)
+                for m in team.members.filter(is_active=True):
+                    recipients.add(m)
         if actor:
             recipients.discard(actor)
         if not recipients:
@@ -290,14 +1005,14 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _is_hq_admin_or_superuser(self, user):
         if not user or not user.is_authenticated:
             return False
-        if user.is_superuser:
-            return True
-        return _is_hqs_case_admin(user)
+        return has_global_read_access(user)
 
     def _can_manage_court_martial_progress(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
         if self._is_hq_admin_or_superuser(user):
+            return True
+        if case_obj.assigned_to_id and case_obj.assigned_to_id == user.id:
             return True
         team = getattr(case_obj, "assigned_team", None)
         if not team:
@@ -335,252 +1050,614 @@ class CaseViewSet(viewsets.ModelViewSet):
             return False
         return team.team_ic_id == user.id or team.members.filter(id=user.id).exists()
 
+    def _can_manage_case_brief(self, user, case_obj):
+        if not user or not user.is_authenticated:
+            return False
+        if has_global_read_access(user):
+            return True
+        if case_obj.assigned_to_id == user.id:
+            return True
+        team = getattr(case_obj, "assigned_team", None)
+        if team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()):
+            return True
+        return False
+
+    def _brief_case_scope(self, user, qs):
+        if has_global_read_access(user):
+            return qs
+        if getattr(user, "role", None) == User.Role.INVESTIGATOR:
+            return qs.filter(
+                Q(assigned_to=user)
+                | Q(assigned_team__team_ic=user)
+                | Q(assigned_team__members=user)
+            ).distinct()
+        return qs
+
+    def _brief_creator_scope(self, user, qs):
+        if getattr(user, "role", None) != User.Role.INVESTIGATOR:
+            return qs
+        team_ids = InvestigationTeam.objects.filter(
+            Q(team_ic=user) | Q(members=user)
+        ).values("id")
+        team_user_ids = User.objects.filter(
+            Q(led_teams__id__in=team_ids) | Q(investigation_teams__id__in=team_ids)
+        ).values("id")
+        return qs.filter(
+            Q(brief__attached_by=user) | Q(brief__attached_by_id__in=team_user_ids)
+        ).distinct()
+
+    def _brief_forward_target_for_role(self, user):
+        return {
+            User.Role.HOD: CaseBrief.ForwardRole.HOD,
+            User.Role.DETACHMENT: CaseBrief.ForwardRole.DETACHMENT,
+            User.Role.ADJ: CaseBrief.ForwardRole.ADJ,
+            User.Role.TWO_IC: CaseBrief.ForwardRole.TWO_IC,
+            User.Role.CO: CaseBrief.ForwardRole.CO,
+            User.Role.OC: CaseBrief.ForwardRole.OC,
+            User.Role.CORPS_CMD: CaseBrief.ForwardRole.CORPS_CMD,
+        }.get(getattr(user, "role", None))
+
+    def _brief_visible_scope(self, user, qs):
+        if getattr(user, "role", None) == User.Role.INVESTIGATOR:
+            return qs
+
+        if getattr(user, "role", None) == User.Role.ADMIN and not has_global_read_access(user):
+            if not user.battalion_id:
+                return qs.none()
+            return qs.filter(
+                Q(tasked_battalion_id=user.battalion_id)
+                | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+            ).distinct()
+
+        target = self._brief_forward_target_for_role(user)
+        if target:
+            qs = qs.filter(
+                Q(brief__forwarded_to_role=target)
+                | Q(brief__forward_history__to_role=target)
+                | Q(brief__forward_history__from_role=user.role)
+            )
+            if user.role == User.Role.CORPS_CMD:
+                return qs.distinct()
+            if user.role == User.Role.DETACHMENT:
+                if not user.detachment_id:
+                    return qs.none()
+                return qs.filter(
+                    Q(tasked_detachment_id=user.detachment_id)
+                    | Q(assigned_to__detachment_id=user.detachment_id)
+                    | Q(assigned_team__detachment_id=user.detachment_id)
+                ).distinct()
+            if not user.battalion_id:
+                return qs.none()
+            return qs.filter(
+                Q(tasked_battalion_id=user.battalion_id)
+                | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+            ).distinct()
+
+        if has_global_read_access(user):
+            return qs
+        return qs.none()
+
+    def _case_battalion_id(self, case_obj):
+        battalion_id = case_obj.tasked_battalion_id
+        if not battalion_id and case_obj.tasked_detachment_id:
+            battalion_id = getattr(case_obj.tasked_detachment, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_team_id:
+            battalion_id = getattr(case_obj.assigned_team, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_team_id:
+            team_detachment = getattr(case_obj.assigned_team, "detachment", None)
+            battalion_id = getattr(team_detachment, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_to_id:
+            battalion_id = getattr(case_obj.assigned_to, "battalion_id", None)
+        if not battalion_id and case_obj.assigned_to_id:
+            io_detachment = getattr(case_obj.assigned_to, "detachment", None)
+            battalion_id = getattr(io_detachment, "battalion_id", None)
+        return battalion_id
+
+    def _case_detachment_id(self, user, case_obj):
+        if case_obj.tasked_detachment_id:
+            return case_obj.tasked_detachment_id
+        if case_obj.assigned_team_id:
+            detachment_id = getattr(case_obj.assigned_team, "detachment_id", None)
+            if detachment_id:
+                return detachment_id
+        if case_obj.assigned_to_id:
+            detachment_id = getattr(case_obj.assigned_to, "detachment_id", None)
+            if detachment_id:
+                return detachment_id
+        return getattr(user, "detachment_id", None)
+
+    def _brief_role_has_history_access(self, user, brief):
+        target = self._brief_forward_target_for_role(user)
+        if not target:
+            return False
+        if brief.forwarded_to_role == target:
+            return True
+        return brief.forward_history.filter(
+            Q(to_role=target) | Q(from_role=getattr(user, "role", ""))
+        ).exists()
+
+    def _brief_forward_label(self, role):
+        return dict(CaseBrief.ForwardRole.choices).get(role, role)
+
+    def _brief_duplicate_forward(self, brief, to_role):
+        return (
+            brief.forward_history.select_related("forwarded_by")
+            .filter(revision=brief.revision, to_role=to_role)
+            .order_by("-forwarded_at", "-id")
+            .first()
+        )
+
+    def _brief_forward_allowed_roles(self, user, case_obj, brief):
+        role = getattr(user, "role", None)
+        base_roles = set()
+        if role == User.Role.INVESTIGATOR:
+            if self._case_detachment_id(user, case_obj):
+                base_roles = {CaseBrief.ForwardRole.DETACHMENT}
+            else:
+                base_roles = {CaseBrief.ForwardRole.HOD, CaseBrief.ForwardRole.ADJ}
+        elif role == User.Role.DETACHMENT and self._brief_role_has_history_access(user, brief):
+            base_roles = {
+                CaseBrief.ForwardRole.ADJ,
+                CaseBrief.ForwardRole.HOD,
+                CaseBrief.ForwardRole.TWO_IC,
+                CaseBrief.ForwardRole.OC,
+            }
+        elif role == User.Role.HOD and self._brief_role_has_history_access(user, brief):
+            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
+        elif role == User.Role.ADJ and self._brief_role_has_history_access(user, brief):
+            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
+        elif role == User.Role.TWO_IC and self._brief_role_has_history_access(user, brief):
+            base_roles = {CaseBrief.ForwardRole.CO}
+        elif role == User.Role.OC and self._brief_role_has_history_access(user, brief):
+            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
+        elif role == User.Role.CO and self._brief_role_has_history_access(user, brief):
+            base_roles = {CaseBrief.ForwardRole.CORPS_CMD}
+        if not base_roles:
+            return set()
+        already_forwarded = set(
+            brief.forward_history.filter(
+                revision=brief.revision,
+                to_role__in=base_roles,
+            ).values_list("to_role", flat=True)
+        )
+        return base_roles - already_forwarded
+
+    def _can_view_case_brief(self, user, case_obj, brief):
+        if not user or not user.is_authenticated:
+            return False
+        if user.role == User.Role.INVESTIGATOR:
+            return self._can_manage_case_brief(user, case_obj)
+        if user.role == User.Role.ADMIN and not has_global_read_access(user):
+            return bool(user.battalion_id and self._case_battalion_id(case_obj) == user.battalion_id)
+
+        target = self._brief_forward_target_for_role(user)
+        if target and self._brief_role_has_history_access(user, brief):
+            if user.role == User.Role.CORPS_CMD:
+                return True
+            if user.role == User.Role.DETACHMENT:
+                return bool(user.detachment_id and self._case_detachment_id(user, case_obj) == user.detachment_id)
+            return bool(user.battalion_id and self._case_battalion_id(case_obj) == user.battalion_id)
+
+        return has_global_read_access(user) and user.role != User.Role.CORPS_CMD
+
+    def _can_edit_case_brief(self, user, case_obj, brief):
+        if not user or not user.is_authenticated:
+            return False
+        if user.role == User.Role.INVESTIGATOR:
+            return self._can_manage_case_brief(user, case_obj)
+        if user.role == User.Role.HOD and self._brief_role_has_history_access(user, brief):
+            return self._can_view_case_brief(user, case_obj, brief)
+        if user.role == User.Role.OC and self._brief_role_has_history_access(user, brief):
+            return self._can_view_case_brief(user, case_obj, brief)
+        if user.role == User.Role.ADJ and self._brief_role_has_history_access(user, brief):
+            return self._can_view_case_brief(user, case_obj, brief)
+        return False
+
     def _latest_court_milestone(self, case_obj):
         return case_obj.court_martial_milestones.order_by("-scheduled_date", "-created_at", "-id").first()
 
-    def _case_suffix(self, index):
-        letters = []
-        index += 1
-        while index:
-            index, remainder = divmod(index - 1, 26)
-            letters.append(chr(65 + remainder))
-        return "".join(reversed(letters))
-
-    def _clone_case_for_accused(self, source, case_number, accused_entry):
-        clone_data = {}
-        skip_fields = {"id", "case_number", "created_at", "updated_at"}
-        for field in Case._meta.fields:
-            if field.name in skip_fields:
-                continue
-            clone_data[field.name] = getattr(source, field.name)
-
-        clone = Case.objects.create(**clone_data)
-        clone.case_number = case_number
-        clone.save(update_fields=["case_number"])
-        serializer = self.get_serializer(context=self.get_serializer_context())
-        serializer._create_or_update_accused_entries(clone, [accused_entry])
-        return clone
-
-    def _split_multi_accused_cases(self, instance, accused_entries):
-        if len(accused_entries) <= 1:
-            return [instance]
-
-        base_number = instance.case_number
-        instance.case_number = f"{base_number}{self._case_suffix(0)}"
-        instance.save(update_fields=["case_number"])
-        serializer = self.get_serializer(context=self.get_serializer_context())
-        serializer._create_or_update_accused_entries(instance, [accused_entries[0]])
-
-        cases = [instance]
-        for index, accused_entry in enumerate(accused_entries[1:], start=1):
-            cases.append(
-                self._clone_case_for_accused(
-                    instance,
-                    f"{base_number}{self._case_suffix(index)}",
-                    accused_entry,
-                )
-            )
-        return cases
-
     def perform_create(self, serializer):
-        accused_entries = list(serializer.validated_data.get("accused_entries") or [])
         instance = serializer.save(created_by=self.request.user, status=Case.Status.NEW)
-        created_cases = self._split_multi_accused_cases(instance, accused_entries)
-        for case in created_cases:
-            self._send_tasking_notification(case, created=True)
-            self._log_action(case, self.request.user, CaseActivityLog.Action.CASE_CREATED,
-                             f"Case {case.case_number} created")
+        accused_entries = list(instance.accused_entries.all())
+        if len(accused_entries) > 1:
+            self._create_duplicate_cases_for_accused(instance, accused_entries)
+            self._send_tasking_notification(instance, created=True)
+            self._log_action(instance, self.request.user, CaseActivityLog.Action.CASE_CREATED,
+                             f"Case {instance.case_number} created")
+        else:
+            self._send_tasking_notification(instance, created=True)
+            self._log_action(instance, self.request.user, CaseActivityLog.Action.CASE_CREATED,
+                             f"Case {instance.case_number} created")
 
     def perform_update(self, serializer):
-        prev_instance = self.get_object()
-        prev_tasked_battalion_id = prev_instance.tasked_battalion_id
-        prev_team_id = prev_instance.assigned_team_id
+        instance = serializer.instance
+        previous_status = instance.status
+        previous_assigned_team_id = instance.assigned_team_id
+        previous_assigned_to_id = instance.assigned_to_id
+        previous_tasked_battalion_id = instance.tasked_battalion_id
+        previous_tasked_detachment_id = instance.tasked_detachment_id
+        previous_close_requested = instance.close_requested
+        case = serializer.save()
 
-        # Auto-set status to "tasked" when a battalion is newly assigned
-        new_tasked = serializer.validated_data.get("tasked_battalion")
-        save_kwargs = {}
-        if new_tasked and (new_tasked.id if hasattr(new_tasked, "id") else new_tasked) != prev_tasked_battalion_id:
-            save_kwargs["status"] = Case.Status.TASKED
-
-        # Auto-set status to "tasked" when detachment is newly assigned
-        prev_tasked_detachment_id = prev_instance.tasked_detachment_id
-        new_tasked_det = serializer.validated_data.get("tasked_detachment")
-        if new_tasked_det and (new_tasked_det.id if hasattr(new_tasked_det, "id") else new_tasked_det) != prev_tasked_detachment_id:
-            save_kwargs["status"] = Case.Status.TASKED
-
-        # Auto-set status to "under_investigation" when a team is newly assigned
-        new_team = serializer.validated_data.get("assigned_team")
-        if new_team and (new_team.id if hasattr(new_team, "id") else new_team) != prev_team_id:
-            # Require investigation_deadline
-            deadline = serializer.validated_data.get(
-                "investigation_deadline",
-                getattr(prev_instance, "investigation_deadline", None),
-            )
-            if not deadline:
-                raise ValidationError({"investigation_deadline": "Investigation deadline is required before assigning a team."})
-            save_kwargs["status"] = Case.Status.UNDER_INVESTIGATION
-
-        proposed_status = save_kwargs.get("status") or serializer.validated_data.get("status")
-        is_prev_dci_case = prev_instance.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
-        is_prev_court_martial = prev_instance.criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
-        if proposed_status == Case.Status.CLOSED:
-            if is_prev_dci_case:
-                if prev_instance.status not in {Case.Status.UNDER_INVESTIGATION, Case.Status.SERVED}:
-                    raise ValidationError({"status": "A DCI/Civ Police case can only be closed from Under Investigation (after request) or Served."})
-                close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
-                if not close_requested_now:
-                    raise ValidationError({"status": "Close request must be submitted by the investigation team before closing this DCI/Civ Police case."})
-            elif is_prev_court_martial:
-                if prev_instance.status != Case.Status.SERVED:
-                    raise ValidationError({"status": "A Court Martial case can only be closed after it is served."})
-                close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
-                if not close_requested_now:
-                    raise ValidationError({"status": "Close request must be submitted by the investigation team before closing this Court Martial case."})
-            elif prev_instance.status != Case.Status.SERVED:
-                raise ValidationError({"status": "A case can only be closed after it is served."})
-
-        if proposed_status == Case.Status.CLOSED and not self._is_hq_admin_or_superuser(self.request.user):
-            raise ValidationError({"status": "Only HQ battalion admin (or superuser) can close a case."})
-
-        close_request_in_payload = "close_requested" in serializer.validated_data
-        close_requested_now = serializer.validated_data.get("close_requested", prev_instance.close_requested)
-        is_new_close_request = close_request_in_payload and close_requested_now and not prev_instance.close_requested
-        if is_prev_dci_case and is_new_close_request and not self._can_request_close(self.request.user, prev_instance):
-            raise ValidationError({"close_requested": "Only team IO or assigned team members can request close for this case."})
-        if is_prev_court_martial and is_new_close_request:
-            if not self._can_request_close(self.request.user, prev_instance):
-                raise ValidationError({"close_requested": "Only team IO or assigned team members can request close for this Court Martial case."})
-            latest_milestone = self._latest_court_milestone(prev_instance)
-            if not latest_milestone or latest_milestone.milestone_type != "judgment":
-                raise ValidationError({"close_requested": "Close can only be requested after a Judgment milestone has been set."})
-            if not (latest_milestone.action_remarks or "").strip():
-                raise ValidationError({"close_requested": "The Judgment milestone must have Court Action remarks before requesting close."})
-
-        reference_pdf = self.request.FILES.get("reference_pdf")
-        if reference_pdf and not str(reference_pdf.name).lower().endswith(".pdf"):
-            raise ValidationError({"reference_pdf": "Reference files must be uploaded as PDF."})
-
-        instance = serializer.save(**save_kwargs)
-
-        if not prev_instance.close_requested and instance.close_requested:
-            Case.objects.filter(pk=instance.pk).update(close_requested_at=timezone.now())
-            instance.refresh_from_db(fields=["close_requested_at"])
+        battalion_tasking_changed = (
+            previous_tasked_battalion_id != case.tasked_battalion_id
+            and case.tasked_battalion_id
+        )
+        if battalion_tasking_changed:
+            self._send_tasking_notification(case, created=False)
             self._log_action(
-                instance,
+                case,
+                self.request.user,
+                CaseActivityLog.Action.BATTALION_TASKED,
+                f"Case {case.case_number} tasked to {case.tasked_battalion}",
+            )
+
+        detachment_tasking_changed = (
+            previous_tasked_detachment_id != case.tasked_detachment_id
+            and case.tasked_detachment_id
+        )
+        if detachment_tasking_changed:
+            self._send_detachment_tasking_notification(case)
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.DETACHMENT_TASKED,
+                f"Case {case.case_number} tasked to {case.tasked_detachment}",
+            )
+
+        assignment_changed = (
+            previous_assigned_team_id != case.assigned_team_id
+            or previous_assigned_to_id != case.assigned_to_id
+        )
+        if assignment_changed:
+            self._send_assignment_notification(case, self.request.user)
+
+        if not previous_close_requested and case.close_requested:
+            self._send_close_request_notification(case, self.request.user)
+            self._log_action(
+                case,
                 self.request.user,
                 CaseActivityLog.Action.CASE_UPDATED,
-                "Close requested by investigation team.",
-            )
-            self._send_close_request_notification(instance, actor=self.request.user)
-        # Only notify if tasking is new or changed
-        if instance.tasked_battalion_id and instance.tasked_battalion_id != prev_tasked_battalion_id:
-            self._send_tasking_notification(instance, created=False)
-        # Notify IC Det when detachment is newly tasked
-        if instance.tasked_detachment_id and instance.tasked_detachment_id != prev_tasked_detachment_id:
-            self._send_detachment_tasking_notification(instance)
-
-        # Determine effective new status (from save_kwargs override or from validated data)
-        new_status = proposed_status
-        if new_status and new_status != prev_instance.status:
-            self._log_action(instance, self.request.user, CaseActivityLog.Action.STATUS_CHANGED,
-                             f"Status changed from {prev_instance.status} to {new_status}")
-            actor_label = self._actor_label(self.request.user)
-            readable_old = prev_instance.status.replace("_", " ").title()
-            readable_new = new_status.replace("_", " ").title()
-            self._notify_team(
-                instance, actor=self.request.user,
-                message=(
-                    f"{actor_label} updated Case #{instance.case_number} — '{instance.title}': "
-                    f"status changed from '{readable_old}' to '{readable_new}'."
-                ),
-            )
-            # Auto-set served_at when status first changes to served
-            if new_status == Case.Status.SERVED and not prev_instance.served_at:
-                Case.objects.filter(pk=instance.pk).update(served_at=timezone.now())
-                instance.refresh_from_db(fields=["served_at"])
-            if new_status == Case.Status.CLOSED and not prev_instance.closed_at:
-                Case.objects.filter(pk=instance.pk).update(closed_at=timezone.now())
-                instance.refresh_from_db(fields=["closed_at"])
-            # Notifications
-            if new_status == Case.Status.SERVED:
-                self._send_served_notification(instance, actor=self.request.user)
-            elif new_status == Case.Status.CLOSED:
-                self._send_closed_notification(instance)
-        # Log battalion tasking
-        if instance.tasked_battalion_id and instance.tasked_battalion_id != prev_tasked_battalion_id:
-            bn_name = instance.tasked_battalion.name if instance.tasked_battalion else str(instance.tasked_battalion_id)
-            self._log_action(instance, self.request.user, CaseActivityLog.Action.BATTALION_TASKED,
-                             f"Tasked to {bn_name}")
-        # Log detachment tasking
-        if instance.tasked_detachment_id and instance.tasked_detachment_id != prev_tasked_detachment_id:
-            det_name = instance.tasked_detachment.name if instance.tasked_detachment else str(instance.tasked_detachment_id)
-            self._log_action(instance, self.request.user, CaseActivityLog.Action.DETACHMENT_TASKED,
-                             f"Tasked to detachment {det_name}")
-        # Log team assignment + notify team they have a new case
-        if instance.assigned_team_id and instance.assigned_team_id != prev_team_id:
-            instance.team_assigned_at = timezone.now()
-            instance.save(update_fields=["team_assigned_at"])
-            team_name = instance.assigned_team.name if instance.assigned_team else str(instance.assigned_team_id)
-            self._log_action(instance, self.request.user, CaseActivityLog.Action.TEAM_ASSIGNED,
-                             f"Team '{team_name}' assigned")
-            deadline_str = str(instance.investigation_deadline) if instance.investigation_deadline else "Not set"
-            self._notify_team(
-                instance, actor=None,
-                message=(
-                    f"Case #{instance.case_number} — '{instance.title}' has been assigned to your team "
-                    f"'{team_name}'. Investigation deadline: {deadline_str}."
-                ),
+                f"Close requested for Case {case.case_number}",
             )
 
-        new_action_taken = (instance.action_taken or "").strip()
-        new_mentioning_date = instance.mentioning_date
-        is_dci_case = instance.criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
-        has_update_payload = ("action_taken" in self.request.data) or ("mentioning_date" in self.request.data)
+        if previous_status != case.status:
+            if case.status == Case.Status.SERVED:
+                if not case.served_at:
+                    case.served_at = timezone.now()
+                    case.save(update_fields=["served_at"])
+                self._send_served_notification(case, self.request.user)
+                self._log_action(
+                    case,
+                    self.request.user,
+                    CaseActivityLog.Action.CASE_UPDATED,
+                    f"Case {case.case_number} served",
+                )
+            elif case.status == Case.Status.CLOSED:
+                self._send_closed_notification(case)
+                self._log_action(
+                    case,
+                    self.request.user,
+                    CaseActivityLog.Action.CASE_UPDATED,
+                    f"Case {case.case_number} closed",
+                )
 
-        # Treat each explicit DCI update submission as a new timeline event so history is append-only.
-        if is_dci_case and has_update_payload:
-            update_date = new_mentioning_date or timezone.localdate()
-            CaseActivityLog.objects.create(
-                case=instance,
-                actor=self.request.user,
-                action=CaseActivityLog.Action.CASE_UPDATED,
-                detail=f"On {update_date}: {new_action_taken or 'No details provided.'}",
-                reference_pdf=reference_pdf,
+    def destroy(self, request, *args, **kwargs):
+        can_delete = request.user.is_superuser or (
+            request.user.role == User.Role.ADMIN and is_hqs_admin(request.user)
+        )
+        if not can_delete:
+            raise PermissionDenied("Only HQ admin users can delete cases.")
+        return super().destroy(request, *args, **kwargs)
+
+    def _send_assignment_notification(self, case, actor):
+        if case.assigned_to_id:
+            assignee_label = self._actor_label(case.assigned_to)
+            detail = f"Assigned IO {assignee_label}"
+            message = (
+                f"{self._actor_label(actor)} assigned Case #{case.case_number} "
+                f"'{case.title}' to IO {assignee_label}."
             )
-            self._send_case_update_notification(
-                instance,
-                actor=self.request.user,
-                update_date=update_date,
-                update_text=new_action_taken,
+        elif case.assigned_team_id:
+            team_name = case.assigned_team.name if case.assigned_team else "investigation team"
+            detail = f"Assigned investigation team {team_name}"
+            message = (
+                f"{self._actor_label(actor)} assigned Case #{case.case_number} "
+                f"'{case.title}' to investigation team {team_name}."
             )
+        else:
+            self._log_action(
+                case,
+                actor,
+                CaseActivityLog.Action.TEAM_ASSIGNED,
+                "Cleared investigation assignment",
+            )
+            return
+
+        if case.investigation_deadline:
+            detail = f"{detail}; deadline {case.investigation_deadline}"
+            message = f"{message} Investigation deadline: {case.investigation_deadline}."
+
+        self._log_action(case, actor, CaseActivityLog.Action.TEAM_ASSIGNED, detail)
+        self._notify_team(case, actor=actor, message=message)
+
+    def _create_duplicate_cases_for_accused(self, original_case, accused_entries):
+        def suffix_for_index(index):
+            letters = []
+            while index >= 0:
+                letters.append(chr(ord("A") + (index % 26)))
+                index = index // 26 - 1
+            return "".join(reversed(letters))
+
+        with transaction.atomic():
+            base_number = original_case.case_number
+            original_case.accused_entries.all().delete()
+            for index, accused in enumerate(accused_entries):
+                suffix = suffix_for_index(index)
+                if index == 0:
+                    original_case.accused_entries.create(
+                        name=(accused.name or "").strip(),
+                        rank=(accused.rank or "").strip(),
+                        service_number=(accused.service_number or "").strip(),
+                        service=(accused.service or "").strip(),
+                        unit=accused.unit,
+                    )
+                    original_case.accused_name = accused.name or ""
+                    original_case.accused_rank = accused.rank or ""
+                    original_case.accused_service_number = accused.service_number or ""
+                    original_case.accused_service = accused.service or ""
+                    original_case.accused_unit = accused.unit
+                    original_case.case_number = f"{base_number}{suffix}"
+                    original_case.save(update_fields=[
+                        "accused_name",
+                        "accused_rank",
+                        "accused_service_number",
+                        "accused_service",
+                        "accused_unit",
+                        "case_number",
+                    ])
+                    continue
+
+                case_copy = Case.objects.get(pk=original_case.pk)
+                case_copy.pk = None
+                case_copy.case_number = f"{base_number}{suffix}"
+                case_copy.accused_name = accused.name or ""
+                case_copy.accused_rank = accused.rank or ""
+                case_copy.accused_service_number = accused.service_number or ""
+                case_copy.accused_service = accused.service or ""
+                case_copy.accused_unit = accused.unit
+                case_copy.save(force_insert=True)
+                case_copy.accused_entries.create(
+                    name=(accused.name or "").strip(),
+                    rank=(accused.rank or "").strip(),
+                    service_number=(accused.service_number or "").strip(),
+                    service=(accused.service or "").strip(),
+                    unit=accused.unit,
+                )
 
     def _send_tasking_notification(self, case, created):
         if not case.tasked_battalion_id:
             return
-        users = User.objects.filter(
-            Q(battalion_id=case.tasked_battalion_id) | Q(role=User.Role.CORPS_CMD),
+        battalion_users = User.objects.filter(
+            battalion_id=case.tasked_battalion_id,
             is_active=True,
-        ).exclude(role="detachment")
-        if not users.exists():
+        ).exclude(role__in=[User.Role.DETACHMENT, User.Role.CORPS_CMD])
+        corps_commanders = User.objects.filter(role=User.Role.CORPS_CMD, is_active=True)
+        if not battalion_users.exists() and not corps_commanders.exists():
             return
-        msg = f"A new case (#{case.case_number or case.id}) has been tasked to your battalion: {case.title}"
+        case_ref = case.case_number or case.id
+        msg = f"A new case (#{case_ref}) has been tasked to your battalion: {case.title}"
         if not created:
-            msg = f"Case (#{case.case_number or case.id}) has been newly tasked to your battalion: {case.title}"
-        Notification.objects.bulk_create([
+            msg = f"Case (#{case_ref}) has been newly tasked to your battalion: {case.title}"
+        battalion_name = case.tasked_battalion.name if case.tasked_battalion else str(case.tasked_battalion_id)
+        corps_msg = f"Case (#{case_ref}) has been tasked to {battalion_name}: {case.title}"
+        notifications = [
             Notification(
                 recipient=u,
                 message=msg,
                 notification_type=Notification.Type.CASE,
                 related_model="case",
                 related_id=case.id,
-            ) for u in users
+            ) for u in battalion_users
+        ]
+        notifications.extend(
+            Notification(
+                recipient=u,
+                message=corps_msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for u in corps_commanders
+        )
+        Notification.objects.bulk_create(notifications)
+
+    def _notify_brief_recipients(self, case, actor, message):
+        try:
+            brief = case.brief
+        except (CaseBrief.DoesNotExist, AttributeError):
+            return
+
+        battalion_id = self._case_battalion_id(case)
+        detachment_id = self._case_detachment_id(actor, case)
+
+        recipients = set()
+        if brief.forwarded_to_role == CaseBrief.ForwardRole.HOD:
+            recipients.update(
+                User.objects.filter(role=User.Role.HOD, battalion_id=battalion_id, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.CO:
+            recipients.update(
+                User.objects.filter(role=User.Role.CO, battalion_id=battalion_id, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.OC:
+            recipients.update(
+                User.objects.filter(role=User.Role.OC, battalion_id=battalion_id, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.CORPS_CMD:
+            recipients.update(
+                User.objects.filter(role=User.Role.CORPS_CMD, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.DETACHMENT:
+            recipients.update(
+                User.objects.filter(role=User.Role.DETACHMENT, detachment_id=detachment_id, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.ADJ:
+            recipients.update(
+                User.objects.filter(role=User.Role.ADJ, battalion_id=battalion_id, is_active=True)
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.TWO_IC:
+            recipients.update(
+                User.objects.filter(role=User.Role.TWO_IC, battalion_id=battalion_id, is_active=True)
+            )
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=u,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for u in recipients
+        ])
+        email_list = [u.email for u in recipients if u.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Case {case.case_number} — Brief Forwarded",
+                    message=message,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
+
+    def _can_upload_back_brief(self, user):
+        return bool(user and user.is_authenticated and (user.is_superuser or is_hqs_admin(user)))
+
+    def _notify_back_brief_recipients(self, case, actor, back_brief):
+        battalion_id = self._case_battalion_id(case)
+        recipients = set()
+
+        if case.assigned_to and case.assigned_to.is_active:
+            recipients.add(case.assigned_to)
+
+        if case.assigned_team_id:
+            team = case.assigned_team
+            if team.team_ic and team.team_ic.is_active:
+                recipients.add(team.team_ic)
+            for member in team.members.filter(is_active=True):
+                recipients.add(member)
+
+        if battalion_id:
+            recipients.update(
+                User.objects.filter(
+                    role__in=[
+                        User.Role.ADMIN,
+                        User.Role.ADJ,
+                        User.Role.HOD,
+                        User.Role.CO,
+                        User.Role.OC,
+                        User.Role.TWO_IC,
+                    ],
+                    battalion_id=battalion_id,
+                    is_active=True,
+                )
+            )
+
+        recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+
+        msg = (
+            f"{self._actor_label(actor)} uploaded a back-brief for Case #{case.case_number}. "
+            "The brief and back-brief are available for review and printing."
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for user in recipients
         ])
 
+        email_list = [user.email for user in recipients if user.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Case {case.case_number} - Back-Brief Uploaded",
+                    message=msg,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
+
+    def _notify_brief_approval_recipients(self, case, actor, brief):
+        recipients = set(
+            User.objects.filter(
+                Q(is_superuser=True)
+                | Q(
+                    role__in=[User.Role.ADMIN, User.Role.MPC_HQS],
+                    battalion__battalion_type=Battalion.BattalionType.HQS,
+                ),
+                is_active=True,
+            )
+        )
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+
+        msg = (
+            f"{self._actor_label(actor)} approved the brief for Case #{case.case_number}. "
+            "HQ admin can now attach the back-brief."
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            ) for user in recipients
+        ])
+
+        email_list = [user.email for user in recipients if user.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Case {case.case_number} - Brief Approved",
+                    message=msg,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
+
     def _send_detachment_tasking_notification(self, case):
-        """Notify all users in the tasked detachment (role=detachment as IC Det)."""
+        """Notify all users in the tasked company (role=detachment as IC COY)."""
         if not case.tasked_detachment_id:
             return
-        # Notify users whose detachment matches and whose role is 'detachment' (IC Det)
+        # Notify users whose company record matches and whose role is 'detachment' (IC COY)
         users = User.objects.filter(
             detachment_id=case.tasked_detachment_id,
             role="detachment",
@@ -606,13 +1683,15 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _send_served_notification(self, case, actor=None):
         """Notify all admin users in HQS battalions that a case has been served."""
         hqs_admins = User.objects.filter(
-            Q(role="admin", battalion__battalion_type=Battalion.BattalionType.HQS)
-            | Q(role=User.Role.CORPS_CMD),
+            role="admin",
+            battalion__battalion_type=Battalion.BattalionType.HQS,
             is_active=True,
         )
-        if not hqs_admins.exists():
+        recipients = set(hqs_admins)
+        recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+        if not recipients:
             return
-        # Build actor attribution: "by Rank Name of Detachment/Battalion"
+        # Build actor attribution: "by Rank Name of Company/Battalion"
         if actor:
             actor_label = f"{actor.rank} {actor.name}".strip()
             if actor.detachment_id and actor.detachment:
@@ -635,19 +1714,27 @@ class CaseViewSet(viewsets.ModelViewSet):
                 notification_type=Notification.Type.CASE,
                 related_model="case",
                 related_id=case.id,
-            ) for u in hqs_admins
+            ) for u in recipients
         ])
 
-    def _send_closed_notification(self, case):
-        """Notify IO, team members, tasked battalion admin, and Det IC when a case is closed.
-        Delivers both a dashboard notification and an email.
-        """
-        recipients = set()
+        email_list = [u.email for u in hqs_admins if u.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Case Served — Case {case.case_number}",
+                    message=msg,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
 
-        # IO directly assigned to the case
+    def _send_closed_notification(self, case):
+        """Notify assigned team (IC + members), tasked battalion admin, and IC COY if company-level."""
+        recipients = set()
         if case.assigned_to and case.assigned_to.is_active:
             recipients.add(case.assigned_to)
-
         # Assigned team IC + members
         if case.assigned_team_id:
             try:
@@ -667,7 +1754,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 is_active=True,
             ))
 
-        # Detachment IC if this is a detachment-level case
+        # IC COY if this is a company-level case
         if case.tasked_detachment_id:
             recipients.update(User.objects.filter(
                 role="detachment",
@@ -679,19 +1766,11 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         if not recipients:
             return
-
-        offence_label = (
-            case.offence_ref.name.strip()
-            if case.offence_ref and case.offence_ref.name
-            else (case.offence or "Not provided").strip() or "Not provided"
-        )
+        action_taken = (case.action_taken or "").strip() or "Not provided."
         msg = (
-            f"Case #{case.case_number} — '{case.title}' (Offence: {offence_label}) "
-            f"has been officially closed."
+            f"Case #{case.case_number} -- '{case.title}' has been officially closed. "
+            f"Action taken: {action_taken}"
         )
-        action_taken = (case.action_taken or "").strip()
-        if action_taken:
-            msg = f"{msg} Action taken: {action_taken}"
         Notification.objects.bulk_create([
             Notification(
                 recipient=u,
@@ -702,25 +1781,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             ) for u in recipients
         ])
 
-        email_list = [u.email for u in recipients if u.email]
-        if email_list:
-            try:
-                send_mail(
-                    subject=f"[MPIMS] Case Closed — {case.case_number}",
-                    message=(
-                        f"{msg}\n\n"
-                        "No further action is required on your part unless instructed otherwise.\n"
-                        "Please log in to the MPIMS dashboard to view case details."
-                    ),
-                    from_email=django_settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=email_list,
-                    fail_silently=True,
-                )
-            except Exception:
-                pass
-
     def _send_case_update_notification(self, case, actor=None, update_date=None, update_text=""):
-        """Notify HQ, tasked battalion/detachment, IO, and team members on case updates."""
+        """Notify HQ, tasked battalion/company, IO, and team members on case updates."""
         recipients = set()
 
         # HQ admins
@@ -742,7 +1804,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 )
             )
 
-        # Tasked detachment IC users
+        # Tasked IC COY users
         if case.tasked_detachment_id:
             recipients.update(
                 User.objects.filter(
@@ -814,14 +1876,9 @@ class CaseViewSet(viewsets.ModelViewSet):
             if case.offence_ref and case.offence_ref.name
             else (case.offence or "Not provided").strip() or "Not provided"
         )
-        case_type = (
-            "Court Martial"
-            if case.criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
-            else "DCI/Civ Police"
-        )
         msg = (
-            f"{actor_label} has requested closure for {case_type} Case No {case.case_number}. "
-            f"Offence: {offence_label}. Please review and action on the HQ dashboard."
+            f"{actor_label} requested close for DCI/Civ Police Case No {case.case_number}. "
+            f"Offence: {offence_label}. Please review and close on HQ dashboard."
         )
 
         Notification.objects.bulk_create([
@@ -850,7 +1907,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="detachment-summary")
     def detachment_summary(self, request):
         """
-        Returns per-detachment case count breakdown for the requesting user's battalion.
+        Returns per-company case count breakdown for the requesting user's battalion.
         Accessible to battalion admins and superusers.
         Superusers must supply ?battalion=<id> query param.
         Returns: { battalion_id, detachments: [{id, name, company, under_investigation, pending, closed, total}] }
@@ -867,12 +1924,12 @@ class CaseViewSet(viewsets.ModelViewSet):
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
             base_qs = Case.objects.all()
-        elif user.role == "admin" and user.battalion_id:
+        elif is_battalion_command(user):
             battalion_id = user.battalion_id
             base_qs = self.get_queryset()
         else:
             return Response(
-                {"detail": "Only battalion admins can access this endpoint."},
+                {"detail": "Only battalion command users can access this endpoint."},
                 status=http_status.HTTP_403_FORBIDDEN,
             )
 
@@ -977,7 +2034,9 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         # Per-battalion breakdown for superuser / HQ admin
         user = request.user
-        is_hq_admin = _has_global_case_visibility(user)
+        is_hq_admin = (
+            has_global_read_access(user)
+        )
         if is_hq_admin:
             from apps.formations.models import Battalion
             breakdown = []
@@ -1004,91 +2063,247 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         return Response(result)
 
-    @action(
-        detail=True,
-        methods=["post", "patch"],
-        url_path="brief",
-        parser_classes=[MultiPartParser, FormParser, JSONParser],
-    )
-    def brief(self, request, pk=None):
-        case = self.get_object()
-        if case.status == Case.Status.CLOSED:
-            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
-        if not self._can_view_case_progress(request.user, case):
-            return Response(
-                {"detail": "You may not manage the brief for this case."},
-                status=http_status.HTTP_403_FORBIDDEN,
-            )
+    @action(detail=False, methods=["get"], url_path="statistics")
+    def statistics(self, request):
+        qs = self.get_queryset()
 
-        if request.method == "POST":
-            if hasattr(case, "brief"):
-                return Response(
-                    {"detail": "A brief has already been attached for this case."},
-                    status=http_status.HTTP_400_BAD_REQUEST,
-                )
-            serializer = CaseBriefSerializer(data=request.data, context={"request": request})
-            serializer.is_valid(raise_exception=True)
-            brief = serializer.save(case=case, attached_by=request.user)
-            self._log_action(
-                case,
-                request.user,
-                CaseActivityLog.Action.BRIEF_ATTACHED,
-                "Brief attached.",
-            )
-            return Response(
-                CaseBriefSerializer(brief, context={"request": request}).data,
-                status=http_status.HTTP_201_CREATED,
-            )
+        def shift_month(value, offset):
+            month = value.month + offset
+            year = value.year + (month - 1) // 12
+            month = ((month - 1) % 12) + 1
+            return date(year, month, 1)
 
-        try:
-            brief = case.brief
-        except CaseBrief.DoesNotExist:
-            return Response({"detail": "No brief has been attached for this case."}, status=http_status.HTTP_404_NOT_FOUND)
+        def top_text_field(field_name):
+            rows = (
+                qs.exclude(**{f"{field_name}__isnull": True})
+                .exclude(**{field_name: ""})
+                .values(field_name)
+                .annotate(count=Count("id", distinct=True))
+                .order_by("-count", field_name)[:10]
+            )
+            return [
+                {
+                    "label": row.get(field_name) or "Not recorded",
+                    "count": row["count"],
+                }
+                for row in rows
+            ]
 
-        serializer = CaseBriefSerializer(brief, data=request.data, partial=True, context={"request": request})
-        serializer.is_valid(raise_exception=True)
+        unit_rows = (
+            qs.filter(accused_unit__isnull=False)
+            .values("accused_unit_id", "accused_unit__name")
+            .annotate(count=Count("id", distinct=True))
+            .order_by("-count", "accused_unit__name")[:10]
+        )
+        top_accused_units = [
+            {
+                "id": row["accused_unit_id"],
+                "label": row["accused_unit__name"] or "Unknown unit",
+                "count": row["count"],
+            }
+            for row in unit_rows
+        ]
 
-        forwarded_to_role = serializer.validated_data.get("forwarded_to_role")
-        if forwarded_to_role:
-            duplicate = brief.forward_history.filter(
-                revision=brief.revision,
-                to_role=forwarded_to_role,
-            ).exists()
-            if duplicate:
-                return Response(
-                    {"forwarded_to_role": "This brief has already been forwarded to that role in the current revision."},
-                    status=http_status.HTTP_400_BAD_REQUEST,
-                )
-            updated = serializer.save(
-                status=CaseBrief.Status.FORWARDED,
-                forwarded_at=timezone.now(),
-                forwarded_from_role=request.user.role,
-                forwarded_by=request.user,
-            )
-            CaseBriefForward.objects.create(
-                brief=updated,
-                from_role=request.user.role,
-                to_role=forwarded_to_role,
-                forwarded_by=request.user,
-                note=updated.forwarded_note,
-                revision=updated.revision,
-            )
-            self._log_action(
-                case,
-                request.user,
-                CaseActivityLog.Action.BRIEF_FORWARDED,
-                f"Brief forwarded to {forwarded_to_role}.",
-            )
+        criminal_rows = (
+            qs.exclude(criminal_offence_type="")
+            .values("criminal_offence_type")
+            .annotate(count=Count("id", distinct=True))
+        )
+        criminal_counts = {
+            row["criminal_offence_type"]: row["count"]
+            for row in criminal_rows
+        }
+        criminal_offence_types = [
+            {
+                "key": key,
+                "label": label,
+                "count": criminal_counts.get(key, 0),
+            }
+            for key, label in Case.CriminalOffenceType.choices
+        ]
+        criminal_offence_types.sort(key=lambda item: (-item["count"], item["label"]))
+
+        status_counts = {
+            row["status"]: row["count"]
+            for row in qs.values("status").annotate(count=Count("id", distinct=True))
+        }
+        status_breakdown = [
+            {
+                "key": key,
+                "label": label,
+                "count": status_counts.get(key, 0),
+            }
+            for key, label in Case.Status.choices
+        ]
+
+        current_month = timezone.localdate().replace(day=1)
+        start_month = shift_month(current_month, -11)
+        trend_rows = (
+            qs.filter(created_at__date__gte=start_month)
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(count=Count("id", distinct=True))
+            .order_by("month")
+        )
+        trend_counts = {}
+        for row in trend_rows:
+            month_value = row.get("month")
+            if month_value:
+                trend_counts[month_value.date().replace(day=1).isoformat()] = row["count"]
+        monthly_case_trend = []
+        for offset in range(12):
+            month_value = shift_month(start_month, offset)
+            monthly_case_trend.append({
+                "month": month_value.isoformat(),
+                "label": month_value.strftime("%b %Y"),
+                "count": trend_counts.get(month_value.isoformat(), 0),
+            })
+
+        return Response({
+            "total_cases": qs.count(),
+            "status_breakdown": status_breakdown,
+            "monthly_case_trend": monthly_case_trend,
+            "top_hotspots": top_text_field("place_of_offence"),
+            "top_accused_units": top_accused_units,
+            "top_offences": top_text_field("offence"),
+            "criminal_offence_types": criminal_offence_types[:10],
+            "service_report": self._service_statistics_report(qs, request),
+        })
+
+    def _service_statistics_report(self, qs, request):
+        service_labels = {
+            Case.Service.KA: "Kenya Army",
+            Case.Service.KAF: "Kenya Air Force",
+            Case.Service.KN: "Kenya Navy",
+            "not_recorded": "Service Not Recorded",
+        }
+        service_order = [Case.Service.KA, Case.Service.KAF, Case.Service.KN, "not_recorded"]
+
+        status_key = request.query_params.get("service_report_status") or "pending"
+        status_choices = dict(Case.Status.choices)
+        if status_key == "active":
+            report_qs = qs.filter(status__in=[Case.Status.TASKED, Case.Status.UNDER_INVESTIGATION, Case.Status.PENDING])
+            status_label = "Active/Pending"
+        elif status_key == "all":
+            report_qs = qs
+            status_label = "All"
+        elif status_key in status_choices:
+            report_qs = qs.filter(status=status_key)
+            status_label = status_choices[status_key]
         else:
-            updated = serializer.save()
-            self._log_action(
-                case,
-                request.user,
-                CaseActivityLog.Action.BRIEF_UPDATED,
-                "Brief updated.",
-            )
+            raise ValidationError({"service_report_status": "Select a valid report status."})
 
-        return Response(CaseBriefSerializer(updated, context={"request": request}).data)
+        period = request.query_params.get("period") or "as_at"
+        today = timezone.localdate()
+        as_at_date = today
+        date_from = None
+        date_to = None
+        if period == "range":
+            raw_from = request.query_params.get("date_from") or today.isoformat()
+            raw_to = request.query_params.get("date_to") or today.isoformat()
+            try:
+                date_from = date.fromisoformat(raw_from)
+                date_to = date.fromisoformat(raw_to)
+            except ValueError as exc:
+                raise ValidationError({"date_range": "Use YYYY-MM-DD format for range dates."}) from exc
+            if date_from > date_to:
+                raise ValidationError({"date_range": "From date cannot be later than To date."})
+            report_qs = report_qs.filter(created_at__date__gte=date_from, created_at__date__lte=date_to)
+            as_at_date = date_to
+        elif period == "as_at":
+            as_at = request.query_params.get("as_at") or today.isoformat()
+            try:
+                as_at_date = date.fromisoformat(as_at)
+            except ValueError as exc:
+                raise ValidationError({"as_at": "Use YYYY-MM-DD format."}) from exc
+            report_qs = report_qs.filter(created_at__date__lte=as_at_date)
+        else:
+            raise ValidationError({"period": "Select either as_at or range."})
+
+        service_filter = request.query_params.get("service") or ""
+        valid_services = {Case.Service.KA, Case.Service.KAF, Case.Service.KN}
+        if service_filter and service_filter not in valid_services:
+            raise ValidationError({"service": "Select a valid service."})
+
+        services = {}
+        for row in report_qs.order_by().values(
+            "id",
+            "accused_service",
+            "accused_unit_id",
+            "accused_unit__name",
+            "accused_unit__service",
+            "offence",
+        ):
+            service = row["accused_service"] or row["accused_unit__service"] or "not_recorded"
+            if service_filter and service != service_filter:
+                continue
+
+            service_bucket = services.setdefault(service, {
+                "service": service,
+                "label": service_labels.get(service, service),
+                "offences": set(),
+                "rows": {},
+                "total": 0,
+            })
+
+            offence = (row["offence"] or "").strip() or "Not recorded"
+            unit_id = row["accused_unit_id"]
+            unit_key = str(unit_id) if unit_id else "not_recorded"
+            unit_label = row["accused_unit__name"] or "Not recorded"
+
+            service_bucket["offences"].add(offence)
+            unit_row = service_bucket["rows"].setdefault(unit_key, {
+                "unit_id": unit_id,
+                "formation_unit": unit_label,
+                "offences": {},
+                "total": 0,
+            })
+            unit_row["offences"][offence] = unit_row["offences"].get(offence, 0) + 1
+            unit_row["total"] += 1
+            service_bucket["total"] += 1
+
+        reports = []
+        ordered_services = service_order + sorted(set(services.keys()) - set(service_order))
+        if service_filter and service_filter not in services:
+            ordered_services = [service_filter]
+            services[service_filter] = {
+                "service": service_filter,
+                "label": service_labels.get(service_filter, service_filter),
+                "offences": set(),
+                "rows": {},
+                "total": 0,
+            }
+
+        for service in ordered_services:
+            bucket = services.get(service)
+            if not bucket:
+                continue
+            offence_columns = sorted(bucket["offences"])
+            rows = sorted(bucket["rows"].values(), key=lambda item: item["formation_unit"].lower())
+            subtotal = {
+                offence: sum(row["offences"].get(offence, 0) for row in rows)
+                for offence in offence_columns
+            }
+            reports.append({
+                "service": bucket["service"],
+                "label": bucket["label"],
+                "offences": offence_columns,
+                "rows": rows,
+                "subtotal": subtotal,
+                "total": bucket["total"],
+            })
+
+        return {
+            "period": period,
+            "as_at": as_at_date.isoformat(),
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
+            "status": status_key,
+            "status_label": status_label,
+            "service": service_filter,
+            "services": reports,
+            "total": sum(report["total"] for report in reports),
+        }
 
     @action(
         detail=True,
@@ -1102,8 +2317,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             qs = case.extra_attachments.select_related("uploaded_by").all()
             serializer = CaseAttachmentSerializer(qs, many=True, context={"request": request})
             return Response(serializer.data)
-        if case.status == Case.Status.CLOSED:
-            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
+        ensure_case_accepts_file_changes(case)
         serializer = CaseAttachmentSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         att = serializer.save(case=case, uploaded_by=request.user)
@@ -1122,6 +2336,304 @@ class CaseViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=http_status.HTTP_201_CREATED)
 
     @action(
+        detail=False,
+        methods=["get"],
+        url_path="briefable-cases",
+        parser_classes=[JSONParser],
+    )
+    def briefable_cases(self, request):
+        if request.user.role != User.Role.INVESTIGATOR:
+            return Response([])
+        qs = self.get_queryset().select_related(
+            "assigned_to",
+            "assigned_team",
+            "assigned_team__team_ic",
+            "tasked_battalion",
+            "tasked_detachment",
+            "accused_unit",
+        ).prefetch_related("assigned_team__members", "accused_entries")
+        qs = self._brief_case_scope(request.user, qs).filter(brief__isnull=True).exclude(status=Case.Status.CLOSED).order_by("-created_at")
+        serializer = CaseSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="briefs",
+        parser_classes=[JSONParser],
+    )
+    def briefs(self, request):
+        qs = self.get_queryset().select_related(
+            "assigned_to",
+            "assigned_team",
+            "assigned_team__team_ic",
+            "tasked_battalion",
+            "tasked_detachment",
+            "accused_unit",
+            "brief",
+            "brief__attached_by",
+            "brief__forwarded_by",
+            "brief__approved_by",
+        ).prefetch_related(
+            "assigned_team__members",
+            "accused_entries",
+            "brief__forward_history",
+            "brief__forward_history__forwarded_by",
+        )
+        qs = self._brief_case_scope(request.user, qs).filter(brief__isnull=False)
+        qs = self._brief_visible_scope(request.user, qs).order_by("-brief__updated_at")
+        serializer = CaseSerializer(qs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="back-briefs",
+        parser_classes=[JSONParser],
+    )
+    def back_briefs(self, request):
+        qs = self.get_queryset().select_related(
+            "assigned_to",
+            "assigned_team",
+            "assigned_team__team_ic",
+            "tasked_battalion",
+            "tasked_detachment",
+            "accused_unit",
+            "brief",
+            "brief__attached_by",
+            "brief__forwarded_by",
+            "brief__approved_by",
+            "brief__back_brief",
+            "brief__back_brief__uploaded_by",
+        ).prefetch_related(
+            "assigned_team__members",
+            "accused_entries",
+            "brief__forward_history",
+            "brief__forward_history__forwarded_by",
+        )
+        qs = qs.filter(brief__isnull=False)
+
+        if self._can_upload_back_brief(request.user):
+            serializer = CaseSerializer(qs.order_by("-brief__updated_at"), many=True, context={"request": request})
+            return Response(serializer.data)
+
+        if request.user.role == User.Role.INVESTIGATOR:
+            qs = self._brief_case_scope(request.user, qs)
+        elif request.user.role == User.Role.DETACHMENT:
+            if not request.user.detachment_id:
+                qs = qs.none()
+            else:
+                qs = qs.filter(
+                    Q(tasked_detachment_id=request.user.detachment_id)
+                    | Q(assigned_to__detachment_id=request.user.detachment_id)
+                    | Q(assigned_team__detachment_id=request.user.detachment_id)
+                ).distinct()
+        else:
+            qs = self._brief_visible_scope(request.user, qs)
+
+        serializer = CaseSerializer(qs.order_by("-brief__back_brief__uploaded_at", "-brief__updated_at"), many=True, context={"request": request})
+        return Response(serializer.data)
+
+    @action(
+        detail=True,
+        methods=["get", "post", "patch"],
+        url_path="brief",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def brief(self, request, pk=None):
+        case = self.get_object()
+        if request.method == "GET":
+            if not hasattr(case, "brief"):
+                return Response(None, status=http_status.HTTP_204_NO_CONTENT)
+            if not self._can_view_case_brief(request.user, case, case.brief):
+                raise PermissionDenied("This brief has not been forwarded to your role.")
+            serializer = CaseBriefSerializer(case.brief, context={"request": request})
+            return Response(serializer.data)
+
+        if request.method == "POST" or request.FILES.get("file"):
+            ensure_case_accepts_file_changes(case)
+
+        data = request.data.copy()
+        if request.method == "POST":
+            if request.user.role != User.Role.INVESTIGATOR or not self._can_manage_case_brief(request.user, case):
+                raise PermissionDenied("Only assigned investigators can create briefs.")
+        if request.method == "POST" and hasattr(case, "brief"):
+            return Response(
+                {"detail": "A brief already exists for this case. Use forwarding or update instead."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if request.method == "PATCH" and not hasattr(case, "brief"):
+            return Response(
+                {"detail": "No brief exists for this case to update or forward."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        had_brief = hasattr(case, "brief")
+        is_forward = request.method == "PATCH" and bool(data.get("forwarded_to_role"))
+        if is_forward:
+            if not had_brief:
+                raise PermissionDenied("No brief exists for this case to forward.")
+            requested_role = data.get("forwarded_to_role")
+            allowed_roles = self._brief_forward_allowed_roles(request.user, case, case.brief)
+            if requested_role not in allowed_roles:
+                duplicate = self._brief_duplicate_forward(case.brief, requested_role)
+                if duplicate:
+                    forwarded_by = self._actor_label(duplicate.forwarded_by) if duplicate.forwarded_by else "another user"
+                    target_label = self._brief_forward_label(requested_role)
+                    raise ValidationError({
+                        "detail": (
+                            f"This brief was already forwarded to {target_label} by {forwarded_by}. "
+                            f"Edit the brief before forwarding to {target_label} again."
+                        )
+                    })
+                raise PermissionDenied("You cannot forward this brief to that role at this stage.")
+        elif request.method == "PATCH":
+            if not self._can_edit_case_brief(request.user, case, case.brief):
+                raise PermissionDenied("You cannot edit this brief at this stage.")
+        if had_brief:
+            serializer = CaseBriefSerializer(case.brief, data=data, partial=True, context={"request": request})
+        else:
+            serializer = CaseBriefSerializer(data=data, context={"request": request})
+
+        serializer.is_valid(raise_exception=True)
+        if had_brief:
+            brief = serializer.save()
+        else:
+            brief = serializer.save(case=case, attached_by=request.user)
+
+        if is_forward:
+            forwarded_at = timezone.now()
+            brief.status = CaseBrief.Status.FORWARDED
+            brief.forwarded_at = forwarded_at
+            brief.forwarded_by = request.user
+            brief.forwarded_from_role = request.user.role
+            brief.save(update_fields=["status", "forwarded_at", "forwarded_by", "forwarded_from_role"])
+            CaseBriefForward.objects.create(
+                brief=brief,
+                from_role=request.user.role or "",
+                to_role=brief.forwarded_to_role,
+                forwarded_by=request.user,
+                note=brief.forwarded_note or "",
+                revision=brief.revision,
+                forwarded_at=forwarded_at,
+            )
+            action = CaseActivityLog.Action.BRIEF_FORWARDED
+            detail = f"Forwarded brief to {brief.get_forwarded_to_role_display()}"
+            self._notify_brief_recipients(
+                case,
+                request.user,
+                f"{self._actor_label(request.user)} forwarded brief for Case #{case.case_number} to {brief.get_forwarded_to_role_display()}."
+            )
+        else:
+            action = CaseActivityLog.Action.BRIEF_ATTACHED if request.method == "POST" and not had_brief else CaseActivityLog.Action.BRIEF_UPDATED
+            detail = f"{'Attached' if action == CaseActivityLog.Action.BRIEF_ATTACHED else 'Updated'} brief"
+            if request.method == "PATCH" and had_brief:
+                update_fields = ["revision", "updated_at"]
+                brief.revision = (brief.revision or 1) + 1
+                editor_stage = self._brief_forward_target_for_role(request.user)
+                if request.user.role == User.Role.INVESTIGATOR:
+                    brief.status = CaseBrief.Status.DRAFT
+                    brief.forwarded_to_role = ""
+                    update_fields.extend(["status", "forwarded_to_role"])
+                elif editor_stage:
+                    brief.status = CaseBrief.Status.FORWARDED
+                    brief.forwarded_to_role = editor_stage
+                    update_fields.extend(["status", "forwarded_to_role"])
+                if brief.approved_at:
+                    brief.approved_by = None
+                    brief.approved_at = None
+                    brief.approved_note = ""
+                    update_fields.extend(["approved_by", "approved_at", "approved_note"])
+                brief.save(update_fields=update_fields)
+
+        self._log_action(case, request.user, action, detail)
+        return Response(CaseBriefSerializer(brief, context={"request": request}).data, status=http_status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="brief/approve",
+        parser_classes=[JSONParser],
+    )
+    def approve_brief(self, request, pk=None):
+        if request.user.role != User.Role.CORPS_CMD:
+            raise PermissionDenied("Only Corps Commander can approve briefs for back-brief attachment.")
+
+        case = self.get_object()
+        ensure_case_accepts_file_changes(case)
+        if not hasattr(case, "brief"):
+            return Response(
+                {"detail": "No brief exists for this case."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        brief = case.brief
+        if not self._can_view_case_brief(request.user, case, brief):
+            raise PermissionDenied("This brief has not been forwarded to Corps Commander.")
+        if brief.forwarded_to_role != CaseBrief.ForwardRole.CORPS_CMD:
+            return Response(
+                {"detail": "Brief must be forwarded to Corps Commander before it can be approved."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if brief.approved_at:
+            approved_by = self._actor_label(brief.approved_by) if brief.approved_by else "Corps Commander"
+            return Response(
+                {"detail": f"This brief was already approved by {approved_by}."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        brief.approved_by = request.user
+        brief.approved_at = timezone.now()
+        brief.approved_note = (request.data.get("approved_note") or request.data.get("note") or "").strip()
+        brief.save(update_fields=["approved_by", "approved_at", "approved_note", "updated_at"])
+
+        self._log_action(
+            case,
+            request.user,
+            CaseActivityLog.Action.BRIEF_UPDATED,
+            "Approved brief for back-brief attachment",
+        )
+        self._notify_brief_approval_recipients(case, request.user, brief)
+        return Response(CaseBriefSerializer(brief, context={"request": request}).data, status=http_status.HTTP_200_OK)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="back-brief",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def back_brief(self, request, pk=None):
+        if not self._can_upload_back_brief(request.user):
+            raise PermissionDenied("Only HQ admin users can upload back-briefs.")
+
+        case = self.get_object()
+        if not hasattr(case, "brief"):
+            return Response(
+                {"detail": "No brief exists for this case."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if hasattr(case.brief, "back_brief"):
+            return Response(
+                {"detail": "A back-brief has already been attached to this brief."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        if not case.brief.approved_at:
+            return Response(
+                {"detail": "Back-brief can only be attached after the brief has been approved by Corps Commander."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = CaseBackBriefSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        back_brief = serializer.save(brief=case.brief, uploaded_by=request.user)
+        self._log_action(case, request.user, CaseActivityLog.Action.BRIEF_UPDATED, "Uploaded back-brief")
+        self._notify_back_brief_recipients(case, request.user, back_brief)
+        return Response(
+            CaseBackBriefSerializer(back_brief, context={"request": request}).data,
+            status=http_status.HTTP_201_CREATED,
+        )
+
+    @action(
         detail=True,
         methods=["delete"],
         url_path=r"attachments/(?P<att_pk>[^/.]+)",
@@ -1129,8 +2641,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     )
     def delete_attachment(self, request, pk=None, att_pk=None):
         case = self.get_object()
-        if case.status == Case.Status.CLOSED:
-            return Response({"case": CLOSED_CASE_FILE_ERROR}, status=http_status.HTTP_400_BAD_REQUEST)
+        ensure_case_accepts_file_changes(case)
         try:
             att = case.extra_attachments.get(pk=att_pk)
             filename = att.file.name.split("/")[-1] if att.file else str(att_pk)
@@ -1165,16 +2676,16 @@ class CaseViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        if request.method == "GET":
-            qs = case.court_martial_milestones.select_related("created_by", "action_recorded_by").all()
-            serializer = CaseCourtMartialMilestoneSerializer(qs, many=True)
-            return Response(serializer.data)
-
         if not self._can_set_court_martial_schedule(request.user, case):
             return Response(
                 {"detail": "Only investigator/team IO/members or HQ admins can manage Court Martial milestones."},
                 status=http_status.HTTP_403_FORBIDDEN,
             )
+
+        if request.method == "GET":
+            qs = case.court_martial_milestones.select_related("created_by", "action_recorded_by").all()
+            serializer = CaseCourtMartialMilestoneSerializer(qs, many=True)
+            return Response(serializer.data)
 
         serializer = CaseCourtMartialMilestoneSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1248,70 +2759,6 @@ class CaseViewSet(viewsets.ModelViewSet):
             f"Updated {updated.milestone_type} milestone",
         )
         return Response(CaseCourtMartialMilestoneSerializer(updated).data)
-
-    @action(
-        detail=True,
-        methods=["get", "post"],
-        url_path=r"court-milestones/(?P<milestone_pk>\d+)/attachments",
-        parser_classes=[MultiPartParser, FormParser, JSONParser],
-    )
-    def court_milestone_attachments(self, request, pk=None, milestone_pk=None):
-        case = self.get_object()
-        try:
-            milestone = CaseCourtMartialMilestone.objects.get(pk=milestone_pk, case=case)
-        except CaseCourtMartialMilestone.DoesNotExist:
-            return Response({"detail": "Milestone not found."}, status=http_status.HTTP_404_NOT_FOUND)
-
-        if request.method == "GET":
-            qs = milestone.attachments.select_related("uploaded_by").all()
-            serializer = CaseCourtMartialAttachmentSerializer(qs, many=True)
-            return Response(serializer.data)
-
-        # POST – upload attachment
-        if not (self._can_edit_court_action_remarks(request.user, case) or self._is_hq_admin_or_superuser(request.user)):
-            return Response(
-                {"detail": "You do not have permission to upload attachments for this milestone."},
-                status=http_status.HTTP_403_FORBIDDEN,
-            )
-        file_obj = request.FILES.get("file")
-        if not file_obj:
-            return Response({"detail": "No file provided."}, status=http_status.HTTP_400_BAD_REQUEST)
-        attachment = CaseCourtMartialAttachment.objects.create(
-            milestone=milestone,
-            file=file_obj,
-            file_name=file_obj.name,
-            uploaded_by=request.user,
-        )
-        return Response(
-            CaseCourtMartialAttachmentSerializer(attachment).data,
-            status=http_status.HTTP_201_CREATED,
-        )
-
-    @action(
-        detail=True,
-        methods=["delete"],
-        url_path=r"court-milestones/(?P<milestone_pk>\d+)/attachments/(?P<att_pk>\d+)",
-        parser_classes=[JSONParser],
-    )
-    def court_milestone_attachment_detail(self, request, pk=None, milestone_pk=None, att_pk=None):
-        case = self.get_object()
-        try:
-            milestone = CaseCourtMartialMilestone.objects.get(pk=milestone_pk, case=case)
-        except CaseCourtMartialMilestone.DoesNotExist:
-            return Response({"detail": "Milestone not found."}, status=http_status.HTTP_404_NOT_FOUND)
-        try:
-            attachment = milestone.attachments.get(pk=att_pk)
-        except CaseCourtMartialAttachment.DoesNotExist:
-            return Response({"detail": "Attachment not found."}, status=http_status.HTTP_404_NOT_FOUND)
-
-        if not (self._is_hq_admin_or_superuser(request.user) or attachment.uploaded_by == request.user):
-            return Response(
-                {"detail": "You do not have permission to delete this attachment."},
-                status=http_status.HTTP_403_FORBIDDEN,
-            )
-        attachment.file.delete(save=False)
-        attachment.delete()
-        return Response(status=http_status.HTTP_204_NO_CONTENT)
 
     @action(
         detail=True,

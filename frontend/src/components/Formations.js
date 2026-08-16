@@ -1,58 +1,74 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { caseService, formationService } from "../services/api";
+import useAutoDismiss from "../hooks/useAutoDismiss";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function toArr(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
-function searchable(value) {
-  return String(value ?? "").trim().toLowerCase();
+function battalionAllowsCompanies(battalion) {
+  return String(battalion?.battalion_type || "normal").toLowerCase() === "normal";
 }
 
-function countLabel(filtered, total) {
-  return filtered === total ? `(${total})` : `(${filtered}/${total})`;
+function companyLabel(detachment) {
+  return detachment?.company ? `${detachment.company} Coy` : "Coy";
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SERVICES = [
-  { value: "KA",  label: "KA - Kenya Army" },
-  { value: "KAF", label: "KAF - Kenya Air Force" },
-  { value: "KN",  label: "KN - Kenya Navy" },
+  { value: "KA",  label: "Kenya Army (KA)" },
+  { value: "KAF", label: "Kenya Air Force (KAF)" },
+  { value: "KN",  label: "Kenya Navy (KN)" },
+];
+const BATTALION_TYPES = [
+  { value: "normal", label: "Normal" },
+  { value: "special", label: "Special" },
+  { value: "hqs", label: "HQs" },
+  { value: "protection", label: "Protection" },
 ];
 const EMPTY_FORMATION = { name: "", location: "" };
 const EMPTY_UNIT = { name: "", code: "", formation: "", service: "KA", email: "", mobile_no: "", location_county: "" };
-
-function apiErrorMessage(err, fallback) {
-  const data = err.response?.data;
-  if (!data) return fallback;
-  if (typeof data === "string") return data;
-  if (data.detail) return Array.isArray(data.detail) ? data.detail.join(", ") : String(data.detail);
-  if (typeof data === "object") {
-    const message = Object.entries(data)
-      .map(([field, value]) => `${field}: ${Array.isArray(value) ? value.join(", ") : value}`)
-      .join(" | ");
-    if (message) return message;
-  }
-  return fallback;
-}
+const EMPTY_BATTALION = {
+  name: "",
+  code: "",
+  battalion_type: "normal",
+  email: "",
+  phone: "",
+  aor: "",
+};
+const COMPANY_OPTIONS = ["A", "B", "C", "D"];
+const EMPTY_DETACHMENT = {
+  battalion: "",
+  company: "A",
+  name: "",
+  aor: "",
+  mobile_no: "",
+  email: "",
+};
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function Formations({ user }) {
+export default function Formations({ user, mode = "formations" }) {
+  const navigate = useNavigate();
   const [formations, setFormations] = useState([]);
   const [units,      setUnits]      = useState([]);
   const [battalions, setBattalions] = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState("");
   const [message,    setMessage]    = useState("");
-  const [formationQuery, setFormationQuery] = useState("");
-  const [unitQuery, setUnitQuery] = useState("");
-  const [unitFormationFilter, setUnitFormationFilter] = useState("");
-  const [unitServiceFilter, setUnitServiceFilter] = useState("");
+  useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
 
   const [fmModal,      setFmModal]      = useState(null);
   const [fmSaving,     setFmSaving]     = useState(false);
   const [fmDeleteId,   setFmDeleteId]   = useState(null);
+  const [bnModal,      setBnModal]      = useState(null);
+  const [bnSaving,     setBnSaving]     = useState(false);
+  const [bnDeleteId,   setBnDeleteId]   = useState(null);
+  const [detModal,     setDetModal]     = useState(null);
+  const [detSaving,    setDetSaving]    = useState(false);
+  const [detDeleteId,  setDetDeleteId]  = useState(null);
 
   const [unitModal,    setUnitModal]    = useState(null);
   const [unitSaving,   setUnitSaving]   = useState(false);
@@ -63,46 +79,12 @@ export default function Formations({ user }) {
 
   const isSuperAdmin = Boolean(user?.is_superuser);
   const isHqsAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
-  const canViewBattalionSummary = isSuperAdmin || isHqsAdmin;
+  const isCorpsCommander = user?.role === "corps_cmd";
+  const canViewBattalionSummary = isSuperAdmin || isHqsAdmin || isCorpsCommander;
+  const showBattalionSummary = mode === "battalions" && canViewBattalionSummary;
   const visibleBattalions = battalions.filter(
-    (b) => String(b?.battalion_type || "").toLowerCase() !== "hqs"
+    (b) => isSuperAdmin || String(b?.battalion_type || "").toLowerCase() !== "hqs"
   );
-
-  const filteredFormations = useMemo(() => {
-    const query = searchable(formationQuery);
-    if (!query) return formations;
-    return formations.filter((formation) => (
-      searchable(formation.name).includes(query) ||
-      searchable(formation.location).includes(query)
-    ));
-  }, [formations, formationQuery]);
-
-  const filteredUnits = useMemo(() => {
-    const query = searchable(unitQuery);
-    return units.filter((unit) => {
-      const matchesSearch = !query || [
-        unit.name,
-        unit.code,
-        unit.formation_name,
-        unit.service,
-        unit.email,
-        unit.mobile_no,
-        unit.location_county,
-      ].some((value) => searchable(value).includes(query));
-      const matchesFormation = !unitFormationFilter || String(unit.formation) === String(unitFormationFilter);
-      const matchesService = !unitServiceFilter || String(unit.service) === String(unitServiceFilter);
-      return matchesSearch && matchesFormation && matchesService;
-    });
-  }, [units, unitQuery, unitFormationFilter, unitServiceFilter]);
-
-  const hasFormationFilter = Boolean(formationQuery.trim());
-  const hasUnitFilter = Boolean(unitQuery.trim() || unitFormationFilter || unitServiceFilter);
-  const clearFormationFilters = () => setFormationQuery("");
-  const clearUnitFilters = () => {
-    setUnitQuery("");
-    setUnitFormationFilter("");
-    setUnitServiceFilter("");
-  };
 
   const loadAll = useCallback(async () => {
     setLoading(true); setError("");
@@ -112,11 +94,16 @@ export default function Formations({ user }) {
         formationService.units({ page_size: 500 }),
         formationService.battalions({ page_size: 500 }),
       ]);
-      setFormations(toArr(fRes.data));
-      setUnits(toArr(uRes.data));
-      setBattalions(toArr(bRes.data));
+      const nextFormations = toArr(fRes.data);
+      const nextUnits = toArr(uRes.data);
+      const nextBattalions = toArr(bRes.data);
+      setFormations(nextFormations);
+      setUnits(nextUnits);
+      setBattalions(nextBattalions);
+      return { formations: nextFormations, units: nextUnits, battalions: nextBattalions };
     } catch {
       setError("Failed to load data.");
+      return null;
     } finally {
       setLoading(false);
     }
@@ -157,13 +144,134 @@ export default function Formations({ user }) {
   };
 
   // ── Unit CRUD ──
+  const saveBattalion = async (form) => {
+    setBnSaving(true); setError(""); setMessage("");
+    try {
+      if (bnModal.mode === "add") {
+        await formationService.createBattalion(form);
+        setMessage("Battalion created.");
+      } else {
+        await formationService.updateBattalion(bnModal.data.id, form);
+        setMessage("Battalion updated.");
+      }
+      setBnModal(null);
+      await loadAll();
+    } catch (err) {
+      const d = err.response?.data;
+      setError(
+        d?.name?.[0] ||
+        d?.formation?.[0] ||
+        d?.battalion_type?.[0] ||
+        d?.detail ||
+        "Failed to save battalion."
+      );
+    } finally {
+      setBnSaving(false);
+    }
+  };
+
+  const deleteBattalion = async () => {
+    setError(""); setMessage("");
+    try {
+      await formationService.deleteBattalion(bnDeleteId);
+      setBnDeleteId(null);
+      setMessage("Battalion deleted.");
+      await loadAll();
+    } catch {
+      setError("Failed to delete battalion.");
+    }
+  };
+
+  const syncDetachmentView = (nextBattalions) => {
+    setDetachmentView((current) => {
+      if (!current?.battalionId) return current;
+      const battalion = nextBattalions.find((b) => String(b.id) === String(current.battalionId));
+      if (!battalion) return current;
+      return {
+        ...current,
+        battalionName: battalion.name || current.battalionName,
+        battalionType: battalion.battalion_type || current.battalionType,
+        rows: Array.isArray(battalion.detachments) ? battalion.detachments : [],
+      };
+    });
+  };
+
+  const openCompanyModal = (battalion, detachment = null) => {
+    const currentBattalion = battalion || (detachmentView ? {
+      id: detachmentView.battalionId,
+      name: detachmentView.battalionName,
+      battalion_type: detachmentView.battalionType,
+    } : null);
+    const battalionId = detachment?.battalion || currentBattalion?.id;
+    if (!battalionId) return;
+
+    setDetModal({
+      mode: detachment ? "edit" : "add",
+      data: detachment ? {
+        id: detachment.id,
+        battalion: String(battalionId),
+        battalionName: currentBattalion?.name || detachmentView?.battalionName || "Battalion",
+        company: detachment.company || "A",
+        name: detachment.name || "",
+        aor: detachment.aor || "",
+        mobile_no: detachment.mobile_no || "",
+        email: detachment.email || "",
+      } : {
+        ...EMPTY_DETACHMENT,
+        battalion: String(battalionId),
+        battalionName: currentBattalion?.name || "Battalion",
+      },
+    });
+  };
+
+  const saveDetachment = async (form) => {
+    setDetSaving(true); setError(""); setMessage("");
+    try {
+      const values = { ...form };
+      delete values.battalionName;
+      const payload = { ...values, battalion: Number(values.battalion) };
+      if (detModal.mode === "add") {
+        await formationService.createDetachment(payload);
+        setMessage("Company created.");
+      } else {
+        await formationService.updateDetachment(detModal.data.id, payload);
+        setMessage("Company updated.");
+      }
+      setDetModal(null);
+      const loaded = await loadAll();
+      if (loaded?.battalions) syncDetachmentView(loaded.battalions);
+    } catch (err) {
+      const d = err.response?.data;
+      setError(
+        d?.battalion?.[0] ||
+        d?.company?.[0] ||
+        d?.name?.[0] ||
+        d?.aor?.[0] ||
+        d?.detail ||
+        "Failed to save company."
+      );
+    } finally {
+      setDetSaving(false);
+    }
+  };
+
+  const deleteDetachment = async () => {
+    setError(""); setMessage("");
+    try {
+      await formationService.deleteDetachment(detDeleteId);
+      setDetDeleteId(null);
+      setMessage("Company deleted.");
+      const loaded = await loadAll();
+      if (loaded?.battalions) syncDetachmentView(loaded.battalions);
+    } catch {
+      setError("Failed to delete company.");
+    }
+  };
+
   const saveUnit = async (form) => {
     setUnitSaving(true); setError(""); setMessage("");
     try {
-      const payload = {
-        ...form,
-        formation: form.service === "KA" && form.formation ? Number(form.formation) : null,
-      };
+      const payload = { ...form, formation: form.formation ? Number(form.formation) : null };
       if (unitModal.mode === "add") {
         await formationService.createUnit(payload);
         setMessage("Unit created.");
@@ -174,7 +282,8 @@ export default function Formations({ user }) {
       setUnitModal(null);
       await loadAll();
     } catch (err) {
-      setError(apiErrorMessage(err, "Failed to save unit."));
+      const d = err.response?.data;
+      setError(d?.name?.[0] || d?.detail || "Failed to save unit.");
     } finally {
       setUnitSaving(false);
     }
@@ -194,7 +303,9 @@ export default function Formations({ user }) {
 
   const openDetachments = (battalion) => {
     setDetachmentView({
+      battalionId: battalion?.id,
       battalionName: battalion?.name || "Battalion",
+      battalionType: battalion?.battalion_type || "normal",
       rows: Array.isArray(battalion?.detachments) ? battalion.detachments : [],
     });
   };
@@ -215,7 +326,21 @@ export default function Formations({ user }) {
     }
   };
 
-  if (!canViewBattalionSummary) {
+  const openCompanyCases = (detachment) => {
+    if (!detachment?.id) return;
+    navigate(`/dashboard/cases?tasked_detachment=${encodeURIComponent(detachment.id)}`);
+  };
+
+  if (mode === "battalions" && !canViewBattalionSummary) {
+    return (
+      <div className="p-6">
+        <h2 className="text-xl font-semibold text-white">Battalions</h2>
+        <p className="text-gray-400 mt-2 text-sm">Only Corps Commander, HQ Admin, or Super Admin can view all battalions.</p>
+      </div>
+    );
+  }
+
+  if (mode !== "battalions" && !isSuperAdmin) {
     return (
       <div className="p-6">
         <h2 className="text-xl font-semibold text-white">Formations</h2>
@@ -224,7 +349,7 @@ export default function Formations({ user }) {
     );
   }
 
-  if (isHqsAdmin && !isSuperAdmin) {
+  if (showBattalionSummary) {
     return (
       <div className="p-6 space-y-6">
         <div>
@@ -233,30 +358,51 @@ export default function Formations({ user }) {
         </div>
 
         {error && <div className="bg-red-900/40 border border-red-700 text-red-300 text-sm px-4 py-2 rounded">{error}</div>}
+        {message && <div className="bg-green-900/40 border border-green-700 text-green-300 text-sm px-4 py-2 rounded">{message}</div>}
 
         <div className="bg-gray-800 rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700">
+          <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
             <span className="text-white font-medium">
               Battalions <span className="text-gray-400 text-xs">({visibleBattalions.length})</span>
             </span>
+            {isSuperAdmin && (
+              <button
+                onClick={() => setBnModal({ mode: "add", data: { ...EMPTY_BATTALION } })}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+              >
+                + Add Battalion
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
+            <table className="w-full min-w-[640px] text-sm">
               <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
                 <tr>
                   <th className="text-left px-4 py-2">Battalion</th>
+                  <th className="text-left px-4 py-2">Type</th>
                   <th className="text-left px-4 py-2">Companies</th>
                   <th className="text-left px-4 py-2">Case Count</th>
+                  {isSuperAdmin && <th className="text-left px-4 py-2">Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+                  <tr><td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
                 ) : visibleBattalions.length === 0 ? (
-                  <tr><td colSpan={3} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
+                  <tr><td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-8 text-center text-gray-500">No battalions found.</td></tr>
                 ) : visibleBattalions.map((b) => (
                   <tr key={b.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
-                    <td className="px-4 py-2 text-white font-medium">{b.name}</td>
+                    <td className="px-4 py-2 text-white font-medium">
+                      <div>{b.name}</div>
+                      {(b.code || b.email || b.phone) && (
+                        <div className="mt-0.5 text-xs text-gray-500">
+                          {[b.code, b.email, b.phone].filter(Boolean).join(" | ")}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-gray-300 capitalize">
+                      {String(b.battalion_type || "normal").replace(/_/g, " ")}
+                    </td>
                     <td className="px-4 py-2 text-gray-300">
                       <button
                         type="button"
@@ -275,6 +421,29 @@ export default function Formations({ user }) {
                         {b.case_count ?? 0}
                       </button>
                     </td>
+                    {isSuperAdmin && (
+                      <td className="px-4 py-2">
+                        <div className="flex gap-3">
+                          <ABtn
+                            label="Edit"
+                            color="blue"
+                            onClick={() => setBnModal({ mode: "edit", data: {
+                              id: b.id,
+                              name: b.name || "",
+                              code: b.code || "",
+                              battalion_type: b.battalion_type || "normal",
+                              email: b.email || "",
+                              phone: b.phone || "",
+                              aor: b.aor || "",
+                            }})}
+                          />
+                          {battalionAllowsCompanies(b) && (
+                            <ABtn label="Add Coy" color="blue" onClick={() => openCompanyModal(b)} />
+                          )}
+                          <ABtn label="Delete" color="red" onClick={() => setBnDeleteId(b.id)} />
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -284,14 +453,42 @@ export default function Formations({ user }) {
 
         {detachmentView && (
           <ModalWrap title={`${detachmentView.battalionName} Companies`} onClose={() => setDetachmentView(null)}>
+            {isSuperAdmin && battalionAllowsCompanies(detachmentView) && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => openCompanyModal(null)}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition-colors"
+                >
+                  + Add Coy
+                </button>
+              </div>
+            )}
             {detachmentView.rows.length === 0 ? (
               <p className="text-sm text-gray-400">No companies found.</p>
             ) : (
               <div className="space-y-2">
                 {detachmentView.rows.map((d) => (
                   <div key={d.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
-                    <p className="text-sm text-white font-medium">{d.name || "Unnamed company"}</p>
-                    <p className="text-xs text-gray-400">Company: {d.company || " - "} | AOR: {d.aor || " - "}</p>
+                    <button
+                      type="button"
+                      onClick={() => openCompanyCases(d)}
+                      className="w-full text-left transition-colors hover:text-blue-300"
+                    >
+                      <p className="text-sm text-white font-medium">
+                        {companyLabel(d)}
+                      </p>
+                      <p className="text-xs text-gray-400">Name: {d.name || "—"} | AOR: {d.aor || "—"}</p>
+                      <p className="text-xs text-blue-400 mt-1">
+                        Case Count: <span className="underline underline-offset-2">{d.case_count ?? 0}</span>
+                      </p>
+                    </button>
+                    {isSuperAdmin && (
+                      <div className="mt-2 flex gap-3 border-t border-gray-700/70 pt-2">
+                        <ABtn label="Edit" color="blue" onClick={() => openCompanyModal(null, d)} />
+                        <ABtn label="Delete" color="red" onClick={() => setDetDeleteId(d.id)} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -302,7 +499,7 @@ export default function Formations({ user }) {
         {caseView && (
           <ModalWrap title={`${caseView.battalionName} Cases`} onClose={() => setCaseView(null)}>
             {caseViewLoading ? (
-              <p className="text-sm text-gray-400">Loading cases...</p>
+              <p className="text-sm text-gray-400">Loading cases…</p>
             ) : caseView.rows.length === 0 ? (
               <p className="text-sm text-gray-400">No cases found.</p>
             ) : (
@@ -310,12 +507,45 @@ export default function Formations({ user }) {
                 {caseView.rows.map((c) => (
                   <div key={c.id} className="rounded border border-gray-700 bg-gray-900/50 px-3 py-2">
                     <p className="text-sm text-white font-medium">{c.case_number || `Case #${c.id}`}</p>
-                    <p className="text-xs text-gray-400">Status: {c.status || " - "}</p>
+                    <p className="text-xs text-gray-400">Status: {c.status || "—"}</p>
                   </div>
                 ))}
               </div>
             )}
           </ModalWrap>
+        )}
+
+        {bnModal && (
+          <BattalionModal
+            mode={bnModal.mode}
+            initial={bnModal.data}
+            saving={bnSaving}
+            onSave={saveBattalion}
+            onClose={() => setBnModal(null)}
+          />
+        )}
+        {bnDeleteId && (
+          <ConfirmDelete
+            label="battalion"
+            onConfirm={deleteBattalion}
+            onCancel={() => setBnDeleteId(null)}
+          />
+        )}
+        {detModal && (
+          <CompanyModal
+            mode={detModal.mode}
+            initial={detModal.data}
+            saving={detSaving}
+            onSave={saveDetachment}
+            onClose={() => setDetModal(null)}
+          />
+        )}
+        {detDeleteId && (
+          <ConfirmDelete
+            label="company"
+            onConfirm={deleteDetachment}
+            onCancel={() => setDetDeleteId(null)}
+          />
         )}
       </div>
     );
@@ -335,7 +565,7 @@ export default function Formations({ user }) {
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
           <span className="text-white font-medium">
-            Formations <span className="text-gray-400 text-xs">{countLabel(filteredFormations.length, formations.length)}</span>
+            Formations <span className="text-gray-400 text-xs">({formations.length})</span>
           </span>
           <button
             onClick={() => setFmModal({ mode: "add", data: { ...EMPTY_FORMATION } })}
@@ -343,26 +573,6 @@ export default function Formations({ user }) {
           >
             + Add Formation
           </button>
-        </div>
-        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/30">
-          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-            <input
-              type="search"
-              value={formationQuery}
-              onChange={(event) => setFormationQuery(event.target.value)}
-              placeholder="Search formations by name or location..."
-              className="w-full sm:max-w-md bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            />
-            {hasFormationFilter && (
-              <button
-                type="button"
-                onClick={clearFormationFilters}
-                className="px-3 py-2 text-xs text-gray-300 hover:text-white border border-gray-600 rounded transition-colors"
-              >
-                Clear
-              </button>
-            )}
-          </div>
         </div>
         <table className="w-full text-sm">
           <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
@@ -375,17 +585,15 @@ export default function Formations({ user }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
             ) : formations.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No formations found.</td></tr>
-            ) : filteredFormations.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching formations found.</td></tr>
-            ) : filteredFormations.map((f) => {
+            ) : formations.map((f) => {
               const fUnits = units.filter((u) => String(u.formation) === String(f.id));
               return (
                 <tr key={f.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                   <td className="px-4 py-2 text-white font-medium">{f.name}</td>
-                  <td className="px-4 py-2 text-gray-300">{f.location || " - "}</td>
+                  <td className="px-4 py-2 text-gray-300">{f.location || "—"}</td>
                   <td className="px-4 py-2 text-gray-300">{fUnits.length}</td>
                   <td className="px-4 py-2">
                     <div className="flex gap-3">
@@ -404,7 +612,7 @@ export default function Formations({ user }) {
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
           <span className="text-white font-medium">
-            Units <span className="text-gray-400 text-xs">{countLabel(filteredUnits.length, units.length)}</span>
+            Units <span className="text-gray-400 text-xs">({units.length})</span>
           </span>
           <button
             onClick={() => setUnitModal({ mode: "add", data: { ...EMPTY_UNIT } })}
@@ -412,46 +620,6 @@ export default function Formations({ user }) {
           >
             + Add Unit
           </button>
-        </div>
-        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/30">
-          <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,180px)_auto] gap-2">
-            <input
-              type="search"
-              value={unitQuery}
-              onChange={(event) => setUnitQuery(event.target.value)}
-              placeholder="Search units by name, code, contact, county..."
-              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            />
-            <select
-              value={unitFormationFilter}
-              onChange={(event) => setUnitFormationFilter(event.target.value)}
-              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">All formations</option>
-              {formations.map((formation) => (
-                <option key={formation.id} value={String(formation.id)}>{formation.name}</option>
-              ))}
-            </select>
-            <select
-              value={unitServiceFilter}
-              onChange={(event) => setUnitServiceFilter(event.target.value)}
-              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
-            >
-              <option value="">All services</option>
-              {SERVICES.map((service) => (
-                <option key={service.value} value={service.value}>{service.value}</option>
-              ))}
-            </select>
-            {hasUnitFilter && (
-              <button
-                type="button"
-                onClick={clearUnitFilters}
-                className="px-3 py-2 text-xs text-gray-300 hover:text-white border border-gray-600 rounded transition-colors"
-              >
-                Clear
-              </button>
-            )}
-          </div>
         </div>
         <table className="w-full text-sm">
           <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
@@ -464,16 +632,14 @@ export default function Formations({ user }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
             ) : units.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No units found.</td></tr>
-            ) : filteredUnits.length === 0 ? (
-              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching units found.</td></tr>
-            ) : filteredUnits.map((u) => (
+            ) : units.map((u) => (
               <tr key={u.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                 <td className="px-4 py-2 text-white font-medium">{u.name}</td>
-                <td className="px-4 py-2 text-gray-300">{u.formation_name || " - "}</td>
-                <td className="px-4 py-2 text-gray-300">{u.service || " - "}</td>
+                <td className="px-4 py-2 text-gray-300">{u.formation_name || "—"}</td>
+                <td className="px-4 py-2 text-gray-300">{u.service || "—"}</td>
                 <td className="px-4 py-2">
                   <div className="flex gap-3">
                     <ABtn label="Edit" color="blue" onClick={() => setUnitModal({ mode: "edit", data: {
@@ -530,7 +696,7 @@ function ModalWrap({ title, onClose, children }) {
       <div className="bg-gray-800 rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-gray-700 flex justify-between items-center sticky top-0 bg-gray-800">
           <h3 className="text-white font-semibold">{title}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">x</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-lg">✕</button>
         </div>
         <div className="px-6 py-4 space-y-3">{children}</div>
       </div>
@@ -554,7 +720,7 @@ function SaveCancel({ saving, canSave, mode, onClose }) {
       <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
       <button type="submit" disabled={saving || !canSave}
         className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
-        {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
+        {saving ? "Saving…" : mode === "add" ? "Create" : "Save Changes"}
       </button>
     </div>
   );
@@ -574,49 +740,101 @@ function FormationModal({ mode, initial, saving, onSave, onClose }) {
   );
 }
 
+function BattalionModal({ mode = "add", initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <ModalWrap title={mode === "add" ? "Add Battalion" : "Edit Battalion"} onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        <FInput label="Battalion Name *" value={form.name || ""} onChange={s("name")} required />
+        <FInput label="Code" value={form.code || ""} onChange={s("code")} />
+        <div>
+          <label className="text-xs text-gray-400">Type</label>
+          <select value={form.battalion_type} onChange={s("battalion_type")}
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            {BATTALION_TYPES.map((type) => (
+              <option key={type.value} value={type.value}>{type.label}</option>
+            ))}
+          </select>
+        </div>
+        <FInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
+        <FInput label="Phone" value={form.phone || ""} onChange={s("phone")} />
+        <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+        <SaveCancel saving={saving} canSave={!!form.name?.trim()} mode={mode} onClose={onClose} />
+      </form>
+    </ModalWrap>
+  );
+}
+
+function CompanyModal({ mode = "add", initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <ModalWrap title={mode === "add" ? "Add Coy" : "Edit Coy"} onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        {form.battalionName && (
+          <div>
+            <label className="text-xs text-gray-400">Battalion</label>
+            <div className="mt-1 w-full bg-gray-900/50 text-gray-200 text-sm px-3 py-2 rounded border border-gray-700">
+              {form.battalionName}
+            </div>
+          </div>
+        )}
+        <div>
+          <label className="text-xs text-gray-400">Coy *</label>
+          <select value={form.company || "A"} onChange={s("company")} required
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            {COMPANY_OPTIONS.map((company) => (
+              <option key={company} value={company}>{company} Coy</option>
+            ))}
+          </select>
+        </div>
+        <FInput label="Company Name *" value={form.name || ""} onChange={s("name")} required />
+        <FInput label="AOR *" value={form.aor || ""} onChange={s("aor")} required />
+        <FInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+        <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+        <SaveCancel
+          saving={saving}
+          canSave={!!form.battalion && !!form.company && !!form.name?.trim() && !!form.aor?.trim()}
+          mode={mode}
+          onClose={onClose}
+        />
+      </form>
+    </ModalWrap>
+  );
+}
+
 function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const isArmy = form.service === "KA";
-  const canSave = Boolean(form.name?.trim()) && (!isArmy || Boolean(form.formation));
-  const setService = (e) => {
-    const service = e.target.value;
-    setForm((f) => ({
-      ...f,
-      service,
-      formation: service === "KA" ? f.formation : "",
-    }));
-  };
   return (
     <ModalWrap title={mode === "add" ? "Add Unit" : "Edit Unit"} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        <FInput label="Unit Name *" value={form.name || ""} onChange={s("name")} required />
+        <FInput label="Code"        value={form.code || ""} onChange={s("code")} />
+        <div>
+          <label className="text-xs text-gray-400">Formation *</label>
+          <select value={form.formation} onChange={s("formation")} required
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+            <option value="">Select formation…</option>
+            {formations.map((f) => (
+              <option key={f.id} value={String(f.id)}>{f.name}</option>
+            ))}
+          </select>
+        </div>
         <div>
           <label className="text-xs text-gray-400">Service</label>
-          <select value={form.service} onChange={setService}
+          <select value={form.service} onChange={s("service")}
             className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
             {SERVICES.map((sv) => (
               <option key={sv.value} value={sv.value}>{sv.label}</option>
             ))}
           </select>
         </div>
-        <FInput label="Unit Name *" value={form.name || ""} onChange={s("name")} required />
-        <FInput label="Code"        value={form.code || ""} onChange={s("code")} />
-        {isArmy && (
-        <div>
-          <label className="text-xs text-gray-400">Formation *</label>
-          <select value={form.formation} onChange={s("formation")} required
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
-            <option value="">Select formation...</option>
-            {formations.map((f) => (
-              <option key={f.id} value={String(f.id)}>{f.name}</option>
-            ))}
-          </select>
-        </div>
-        )}
-        <FInput label="Unit Mobile No (optional)" value={form.mobile_no || ""} onChange={s("mobile_no")} />
-        <FInput label="Unit Email (optional)" type="email" value={form.email || ""} onChange={s("email")} />
-        <FInput label="Region/County (optional)" value={form.location_county || ""} onChange={s("location_county")} />
-        <SaveCancel saving={saving} canSave={canSave} mode={mode} onClose={onClose} />
+        <FInput label="Mobile No"         value={form.mobile_no || ""}       onChange={s("mobile_no")} />
+        <FInput label="Email" type="email" value={form.email || ""}           onChange={s("email")} />
+        <FInput label="Location / County" value={form.location_county || ""} onChange={s("location_county")} />
+        <SaveCancel saving={saving} canSave={!!form.name?.trim() && !!form.formation} mode={mode} onClose={onClose} />
       </form>
     </ModalWrap>
   );

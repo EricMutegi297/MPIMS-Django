@@ -1,10 +1,11 @@
 import { useEffect } from "react";
 
-export default function useAutoDismiss(value, clearValue, delay = 3000) {
+export default function useAutoDismiss(value, setValue, delay = 4500, emptyValue = "") {
   useEffect(() => {
     if (!value) return undefined;
-
-    const timer = window.setTimeout(() => clearValue(""), delay);
+    const timer = window.setTimeout(() => {
+      setValue(emptyValue);
+    }, delay);
     return () => window.clearTimeout(timer);
-  }, [value, clearValue, delay]);
+  }, [value, setValue, delay, emptyValue]);
 }

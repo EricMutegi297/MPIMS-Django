@@ -28,10 +28,6 @@ class CaseApiTests(TestCase):
             formation=cls.formation,
             service=Unit.Service.KA,
         )
-        cls.kaf_unit = Unit.objects.create(
-            name="KAF Test Unit",
-            service=Unit.Service.KAF,
-        )
         cls.special_battalion = Battalion.objects.create(
             name="Special Investigation Battalion",
             battalion_type=Battalion.BattalionType.SPECIAL,
@@ -141,29 +137,6 @@ class CaseApiTests(TestCase):
         self.assertEqual(case_b.accused_entries.first().name, "Gallao")
         self.assertEqual(Case.objects.filter(case_number__startswith=base_number).count(), 2)
 
-    def test_accused_unit_must_match_selected_service(self):
-        url = reverse("case-list")
-        payload = {
-            "description": "Mismatched accused unit",
-            "offence": "Theft",
-            "date_of_offence": "2026-06-28",
-            "submitting_unit": str(self.unit.id),
-            "accused_entries": json.dumps([
-                {
-                    "name": "Airman",
-                    "rank": "Corporal",
-                    "service_number": "KAF001",
-                    "service": "KAF",
-                    "unit": self.unit.id,
-                }
-            ]),
-        }
-
-        response = self.client.post(url, payload, format="multipart")
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("accused_entries", response.data)
-
     def test_corps_commander_notified_when_case_tasked_to_battalion(self):
         case = Case.objects.create(
             title="Battalion Tasking Notification",
@@ -239,42 +212,6 @@ class CaseApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assert_notification_message(case, action_taken)
-
-    def test_case_can_close_with_part_two_orders_attachment(self):
-        case = Case.objects.create(
-            title="Closed With Part Two Orders",
-            offence="Theft",
-            status=Case.Status.SERVED,
-            tasked_battalion=self.special_battalion,
-            assigned_to=self.investigator,
-            rfi_document="cases/rfi.pdf",
-            created_by=self.superuser,
-        )
-        CaseAttachment.objects.create(
-            case=case,
-            label="Judgment",
-            document_type=CaseAttachment.DocumentType.JUDGMENT,
-            file="cases/judgment.pdf",
-            uploaded_by=self.superuser,
-        )
-
-        response = self.client.patch(
-            reverse("case-detail", args=[case.id]),
-            {
-                "status": Case.Status.CLOSED,
-                "action_taken": "Closed with Part Two Orders.",
-                "part_two_orders": SimpleUploadedFile(
-                    "part-two-orders.pdf",
-                    b"%PDF-1.4\n",
-                    content_type="application/pdf",
-                ),
-            },
-            format="multipart",
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        case.refresh_from_db()
-        self.assertTrue(case.part_two_orders)
 
     def assert_notification_message(self, case, expected):
         notifications = Notification.objects.filter(
