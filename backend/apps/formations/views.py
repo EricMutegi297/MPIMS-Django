@@ -17,6 +17,8 @@ class FormationViewSet(viewsets.ModelViewSet):
     queryset = Formation.objects.prefetch_related("units", "battalions__detachments").all()
     serializer_class = FormationSerializer
     permission_classes = [IsSuperAdminOrReadOnly]
+    search_fields = ["name", "location", "units__name", "units__code"]
+    ordering_fields = ["name", "location", "created_at"]
 
 
 class BattalionViewSet(viewsets.ModelViewSet):
@@ -32,6 +34,8 @@ class UnitViewSet(viewsets.ModelViewSet):
     serializer_class = UnitSerializer
     filterset_fields = ["formation", "service"]
     permission_classes = [IsSuperAdminOrReadOnly]
+    search_fields = ["name", "code", "formation__name", "service", "email", "mobile_no", "location_county"]
+    ordering_fields = ["name", "service", "formation__name", "created_at"]
 
 
 class DetachmentViewSet(viewsets.ModelViewSet):

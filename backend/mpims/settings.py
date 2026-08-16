@@ -1,10 +1,22 @@
 from pathlib import Path
-from decouple import config
+from decouple import UndefinedValueError, config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config("SECRET_KEY")
-DEBUG = config("DEBUG", default=True, cast=bool)
+FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY", default="")
+FIELD_ENCRYPTION_OLD_KEYS = [
+    key.strip()
+    for key in config("FIELD_ENCRYPTION_OLD_KEYS", default="").replace(";", ",").split(",")
+    if key.strip()
+]
+try:
+    DEBUG = config("MPIMS_DEBUG", cast=bool)
+except UndefinedValueError:
+    try:
+        DEBUG = config("DEBUG", default=True, cast=bool)
+    except ValueError:
+        DEBUG = True
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
 
@@ -102,7 +114,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "mpims.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 20,
 }
 
