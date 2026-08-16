@@ -1,0 +1,35 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    command: python manage.py runserver 0.0.0.0:8000
+    network_mode: host
+    volumes:
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      FRONTEND_URL: https://marshal.mod.go.ke
+      ALLOWED_HOSTS: marshal.mod.go.ke,192.168.90.244,localhost,127.0.0.1
+      CORS_ALLOWED_ORIGINS: https://marshal.mod.go.ke,http://192.168.90.244:3000,http://localhost:3000
+      CSRF_TRUSTED_ORIGINS: https://marshal.mod.go.ke,http://192.168.90.244:3000,http://localhost:3000
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  
+  realtime:
+    build: ./realtime
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DATABASE_URL: postgres://mpims_user:mpims_pass@127.0.0.1:5432/mpims_db
+      DJANGO_API_URL: http://127.0.0.1:8000
+      CORS_ORIGIN: https://marshal.mod.go.ke
+      PORT: 4000
