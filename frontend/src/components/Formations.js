@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
@@ -6,6 +6,14 @@ import useAutoDismiss from "../hooks/useAutoDismiss";
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function toArr(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function searchable(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function countLabel(filtered, total) {
+  return filtered === total ? `(${total})` : `(${filtered}/${total})`;
 }
 
 function battalionAllowsCompanies(battalion) {
@@ -57,6 +65,10 @@ export default function Formations({ user, mode = "formations" }) {
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState("");
   const [message,    setMessage]    = useState("");
+  const [formationQuery, setFormationQuery] = useState("");
+  const [unitQuery, setUnitQuery] = useState("");
+  const [unitFormationFilter, setUnitFormationFilter] = useState("");
+  const [unitServiceFilter, setUnitServiceFilter] = useState("");
   useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
 
@@ -85,6 +97,42 @@ export default function Formations({ user, mode = "formations" }) {
   const visibleBattalions = battalions.filter(
     (b) => isSuperAdmin || String(b?.battalion_type || "").toLowerCase() !== "hqs"
   );
+
+  const filteredFormations = useMemo(() => {
+    const query = searchable(formationQuery);
+    if (!query) return formations;
+    return formations.filter((formation) => (
+      searchable(formation.name).includes(query) ||
+      searchable(formation.location).includes(query)
+    ));
+  }, [formations, formationQuery]);
+
+  const filteredUnits = useMemo(() => {
+    const query = searchable(unitQuery);
+    return units.filter((unit) => {
+      const matchesSearch = !query || [
+        unit.name,
+        unit.code,
+        unit.formation_name,
+        unit.service,
+        unit.email,
+        unit.mobile_no,
+        unit.location_county,
+      ].some((value) => searchable(value).includes(query));
+      const matchesFormation = !unitFormationFilter || String(unit.formation) === String(unitFormationFilter);
+      const matchesService = !unitServiceFilter || String(unit.service) === String(unitServiceFilter);
+      return matchesSearch && matchesFormation && matchesService;
+    });
+  }, [units, unitQuery, unitFormationFilter, unitServiceFilter]);
+
+  const hasFormationFilter = Boolean(formationQuery.trim());
+  const hasUnitFilter = Boolean(unitQuery.trim() || unitFormationFilter || unitServiceFilter);
+  const clearFormationFilters = () => setFormationQuery("");
+  const clearUnitFilters = () => {
+    setUnitQuery("");
+    setUnitFormationFilter("");
+    setUnitServiceFilter("");
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true); setError("");
@@ -565,7 +613,7 @@ export default function Formations({ user, mode = "formations" }) {
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
           <span className="text-white font-medium">
-            Formations <span className="text-gray-400 text-xs">({formations.length})</span>
+            Formations <span className="text-gray-400 text-xs">{countLabel(filteredFormations.length, formations.length)}</span>
           </span>
           <button
             onClick={() => setFmModal({ mode: "add", data: { ...EMPTY_FORMATION } })}
@@ -573,6 +621,26 @@ export default function Formations({ user, mode = "formations" }) {
           >
             + Add Formation
           </button>
+        </div>
+        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/30">
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <input
+              type="search"
+              value={formationQuery}
+              onChange={(event) => setFormationQuery(event.target.value)}
+              placeholder="Search formations by name or location..."
+              className="w-full sm:max-w-md bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
+            />
+            {hasFormationFilter && (
+              <button
+                type="button"
+                onClick={clearFormationFilters}
+                className="px-3 py-2 text-xs text-gray-300 hover:text-white border border-gray-600 rounded transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
         <table className="w-full text-sm">
           <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
@@ -588,7 +656,9 @@ export default function Formations({ user, mode = "formations" }) {
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
             ) : formations.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No formations found.</td></tr>
-            ) : formations.map((f) => {
+            ) : filteredFormations.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching formations found.</td></tr>
+            ) : filteredFormations.map((f) => {
               const fUnits = units.filter((u) => String(u.formation) === String(f.id));
               return (
                 <tr key={f.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
@@ -612,7 +682,7 @@ export default function Formations({ user, mode = "formations" }) {
       <div className="bg-gray-800 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-700 flex flex-wrap items-center justify-between gap-2">
           <span className="text-white font-medium">
-            Units <span className="text-gray-400 text-xs">({units.length})</span>
+            Units <span className="text-gray-400 text-xs">{countLabel(filteredUnits.length, units.length)}</span>
           </span>
           <button
             onClick={() => setUnitModal({ mode: "add", data: { ...EMPTY_UNIT } })}
@@ -620,6 +690,46 @@ export default function Formations({ user, mode = "formations" }) {
           >
             + Add Unit
           </button>
+        </div>
+        <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/30">
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,180px)_auto] gap-2">
+            <input
+              type="search"
+              value={unitQuery}
+              onChange={(event) => setUnitQuery(event.target.value)}
+              placeholder="Search units by name, code, contact, county..."
+              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
+            />
+            <select
+              value={unitFormationFilter}
+              onChange={(event) => setUnitFormationFilter(event.target.value)}
+              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
+            >
+              <option value="">All formations</option>
+              {formations.map((formation) => (
+                <option key={formation.id} value={String(formation.id)}>{formation.name}</option>
+              ))}
+            </select>
+            <select
+              value={unitServiceFilter}
+              onChange={(event) => setUnitServiceFilter(event.target.value)}
+              className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
+            >
+              <option value="">All services</option>
+              {SERVICES.map((service) => (
+                <option key={service.value} value={service.value}>{service.value}</option>
+              ))}
+            </select>
+            {hasUnitFilter && (
+              <button
+                type="button"
+                onClick={clearUnitFilters}
+                className="px-3 py-2 text-xs text-gray-300 hover:text-white border border-gray-600 rounded transition-colors"
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
         <table className="w-full text-sm">
           <thead className="bg-gray-700/50 text-gray-400 text-xs uppercase">
@@ -635,7 +745,9 @@ export default function Formations({ user, mode = "formations" }) {
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Loading…</td></tr>
             ) : units.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No units found.</td></tr>
-            ) : units.map((u) => (
+            ) : filteredUnits.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching units found.</td></tr>
+            ) : filteredUnits.map((u) => (
               <tr key={u.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                 <td className="px-4 py-2 text-white font-medium">{u.name}</td>
                 <td className="px-4 py-2 text-gray-300">{u.formation_name || "—"}</td>

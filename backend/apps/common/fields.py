@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 
 
 ENCRYPTED_PREFIX = "enc:v1:"
+ENCRYPTED_TEXT_UNAVAILABLE = "[Encrypted text unavailable - set FIELD_ENCRYPTION_KEY]"
 _fernet_cache = {}
 
 
@@ -86,12 +87,16 @@ def decrypt_value(value):
     if not isinstance(value, str) or not value.startswith(ENCRYPTED_PREFIX):
         return value
     token = value[len(ENCRYPTED_PREFIX) :].encode("ascii")
-    for fernet in get_decryption_fernets():
+    try:
+        fernet_options = get_decryption_fernets()
+    except ImproperlyConfigured:
+        return ENCRYPTED_TEXT_UNAVAILABLE
+    for fernet in fernet_options:
         try:
             return fernet.decrypt(token).decode("utf-8")
         except InvalidToken:
             continue
-    raise ImproperlyConfigured("FIELD_ENCRYPTION_KEY cannot decrypt existing encrypted data.")
+    return ENCRYPTED_TEXT_UNAVAILABLE
 
 
 class EncryptedFieldMixin:

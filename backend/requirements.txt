@@ -13,3 +13,4 @@ cryptography>=42.0.0
 pyotp>=2.10.0
 qrcode[pil]>=8.2
 pywin32>=306; platform_system=="Windows"
+gunicorn>=23.0
