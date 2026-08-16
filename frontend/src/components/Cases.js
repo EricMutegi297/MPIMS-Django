@@ -384,9 +384,186 @@ function SectionLabel({ children }) {
   );
 }
 
+const CASE_FORM_CONTROL =
+  "w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-950 placeholder-slate-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20";
+
+function CaseFormLabel({ children }) {
+  return (
+    <label className="block mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-700">{children}</label>
+  );
+}
+
+function CaseFormSectionLabel({ children }) {
+  return (
+    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-700">{children}</p>
+  );
+}
+
 function ErrMsg({ msg }) {
   if (!msg) return null;
   return <p className="text-red-400 text-xs mt-1">{msg}</p>;
+}
+
+const SCANNER_HELPER_URL = "http://127.0.0.1:41527/scan";
+
+function unitOptionLabel(unit) {
+  if (!unit) return "";
+  const bits = [
+    unit.name,
+    unit.code,
+    unit.service,
+    unit.formation_name || "Service-level",
+    unit.location_county,
+  ].filter(Boolean);
+  return bits.join(" | ");
+}
+
+function unitMatches(unit, query) {
+  const text = [
+    unit.name,
+    unit.code,
+    unit.service,
+    unit.formation_name,
+    unit.location_county,
+    unit.email,
+    unit.mobile_no,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return text.includes(String(query || "").trim().toLowerCase());
+}
+
+function UnitAutocomplete({ label, units, value, onChange, serviceFilter, placeholder = "Search unit by name or code..." }) {
+  const selected = units.find((unit) => String(unit.id) === String(value));
+  const [query, setQuery] = useState(selected ? unitOptionLabel(selected) : "");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setQuery(selected ? unitOptionLabel(selected) : "");
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const trimmed = query.trim();
+  const matches = units
+    .filter((unit) => !serviceFilter || !unit.service || unit.service === serviceFilter)
+    .filter((unit) => !trimmed || unitMatches(unit, trimmed))
+    .slice(0, 8);
+
+  return (
+    <div className="relative">
+      <CaseFormLabel>{label}</CaseFormLabel>
+      <input
+        type="search"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(event) => {
+          const nextQuery = event.target.value;
+          setQuery(nextQuery);
+          setOpen(true);
+          if (value || !nextQuery.trim()) onChange("");
+        }}
+        placeholder={placeholder}
+        className={`${CASE_FORM_CONTROL} pr-14`}
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => {
+            onChange("");
+            setQuery("");
+            setOpen(false);
+          }}
+          className="absolute right-2 top-8 text-xs font-medium text-slate-500 hover:text-slate-900"
+        >
+          Clear
+        </button>
+      )}
+      {open && (
+        <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-300 bg-white shadow-xl">
+          {matches.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-slate-500">No matching units.</div>
+          ) : matches.map((unit) => (
+            <button
+              key={unit.id}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(String(unit.id));
+                setQuery(unitOptionLabel(unit));
+                setOpen(false);
+              }}
+              className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-blue-50"
+            >
+              <span className="block font-semibold text-slate-950">{unit.name}</span>
+              <span className="text-xs text-slate-500">
+                {[unit.code, unit.service, unit.formation_name || "Service-level", unit.location_county].filter(Boolean).join(" | ")}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function scanFromLocalScanner(documentType) {
+  const response = await fetch(SCANNER_HELPER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_type: documentType || "document" }),
+  });
+  if (!response.ok) {
+    throw new Error(`Scanner returned ${response.status}`);
+  }
+  const blob = await response.blob();
+  const ext = blob.type.includes("image") ? "jpg" : "pdf";
+  const safeType = String(documentType || "scanned-document").replace(/[^a-z0-9-]+/gi, "-").toLowerCase();
+  return new File([blob], `${safeType}-${Date.now()}.${ext}`, {
+    type: blob.type || "application/pdf",
+  });
+}
+
+function ScannableFileInput({ label, file, onFileChange, onScanError, accept = ".pdf,.doc,.docx,.jpg,.jpeg,.png", documentType, disabled }) {
+  const [scanning, setScanning] = useState(false);
+
+  async function handleScan() {
+    setScanning(true);
+    onScanError?.("");
+    try {
+      const scannedFile = await scanFromLocalScanner(documentType || label);
+      onFileChange(scannedFile);
+    } catch {
+      onScanError?.(
+        "Scanner helper is not running on this computer. Start the MPIMS scanner helper, or use Browse to attach the scanned file."
+      );
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  return (
+    <div>
+      <label className="text-xs text-gray-400 block mb-1">{label}</label>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+        <input
+          type="file"
+          onChange={(event) => onFileChange(event.target.files?.[0] || null)}
+          accept={accept}
+          disabled={disabled || scanning}
+          className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={handleScan}
+          disabled={disabled || scanning}
+          className="rounded border border-sky-500/60 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-600/20 disabled:opacity-50"
+        >
+          {scanning ? "Scanning..." : "Scan"}
+        </button>
+      </div>
+      {file && (
+        <p className="mt-2 truncate text-xs text-gray-300">Selected: {file.name}</p>
+      )}
+    </div>
+  );
 }
 
 function ConfirmCaseDelete({ caseObj, saving, onConfirm, onCancel }) {
@@ -2956,25 +3133,15 @@ export default function Cases({ user, criminalTypeFilter }) {
                       />
                       <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
                     </div>
-                    <div>
-                      <label className="text-xs text-gray-400 block mb-1">Tasking Letter *</label>
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="file"
-                          onChange={(e) => { setTaskFile(e.target.files[0]); if (taskErr) setTaskErr(""); }}
-                          accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                          className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleTask}
-                          disabled={taskSaving || !taskFile}
-                          className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
-                        >
-                          {taskSaving ? "Tasking…" : "Task"}
-                        </button>
-                      </div>
-                    </div>
+
+                    <ScannableFileInput
+                      label="Tasking Letter *"
+                      file={taskFile}
+                      onFileChange={(file) => { setTaskFile(file); if (taskErr) setTaskErr(""); }}
+                      onScanError={setTaskErr}
+                      documentType="tasking-letter"
+                      disabled={taskSaving}
+                    />
                     <ErrMsg msg={taskErr} />
                     <button
                       type="submit"
@@ -3386,18 +3553,16 @@ export default function Cases({ user, criminalTypeFilter }) {
                   </div>
                 </div>
                 {!activeCloseCase?.rfi_document && (
+
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">RFI Document *</label>
-                    <input
-                      type="file"
-                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                      onChange={(e) => setCloseRfiFile(e.target.files?.[0] || null)}
+                    <ScannableFileInput
+                      label="RFI Document *"
+                      file={closeRfiFile}
+                      onFileChange={(file) => setCloseRfiFile(file)}
+                      onScanError={setCourtCloseErr}
+                      documentType="rfi-document"
                       disabled={courtCloseSaving}
-                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
                     />
-                    {closeRfiFile && (
-                      <p className="mt-2 text-xs text-gray-300">Selected: {closeRfiFile.name}</p>
-                    )}
                     <p className="text-[11px] text-gray-500 mt-1">RFI upload is required unless an RFI document already exists for this case.</p>
                   </div>
                 )}
@@ -3543,25 +3708,15 @@ export default function Cases({ user, criminalTypeFilter }) {
                 />
                 <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
               </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Tasking Letter *</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="file"
-                    onChange={(e) => { setTaskFile(e.target.files[0]); if (taskErr) setTaskErr(""); }}
-                    accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                    className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleTask}
-                    disabled={taskSaving || !taskFile}
-                    className="px-3 py-1 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
-                  >
-                    {taskSaving ? "Tasking…" : "Task"}
-                  </button>
-                </div>
-              </div>
+
+              <ScannableFileInput
+                label="Tasking Letter *"
+                file={taskFile}
+                onFileChange={(file) => { setTaskFile(file); if (taskErr) setTaskErr(""); }}
+                onScanError={setTaskErr}
+                documentType="tasking-letter"
+                disabled={taskSaving}
+              />
               <ErrMsg msg={taskErr} />
               <button
                 type="submit"
@@ -3582,18 +3737,18 @@ export default function Cases({ user, criminalTypeFilter }) {
           onClick={closeCaseForm}
         >
           <div
-            className="w-full max-w-xl bg-gray-800 rounded-2xl p-6 space-y-4 relative"
+            className="w-full max-w-xl bg-white rounded-2xl p-6 space-y-4 relative text-slate-900 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
               onClick={closeCaseForm}
-              className="absolute top-4 right-4 text-gray-500 hover:text-white transition-colors"
+              className="absolute top-4 right-4 text-slate-500 hover:text-slate-900 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-            <h3 className="text-lg font-semibold text-white">
+            <h3 className="text-lg font-semibold text-slate-950">
               {caseFormMode === "edit" ? `Edit ${selected?.case_number || "Case"}` : "New Case"}
             </h3>
 
@@ -3601,18 +3756,18 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div className="grid grid-cols-2 gap-3">
 
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Case Title</label>
+                  <CaseFormLabel>Case Title</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.title}
                     onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
                     placeholder="Short case title"
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 placeholder-gray-500"
+                    className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Offence</label>
+                  <CaseFormLabel>Offence</CaseFormLabel>
                   {offences.length > 0 ? (
                     <select
                       value={createForm.offence_ref}
@@ -3624,7 +3779,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                           offence: selected ? selected.name : "",
                         }));
                       }}
-                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select offence…</option>
                       {offences
@@ -3640,17 +3795,17 @@ export default function Cases({ user, criminalTypeFilter }) {
                       value={createForm.offence}
                       onChange={(e) => setCreateForm((f) => ({ ...f, offence: e.target.value }))}
                       placeholder="No offences defined yet — type manually"
-                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 placeholder-gray-500"
+                      className={CASE_FORM_CONTROL}
                     />
                   )}
                 </div>
 
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1">Offence Type</label>
+                  <CaseFormLabel>Offence Type</CaseFormLabel>
                   <select
                     value={createForm.offence_type}
                     onChange={(e) => setCreateForm((f) => ({ ...f, offence_type: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                    className={CASE_FORM_CONTROL}
                   >
                     <option value="">Select…</option>
                     <option value="service_offence">Service Offence</option>
@@ -3660,11 +3815,11 @@ export default function Cases({ user, criminalTypeFilter }) {
 
                 {createForm.offence_type === "service_offence" && (
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Severity</label>
+                    <CaseFormLabel>Severity</CaseFormLabel>
                     <select
                       value={createForm.service_offence_severity}
                       onChange={(e) => setCreateForm((f) => ({ ...f, service_offence_severity: e.target.value }))}
-                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select…</option>
                       <option value="serious">Serious</option>
@@ -3675,11 +3830,11 @@ export default function Cases({ user, criminalTypeFilter }) {
 
                 {createForm.offence_type === "criminal_offence" && (
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Criminal Offence Type</label>
+                    <CaseFormLabel>Criminal Offence Type</CaseFormLabel>
                     <select
                       value={createForm.criminal_offence_type}
                       onChange={(e) => setCreateForm((f) => ({ ...f, criminal_offence_type: e.target.value }))}
-                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select…</option>
                       <option value="dci_civ_police">DCI / Civ Police</option>
@@ -3689,12 +3844,12 @@ export default function Cases({ user, criminalTypeFilter }) {
                 )}
 
                 <div className="col-span-2">
-                  <SectionLabel>Accused entries (optional)</SectionLabel>
+                  <CaseFormSectionLabel>Accused entries (optional)</CaseFormSectionLabel>
                   <div className="space-y-3">
                     {createForm.accused_entries.map((accused, idx) => (
-                      <div key={idx} className="rounded-xl border border-gray-700 bg-gray-900/70 p-3">
+                      <div key={idx} className="rounded-xl border border-slate-300 bg-slate-100 p-3 shadow-sm">
                         <div className="flex items-center justify-between gap-3 mb-3">
-                          <p className="text-sm font-semibold text-white">Accused #{idx + 1}</p>
+                          <p className="text-sm font-semibold text-slate-950">Accused #{idx + 1}</p>
                           {createForm.accused_entries.length > 1 && (
                             <button
                               type="button"
@@ -3702,7 +3857,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                                 ...f,
                                 accused_entries: f.accused_entries.filter((_, index) => index !== idx),
                               }))}
-                              className="text-xs text-red-300 hover:text-red-100"
+                              className="text-xs font-medium text-red-600 hover:text-red-700"
                             >
                               Remove
                             </button>
@@ -3710,7 +3865,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <label className="text-xs text-gray-400 block mb-1">Name</label>
+                            <CaseFormLabel>Name</CaseFormLabel>
                             <input
                               type="text"
                               value={accused.name}
@@ -3720,11 +3875,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                                   index === idx ? { ...entry, name: e.target.value } : entry
                                 ),
                               }))}
-                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                              className={CASE_FORM_CONTROL}
                             />
                           </div>
                           <div>
-                            <label className="text-xs text-gray-400 block mb-1">Rank</label>
+                            <CaseFormLabel>Rank</CaseFormLabel>
                             <select
                               value={accused.rank}
                               onChange={(e) => setCreateForm((f) => ({
@@ -3733,7 +3888,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                                   index === idx ? { ...entry, rank: e.target.value } : entry
                                 ),
                               }))}
-                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                              className={CASE_FORM_CONTROL}
                             >
                               <option value="">Select rank...</option>
                               {ALL_RANKS.map((rank) => (
@@ -3742,7 +3897,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                             </select>
                           </div>
                           <div>
-                            <label className="text-xs text-gray-400 block mb-1">Service #</label>
+                            <CaseFormLabel>Service #</CaseFormLabel>
                             <input
                               type="text"
                               value={accused.service_number}
@@ -3752,20 +3907,20 @@ export default function Cases({ user, criminalTypeFilter }) {
                                   index === idx ? { ...entry, service_number: e.target.value } : entry
                                 ),
                               }))}
-                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                              className={CASE_FORM_CONTROL}
                             />
                           </div>
                           <div>
-                            <label className="text-xs text-gray-400 block mb-1">Service</label>
+                            <CaseFormLabel>Service</CaseFormLabel>
                             <select
                               value={accused.service}
                               onChange={(e) => setCreateForm((f) => ({
                                 ...f,
                                 accused_entries: f.accused_entries.map((entry, index) =>
-                                  index === idx ? { ...entry, service: e.target.value } : entry
+                                  index === idx ? { ...entry, service: e.target.value, unit: "" } : entry
                                 ),
                               }))}
-                              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                              className={CASE_FORM_CONTROL}
                             >
                               <option value="">Select…</option>
                               <option value="KA">KA</option>
@@ -3774,24 +3929,20 @@ export default function Cases({ user, criminalTypeFilter }) {
                             </select>
                           </div>
                         </div>
-                        <div>
-                          <label className="text-xs text-gray-400 block mb-1">Unit</label>
-                          <select
-                            value={accused.unit}
-                            onChange={(e) => setCreateForm((f) => ({
-                              ...f,
-                              accused_entries: f.accused_entries.map((entry, index) =>
-                                index === idx ? { ...entry, unit: e.target.value } : entry
-                              ),
-                            }))}
-                            className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                          >
-                            <option value="">Select unit…</option>
-                            {units.map((u) => (
-                              <option key={u.id} value={u.id}>{u.name}</option>
-                            ))}
-                          </select>
-                        </div>
+
+                        <UnitAutocomplete
+                          label="Unit"
+                          units={units}
+                          value={accused.unit}
+                          serviceFilter={accused.service}
+                          onChange={(value) => setCreateForm((f) => ({
+                            ...f,
+                            accused_entries: f.accused_entries.map((entry, index) =>
+                              index === idx ? { ...entry, unit: value } : entry
+                            ),
+                          }))}
+                          placeholder="Type unit name, code, service, or location..."
+                        />
                       </div>
                     ))}
                     <button
@@ -3800,56 +3951,51 @@ export default function Cases({ user, criminalTypeFilter }) {
                         ...f,
                         accused_entries: [...(f.accused_entries || []), INIT_ACCUSED_ENTRY],
                       }))}
-                      className="inline-flex items-center gap-2 rounded-lg border border-gray-600 px-3 py-2 text-xs text-gray-200 hover:border-gray-500 hover:bg-gray-700/80"
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:border-slate-400 hover:bg-slate-50"
                     >
                       Add another accused
                     </button>
-                    <p className="text-xs text-gray-400">Leave accused fields blank if the accused is not yet identified.</p>
+                    <p className="text-xs text-slate-500">Leave accused fields blank if the accused is not yet identified.</p>
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Submitting Unit</label>
-                  <select
-                    value={createForm.submitting_unit}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, submitting_unit: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                  >
-                    <option value="">Select unit…</option>
-                    {units.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
-                </div>
+
+                <UnitAutocomplete
+                  label="Submitting Unit"
+                  units={units}
+                  value={createForm.submitting_unit}
+                  onChange={(value) => setCreateForm((f) => ({ ...f, submitting_unit: value }))}
+                  placeholder="Type submitting unit..."
+                />
 
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1">Date of Offence</label>
+                  <CaseFormLabel>Date of Offence</CaseFormLabel>
                   <input
                     type="date"
                     value={createForm.date_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, date_of_offence: e.target.value }))}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                    className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Place of Offence</label>
+                  <CaseFormLabel>Place of Offence</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.place_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, place_of_offence: e.target.value }))}
                     placeholder="e.g. Embakasi, Kahawa, barracks, office, road, or scene"
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 placeholder-gray-500"
+                    className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <label className="text-xs text-gray-400 block mb-1">Description</label>
+                  <CaseFormLabel>Description</CaseFormLabel>
                   <textarea
                     value={createForm.description}
                     onChange={(e) => setCreateForm((f) => ({ ...f, description: e.target.value }))}
                     rows={3}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2 resize-none"
+                    className={`${CASE_FORM_CONTROL} resize-none`}
                   />
                 </div>
 
@@ -3861,7 +4007,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <button
                   type="button"
                   onClick={closeCaseForm}
-                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors"
+                  className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-sm transition-colors"
                 >
                   Cancel
                 </button>

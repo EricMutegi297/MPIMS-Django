@@ -69,6 +69,8 @@ export default function Formations({ user, mode = "formations" }) {
   const [unitQuery, setUnitQuery] = useState("");
   const [unitFormationFilter, setUnitFormationFilter] = useState("");
   const [unitServiceFilter, setUnitServiceFilter] = useState("");
+  const [formationVisibleLimit, setFormationVisibleLimit] = useState(25);
+  const [unitVisibleLimit, setUnitVisibleLimit] = useState(50);
   useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
 
@@ -119,19 +121,33 @@ export default function Formations({ user, mode = "formations" }) {
         unit.mobile_no,
         unit.location_county,
       ].some((value) => searchable(value).includes(query));
-      const matchesFormation = !unitFormationFilter || String(unit.formation) === String(unitFormationFilter);
+      const matchesFormation = !unitFormationFilter
+        || (unitFormationFilter === "__none__" && !unit.formation)
+        || String(unit.formation) === String(unitFormationFilter);
       const matchesService = !unitServiceFilter || String(unit.service) === String(unitServiceFilter);
       return matchesSearch && matchesFormation && matchesService;
     });
   }, [units, unitQuery, unitFormationFilter, unitServiceFilter]);
 
+  const serviceCounts = useMemo(() => SERVICES.map((service) => ({
+    ...service,
+    count: units.filter((unit) => unit.service === service.value).length,
+  })), [units]);
+  const ungroupedUnitCount = useMemo(() => units.filter((unit) => !unit.formation).length, [units]);
+  const visibleFormationsForTable = filteredFormations.slice(0, formationVisibleLimit);
+  const visibleUnitsForTable = filteredUnits.slice(0, unitVisibleLimit);
+
   const hasFormationFilter = Boolean(formationQuery.trim());
   const hasUnitFilter = Boolean(unitQuery.trim() || unitFormationFilter || unitServiceFilter);
-  const clearFormationFilters = () => setFormationQuery("");
+  const clearFormationFilters = () => {
+    setFormationQuery("");
+    setFormationVisibleLimit(25);
+  };
   const clearUnitFilters = () => {
     setUnitQuery("");
     setUnitFormationFilter("");
     setUnitServiceFilter("");
+    setUnitVisibleLimit(50);
   };
 
   const loadAll = useCallback(async () => {
@@ -658,7 +674,7 @@ export default function Formations({ user, mode = "formations" }) {
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No formations found.</td></tr>
             ) : filteredFormations.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching formations found.</td></tr>
-            ) : filteredFormations.map((f) => {
+            ) : visibleFormationsForTable.map((f) => {
               const fUnits = units.filter((u) => String(u.formation) === String(f.id));
               return (
                 <tr key={f.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
@@ -676,6 +692,17 @@ export default function Formations({ user, mode = "formations" }) {
             })}
           </tbody>
         </table>
+        {filteredFormations.length > visibleFormationsForTable.length && (
+          <div className="border-t border-gray-700 px-4 py-3 text-center">
+            <button
+              type="button"
+              onClick={() => setFormationVisibleLimit((limit) => limit + 25)}
+              className="rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700"
+            >
+              Show more formations ({filteredFormations.length - visibleFormationsForTable.length} remaining)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── UNITS ── */}
@@ -692,27 +719,72 @@ export default function Formations({ user, mode = "formations" }) {
           </button>
         </div>
         <div className="px-4 py-3 border-b border-gray-700 bg-gray-900/30">
+          <div className="mb-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+            {serviceCounts.map((service) => (
+              <button
+                key={service.value}
+                type="button"
+                onClick={() => {
+                  setUnitServiceFilter((current) => current === service.value ? "" : service.value);
+                  setUnitVisibleLimit(50);
+                }}
+                className={`rounded border px-3 py-2 text-left transition-colors ${
+                  unitServiceFilter === service.value
+                    ? "border-blue-500 bg-blue-600/20 text-blue-200"
+                    : "border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600"
+                }`}
+              >
+                <span className="block font-semibold">{service.value}</span>
+                <span className="text-gray-400">{service.count} units</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setUnitFormationFilter((current) => current === "__none__" ? "" : "__none__");
+                setUnitVisibleLimit(50);
+              }}
+              className={`rounded border px-3 py-2 text-left transition-colors ${
+                unitFormationFilter === "__none__"
+                  ? "border-amber-500 bg-amber-600/20 text-amber-200"
+                  : "border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600"
+              }`}
+            >
+              <span className="block font-semibold">Service-level</span>
+              <span className="text-gray-400">{ungroupedUnitCount} units</span>
+            </button>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-[minmax(220px,1fr)_minmax(180px,240px)_minmax(150px,180px)_auto] gap-2">
             <input
               type="search"
               value={unitQuery}
-              onChange={(event) => setUnitQuery(event.target.value)}
+              onChange={(event) => {
+                setUnitQuery(event.target.value);
+                setUnitVisibleLimit(50);
+              }}
               placeholder="Search units by name, code, contact, county..."
               className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
             />
             <select
               value={unitFormationFilter}
-              onChange={(event) => setUnitFormationFilter(event.target.value)}
+              onChange={(event) => {
+                setUnitFormationFilter(event.target.value);
+                setUnitVisibleLimit(50);
+              }}
               className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
             >
               <option value="">All formations</option>
+              <option value="__none__">No formation / service-level</option>
               {formations.map((formation) => (
                 <option key={formation.id} value={String(formation.id)}>{formation.name}</option>
               ))}
             </select>
             <select
               value={unitServiceFilter}
-              onChange={(event) => setUnitServiceFilter(event.target.value)}
+              onChange={(event) => {
+                setUnitServiceFilter(event.target.value);
+                setUnitVisibleLimit(50);
+              }}
               className="bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500"
             >
               <option value="">All services</option>
@@ -747,10 +819,10 @@ export default function Formations({ user, mode = "formations" }) {
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No units found.</td></tr>
             ) : filteredUnits.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No matching units found.</td></tr>
-            ) : filteredUnits.map((u) => (
+            ) : visibleUnitsForTable.map((u) => (
               <tr key={u.id} className="border-t border-gray-700 hover:bg-gray-700/30 transition-colors">
                 <td className="px-4 py-2 text-white font-medium">{u.name}</td>
-                <td className="px-4 py-2 text-gray-300">{u.formation_name || "—"}</td>
+                <td className="px-4 py-2 text-gray-300">{u.formation_name || "Service-level"}</td>
                 <td className="px-4 py-2 text-gray-300">{u.service || "—"}</td>
                 <td className="px-4 py-2">
                   <div className="flex gap-3">
@@ -767,6 +839,17 @@ export default function Formations({ user, mode = "formations" }) {
             ))}
           </tbody>
         </table>
+        {filteredUnits.length > visibleUnitsForTable.length && (
+          <div className="border-t border-gray-700 px-4 py-3 text-center">
+            <button
+              type="button"
+              onClick={() => setUnitVisibleLimit((limit) => limit + 50)}
+              className="rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-700"
+            >
+              Show more units ({filteredUnits.length - visibleUnitsForTable.length} remaining)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── MODALS ── */}
@@ -919,15 +1002,22 @@ function CompanyModal({ mode = "add", initial, saving, onSave, onClose }) {
 function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const isArmyUnit = form.service === "KA";
+  const canSave = !!form.name?.trim() && (!isArmyUnit || !!form.formation);
   return (
     <ModalWrap title={mode === "add" ? "Add Unit" : "Edit Unit"} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
         <FInput label="Unit Name *" value={form.name || ""} onChange={s("name")} required />
         <FInput label="Code"        value={form.code || ""} onChange={s("code")} />
         <div>
-          <label className="text-xs text-gray-400">Formation *</label>
-          <select value={form.formation} onChange={s("formation")} required
-            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
+          <label className="text-xs text-gray-400">Formation {isArmyUnit ? "*" : "(Army only)"}</label>
+          <select
+            value={form.formation}
+            onChange={s("formation")}
+            required={isArmyUnit}
+            disabled={!isArmyUnit}
+            className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
             <option value="">Select formation…</option>
             {formations.map((f) => (
               <option key={f.id} value={String(f.id)}>{f.name}</option>
@@ -936,7 +1026,13 @@ function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
         </div>
         <div>
           <label className="text-xs text-gray-400">Service</label>
-          <select value={form.service} onChange={s("service")}
+          <select
+            value={form.service}
+            onChange={(event) => setForm((current) => ({
+              ...current,
+              service: event.target.value,
+              formation: event.target.value === "KA" ? current.formation : "",
+            }))}
             className="mt-1 w-full bg-gray-700 text-white text-sm px-3 py-2 rounded border border-gray-600 focus:outline-none focus:border-blue-500">
             {SERVICES.map((sv) => (
               <option key={sv.value} value={sv.value}>{sv.label}</option>
@@ -946,7 +1042,12 @@ function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
         <FInput label="Mobile No"         value={form.mobile_no || ""}       onChange={s("mobile_no")} />
         <FInput label="Email" type="email" value={form.email || ""}           onChange={s("email")} />
         <FInput label="Location / County" value={form.location_county || ""} onChange={s("location_county")} />
-        <SaveCancel saving={saving} canSave={!!form.name?.trim() && !!form.formation} mode={mode} onClose={onClose} />
+        {!isArmyUnit && (
+          <p className="text-[11px] text-gray-500">
+            Air Force and Navy units are kept as service-level units, not under Army formations.
+          </p>
+        )}
+        <SaveCancel saving={saving} canSave={canSave} mode={mode} onClose={onClose} />
       </form>
     </ModalWrap>
   );
