@@ -135,6 +135,16 @@ export default function Overview({ user }) {
     await reloadUnitDirectory();
   };
 
+  const handleUpdateUnit = async (id, payload) => {
+    await formationService.updateUnit(id, payload);
+    await reloadUnitDirectory();
+  };
+
+  const handleDeleteUnit = async (id) => {
+    await formationService.deleteUnit(id);
+    await reloadUnitDirectory();
+  };
+
   const roleLabel = isSuperuser ? "Superuser" : ROLE_LABELS[user?.role] || user?.role;
   const today = new Date().toLocaleDateString("en-GB", {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
@@ -412,6 +422,8 @@ export default function Overview({ user }) {
           loading={loading}
           onClose={() => setUnitDirectoryOpen(false)}
           onCreate={handleCreateUnit}
+          onUpdate={handleUpdateUnit}
+          onDelete={handleDeleteUnit}
         />
       )}
 
