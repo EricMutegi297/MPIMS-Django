@@ -15,6 +15,11 @@ def case_extra_attachment_path(instance, filename):
     return f"cases/{case_ref}/extra/{filename}"
 
 
+def court_martial_attachment_path(instance, filename):
+    case_ref = instance.milestone.case.case_number or "draft"
+    return f"cases/{case_ref}/court-martial/{filename}"
+
+
 def case_activity_reference_path(instance, filename):
     case_ref = instance.case.case_number or "draft"
     return f"cases/{case_ref}/activity/{filename}"
