@@ -178,16 +178,21 @@ export default function Formations({ user, mode = "formations" }) {
   // ── Formation CRUD ──
   const saveFormation = async (form) => {
     setFmSaving(true); setError(""); setMessage("");
+    const adding = fmModal.mode === "add";
     try {
-      if (fmModal.mode === "add") {
+      if (adding) {
         await formationService.createFormation(form);
         setMessage("Formation created.");
       } else {
         await formationService.updateFormation(fmModal.data.id, form);
         setMessage("Formation updated.");
       }
-      setFmModal(null);
       await loadAll();
+      if (adding && window.confirm("Formation created successfully. Add another formation?")) {
+        setFmModal({ mode: "add", data: { ...EMPTY_FORMATION }, key: Date.now() });
+      } else {
+        setFmModal(null);
+      }
     } catch (err) {
       setError(err.response?.data?.name?.[0] || err.response?.data?.detail || "Failed to save formation.");
     } finally {
@@ -334,17 +339,22 @@ export default function Formations({ user, mode = "formations" }) {
 
   const saveUnit = async (form) => {
     setUnitSaving(true); setError(""); setMessage("");
+    const adding = unitModal.mode === "add";
     try {
       const payload = { ...form, formation: form.formation ? Number(form.formation) : null };
-      if (unitModal.mode === "add") {
+      if (adding) {
         await formationService.createUnit(payload);
         setMessage("Unit created.");
       } else {
         await formationService.updateUnit(unitModal.data.id, payload);
         setMessage("Unit updated.");
       }
-      setUnitModal(null);
       await loadAll();
+      if (adding && window.confirm("Unit created successfully. Add another unit?")) {
+        setUnitModal({ mode: "add", data: { ...EMPTY_UNIT, service: form.service || "KA" }, key: Date.now() });
+      } else {
+        setUnitModal(null);
+      }
     } catch (err) {
       const d = err.response?.data;
       setError(d?.name?.[0] || d?.detail || "Failed to save unit.");
@@ -853,8 +863,8 @@ export default function Formations({ user, mode = "formations" }) {
       </div>
 
       {/* ── MODALS ── */}
-      {fmModal    && <FormationModal mode={fmModal.mode}   initial={fmModal.data}   saving={fmSaving}   onSave={saveFormation} onClose={() => setFmModal(null)} />}
-      {unitModal  && <UnitModal      mode={unitModal.mode} initial={unitModal.data} saving={unitSaving} formations={formations} onSave={saveUnit} onClose={() => setUnitModal(null)} />}
+      {fmModal    && <FormationModal key={fmModal.key || `${fmModal.mode}-${fmModal.data?.id || "new"}`} mode={fmModal.mode}   initial={fmModal.data}   saving={fmSaving}   onSave={saveFormation} onClose={() => setFmModal(null)} />}
+      {unitModal  && <UnitModal      key={unitModal.key || `${unitModal.mode}-${unitModal.data?.id || unitModal.data?.service || "new"}`} mode={unitModal.mode} initial={unitModal.data} saving={unitSaving} formations={formations} onSave={saveUnit} onClose={() => setUnitModal(null)} />}
       {fmDeleteId   && <ConfirmDelete label="formation" onConfirm={deleteFormation} onCancel={() => setFmDeleteId(null)} />}
       {unitDeleteId && <ConfirmDelete label="unit"       onConfirm={deleteUnit}      onCancel={() => setUnitDeleteId(null)} />}
     </div>

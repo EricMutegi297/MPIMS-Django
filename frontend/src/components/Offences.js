@@ -51,11 +51,19 @@ export default function Offences({ user }) {
       if (editingId) {
         await offenceService.update(editingId, form);
         setNotice("Offence updated.");
+        resetForm();
       } else {
         await offenceService.create(form);
         setNotice("Offence added.");
+        await loadOffences();
+        const addAnother = window.confirm("Offence saved successfully. Add another offence?");
+        resetForm();
+        if (addAnother) {
+          setForm(EMPTY_FORM);
+          setEditingId(null);
+        }
+        return;
       }
-      resetForm();
       await loadOffences();
     } catch {
       setError("Failed to save offence.");

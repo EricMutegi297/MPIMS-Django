@@ -1514,13 +1514,17 @@ export default function Cases({ user, criminalTypeFilter }) {
         const res = await caseService.update(selected.id, fd);
         refreshSelected(res.data);
         showToast("Case updated successfully.", "success");
+        setShowCreate(false);
+        setCreateForm(INIT_CREATE);
+        setCaseFormMode("create");
       } else {
         await caseService.create(fd);
         showToast("Case created successfully.", "success");
+        const addAnother = window.confirm("Case created successfully. Add another case?");
+        setCreateForm(INIT_CREATE);
+        setCaseFormMode("create");
+        setShowCreate(addAnother);
       }
-      setShowCreate(false);
-      setCreateForm(INIT_CREATE);
-      setCaseFormMode("create");
       loadCases();
     } catch (err) {
       const d = err.response?.data;

@@ -19,6 +19,7 @@ const Users = lazy(() => import("./Users"));
 const Notifications = lazy(() => import("./Notifications"));
 const AuditLogs = lazy(() => import("./AuditLogs"));
 const Formations = lazy(() => import("./Formations"));
+const UnitDirectory = lazy(() => import("./UnitDirectory"));
 const Offences = lazy(() => import("./Offences"));
 const OffenceModal = lazy(() => import("./OffenceModal"));
 const ChangePassword = lazy(() => import("./ChangePassword"));
@@ -233,6 +234,14 @@ function getNavItems(user) {
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 01-8 0M12 3v4m0 0a4 4 0 01-4 4H7a4 4 0 01-4-4V7a4 4 0 014-4h1a4 4 0 014 4z" />
+        </svg>
+      ),
+    },
+    {
+      key: "units", label: "Units", path: "/dashboard/units", show: isSuperuser,
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01" />
         </svg>
       ),
     },
@@ -853,6 +862,7 @@ export default function Dashboard() {
             <Route path="/battalions" element={<Formations user={user} mode="battalions" />} />
             <Route path="/Battalions" element={<Formations user={user} mode="battalions" />} />
             <Route path="/formations" element={<Formations user={user} mode="formations" />} />
+            <Route path="/units" element={<UnitDirectory user={user} />} />
             <Route path="/formations-btn" element={<Offences user={user} />} />
             <Route
               path="/notifications"

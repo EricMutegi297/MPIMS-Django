@@ -65,10 +65,21 @@ export default function OffenceModal({
       const payload = { category: finalCategory, name: name.trim() };
       if (editing) {
         await onUpdate?.(editing.id, payload);
+        resetForm();
       } else {
         await onSave?.(payload);
+        const addAnother = window.confirm("Offence saved successfully. Add another offence?");
+        if (addAnother) {
+          setCategory("");
+          setCategoryInput("");
+          setName("");
+          setEditing(null);
+          setShowForm(true);
+          setError("");
+        } else {
+          resetForm();
+        }
       }
-      resetForm();
     } catch {
       setError(`Failed to ${editing ? "update" : "save"} offence.`);
     } finally {
