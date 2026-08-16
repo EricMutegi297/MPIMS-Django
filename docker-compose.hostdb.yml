@@ -17,7 +17,11 @@ services:
       CSRF_TRUSTED_ORIGINS: https://marshal.mod.go.ke,http://192.168.90.244:3000,http://localhost:3000
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_API_URL: https://marshal.mod.go.ke
+        REACT_APP_WS_URL: https://marshal.mod.go.ke
     restart: unless-stopped
     ports:
       - "3000:80"
