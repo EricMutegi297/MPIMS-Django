@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { offenceService } from "../services/api";
 import ActionModal from "./common/ActionModal";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 const EMPTY_FORM = { category: "", name: "" };
 
@@ -19,6 +20,7 @@ export default function Offences({ user }) {
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
 
   const loadOffences = useCallback(async () => {
     setLoading(true);
@@ -41,6 +43,17 @@ export default function Offences({ user }) {
     setEditingId(null);
   };
 
+  const confirmAddAnother = () => {
+    setAddAnotherPrompt(null);
+    setForm(EMPTY_FORM);
+    setEditingId(null);
+  };
+
+  const finishAddAnother = () => {
+    setAddAnotherPrompt(null);
+    resetForm();
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!isSuperuser) return;
@@ -56,12 +69,12 @@ export default function Offences({ user }) {
         await offenceService.create(form);
         setNotice("Offence added.");
         await loadOffences();
-        const addAnother = window.confirm("Offence saved successfully. Add another offence?");
         resetForm();
-        if (addAnother) {
-          setForm(EMPTY_FORM);
-          setEditingId(null);
-        }
+        setAddAnotherPrompt({
+          itemLabel: "offence",
+          message: "The offence has been added to the offence register.",
+          addLabel: "Add Another Offence",
+        });
         return;
       }
       await loadOffences();
@@ -221,6 +234,13 @@ export default function Offences({ user }) {
             <p className="mt-1 text-slate-600">{deleteTarget.category}</p>
           </div>
         </ActionModal>
+      )}
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnother}
+          onDone={finishAddAnother}
+        />
       )}
     </div>
   );

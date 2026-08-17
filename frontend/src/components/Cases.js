@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -886,6 +887,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [caseDeleteTarget, setCaseDeleteTarget] = useState(null);
   const [createSaving, setCreateSaving] = useState(false);
   const [createErr, setCreateErr]     = useState("");
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
 
   // Task form
   const [showTask, setShowTask]       = useState(false);
@@ -1520,10 +1522,14 @@ export default function Cases({ user, criminalTypeFilter }) {
       } else {
         await caseService.create(fd);
         showToast("Case created successfully.", "success");
-        const addAnother = window.confirm("Case created successfully. Add another case?");
         setCreateForm(INIT_CREATE);
         setCaseFormMode("create");
-        setShowCreate(addAnother);
+        setShowCreate(false);
+        setAddAnotherPrompt({
+          itemLabel: "case",
+          message: "The case has been created and added to the case register.",
+          addLabel: "Add Another Case",
+        });
       }
       loadCases();
     } catch (err) {
@@ -2149,6 +2155,21 @@ export default function Cases({ user, criminalTypeFilter }) {
     setCreateForm(INIT_CREATE);
     setCaseFormMode("create");
     setShowCreate(true);
+  }
+
+  function confirmAddAnotherCase() {
+    setAddAnotherPrompt(null);
+    setCreateErr("");
+    setCreateForm(INIT_CREATE);
+    setCaseFormMode("create");
+    setShowCreate(true);
+  }
+
+  function finishAddAnotherCase() {
+    setAddAnotherPrompt(null);
+    setCreateForm(INIT_CREATE);
+    setCaseFormMode("create");
+    setShowCreate(false);
   }
 
   function openEditCaseModal(caseObj) {
@@ -4036,6 +4057,14 @@ export default function Cases({ user, criminalTypeFilter }) {
           saving={rowActionSavingId === caseDeleteTarget.id}
           onCancel={() => setCaseDeleteTarget(null)}
           onConfirm={handleDeleteCase}
+        />
+      )}
+
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnotherCase}
+          onDone={finishAddAnotherCase}
         />
       )}
 

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import ActionModal from "./common/ActionModal";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 export default function OffenceModal({
   open,
@@ -19,6 +20,7 @@ export default function OffenceModal({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
   const isSuperuser = !!user?.is_superuser;
 
   if (!open) return null;
@@ -55,6 +57,21 @@ export default function OffenceModal({
     setError("");
   };
 
+  const confirmAddAnother = () => {
+    setAddAnotherPrompt(null);
+    setCategory("");
+    setCategoryInput("");
+    setName("");
+    setEditing(null);
+    setShowForm(true);
+    setError("");
+  };
+
+  const finishAddAnother = () => {
+    setAddAnotherPrompt(null);
+    resetForm();
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     const finalCategory = category === "__new__" ? categoryInput.trim() : category;
@@ -68,17 +85,12 @@ export default function OffenceModal({
         resetForm();
       } else {
         await onSave?.(payload);
-        const addAnother = window.confirm("Offence saved successfully. Add another offence?");
-        if (addAnother) {
-          setCategory("");
-          setCategoryInput("");
-          setName("");
-          setEditing(null);
-          setShowForm(true);
-          setError("");
-        } else {
-          resetForm();
-        }
+        resetForm();
+        setAddAnotherPrompt({
+          itemLabel: "offence",
+          message: "The offence has been added to the offence register.",
+          addLabel: "Add Another Offence",
+        });
       }
     } catch {
       setError(`Failed to ${editing ? "update" : "save"} offence.`);
@@ -277,6 +289,13 @@ export default function OffenceModal({
             <p className="mt-1 text-slate-600">{deleteTarget.category}</p>
           </div>
         </ActionModal>
+      )}
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnother}
+          onDone={finishAddAnother}
+        />
       )}
     </>
   );

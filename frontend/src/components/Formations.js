@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function toArr(data) {
@@ -65,6 +66,7 @@ export default function Formations({ user, mode = "formations" }) {
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState("");
   const [message,    setMessage]    = useState("");
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
   const [formationQuery, setFormationQuery] = useState("");
   const [unitQuery, setUnitQuery] = useState("");
   const [unitFormationFilter, setUnitFormationFilter] = useState("");
@@ -99,6 +101,18 @@ export default function Formations({ user, mode = "formations" }) {
   const visibleBattalions = battalions.filter(
     (b) => isSuperAdmin || String(b?.battalion_type || "").toLowerCase() !== "hqs"
   );
+
+  const confirmAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onAddAnother;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
+
+  const finishAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onDone;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
 
   const filteredFormations = useMemo(() => {
     const query = searchable(formationQuery);
@@ -188,8 +202,14 @@ export default function Formations({ user, mode = "formations" }) {
         setMessage("Formation updated.");
       }
       await loadAll();
-      if (adding && window.confirm("Formation created successfully. Add another formation?")) {
-        setFmModal({ mode: "add", data: { ...EMPTY_FORMATION }, key: Date.now() });
+      if (adding) {
+        setFmModal(null);
+        setAddAnotherPrompt({
+          itemLabel: "formation",
+          message: "The formation has been added to the directory.",
+          addLabel: "Add Another Formation",
+          onAddAnother: () => setFmModal({ mode: "add", data: { ...EMPTY_FORMATION }, key: Date.now() }),
+        });
       } else {
         setFmModal(null);
       }
@@ -309,15 +329,22 @@ export default function Formations({ user, mode = "formations" }) {
       }
       const loaded = await loadAll();
       if (loaded?.battalions) syncDetachmentView(loaded.battalions);
-      if (adding && window.confirm("Company created successfully. Add another Coy?")) {
-        setDetModal({
-          mode: "add",
-          data: {
-            ...EMPTY_DETACHMENT,
-            battalion: String(payload.battalion),
-            battalionName: form.battalionName || "Battalion",
-          },
-          key: Date.now(),
+      if (adding) {
+        setDetModal(null);
+        setAddAnotherPrompt({
+          itemLabel: "Coy",
+          message: "The Coy has been added to the selected battalion.",
+          detail: form.battalionName || "Selected Battalion",
+          addLabel: "Add Another Coy",
+          onAddAnother: () => setDetModal({
+            mode: "add",
+            data: {
+              ...EMPTY_DETACHMENT,
+              battalion: String(payload.battalion),
+              battalionName: form.battalionName || "Battalion",
+            },
+            key: Date.now(),
+          }),
         });
       } else {
         setDetModal(null);
@@ -363,8 +390,14 @@ export default function Formations({ user, mode = "formations" }) {
         setMessage("Unit updated.");
       }
       await loadAll();
-      if (adding && window.confirm("Unit created successfully. Add another unit?")) {
-        setUnitModal({ mode: "add", data: { ...EMPTY_UNIT, service: form.service || "KA" }, key: Date.now() });
+      if (adding) {
+        setUnitModal(null);
+        setAddAnotherPrompt({
+          itemLabel: "unit",
+          message: "The unit has been added to the directory.",
+          addLabel: "Add Another Unit",
+          onAddAnother: () => setUnitModal({ mode: "add", data: { ...EMPTY_UNIT, service: form.service || "KA" }, key: Date.now() }),
+        });
       } else {
         setUnitModal(null);
       }
@@ -635,6 +668,13 @@ export default function Formations({ user, mode = "formations" }) {
             onCancel={() => setDetDeleteId(null)}
           />
         )}
+        {addAnotherPrompt && (
+          <AddAnotherModal
+            {...addAnotherPrompt}
+            onAddAnother={confirmAddAnother}
+            onDone={finishAddAnother}
+          />
+        )}
       </div>
     );
   }
@@ -881,6 +921,13 @@ export default function Formations({ user, mode = "formations" }) {
       {unitModal  && <UnitModal      key={unitModal.key || `${unitModal.mode}-${unitModal.data?.id || unitModal.data?.service || "new"}`} mode={unitModal.mode} initial={unitModal.data} saving={unitSaving} formations={formations} onSave={saveUnit} onClose={() => setUnitModal(null)} />}
       {fmDeleteId   && <ConfirmDelete label="formation" onConfirm={deleteFormation} onCancel={() => setFmDeleteId(null)} />}
       {unitDeleteId && <ConfirmDelete label="unit"       onConfirm={deleteUnit}      onCancel={() => setUnitDeleteId(null)} />}
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnother}
+          onDone={finishAddAnother}
+        />
+      )}
     </div>
   );
 }

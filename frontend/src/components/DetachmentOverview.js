@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import api from "../axiosConfig";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 /* ─────────────────────── constants ────────────────────────────── */
 
@@ -370,6 +371,7 @@ export default function DetachmentOverview({ user }) {
   const [companyModal, setCompanyModal]         = useState(null);
   const [companySaving, setCompanySaving]       = useState(false);
   const [companyDeleteId, setCompanyDeleteId]   = useState(null);
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
   useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
 
@@ -436,6 +438,18 @@ export default function DetachmentOverview({ user }) {
   const openDrill = (det, status) =>
     setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
 
+  const confirmAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onAddAnother;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
+
+  const finishAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onDone;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
+
   const openCompanyModal = (detachment = null) => {
     if (!selectedBattalionId) return;
     const fullDetachment = detachment
@@ -461,7 +475,8 @@ export default function DetachmentOverview({ user }) {
     setError("");
     setMessage("");
     try {
-      const { id, mode: formMode, key: modalKey, ...values } = form;
+      const { id, mode: formMode, ...values } = form;
+      delete values.key;
       const payload = {
         ...values,
         battalion: Number(selectedBattalionId),
@@ -476,11 +491,18 @@ export default function DetachmentOverview({ user }) {
       }
       await load();
       await loadBattalionOptions();
-      if (adding && window.confirm("Company created successfully. Add another Coy?")) {
-        setCompanyModal({
-          mode: "add",
-          ...EMPTY_COMPANY,
-          key: Date.now(),
+      if (adding) {
+        setCompanyModal(null);
+        setAddAnotherPrompt({
+          itemLabel: "Coy",
+          message: "The Coy has been added to the selected battalion.",
+          detail: selectedBattalionRecord?.name || "Selected Battalion",
+          addLabel: "Add Another Coy",
+          onAddAnother: () => setCompanyModal({
+            mode: "add",
+            ...EMPTY_COMPANY,
+            key: Date.now(),
+          }),
         });
       } else {
         setCompanyModal(null);
@@ -808,6 +830,13 @@ export default function DetachmentOverview({ user }) {
           label="company"
           onConfirm={deleteCompany}
           onCancel={() => setCompanyDeleteId(null)}
+        />
+      )}
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnother}
+          onDone={finishAddAnother}
         />
       )}
     </div>

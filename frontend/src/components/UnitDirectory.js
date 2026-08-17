@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { formationService } from "../services/api";
+import AddAnotherModal from "./common/AddAnotherModal";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -88,6 +89,7 @@ function UnitDirectoryContent({ units, formations, loading, onCreate, onUpdate, 
   const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
 
   const serviceCounts = useMemo(() => UNIT_SERVICES.map((service) => ({
     ...service,
@@ -106,6 +108,18 @@ function UnitDirectoryContent({ units, formations, loading, onCreate, onUpdate, 
   const isArmyUnit = form.service === "KA";
   const canSave = Boolean(form.name.trim()) && (!isArmyUnit || form.formation);
   const editing = mode === "edit" && editingUnit?.id;
+
+  const confirmAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onAddAnother;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
+
+  const finishAddAnother = () => {
+    const nextAction = addAnotherPrompt?.onDone;
+    setAddAnotherPrompt(null);
+    nextAction?.();
+  };
 
   const updateForm = (key) => (event) => {
     setForm((current) => ({ ...current, [key]: event.target.value }));
@@ -174,9 +188,17 @@ function UnitDirectoryContent({ units, formations, loading, onCreate, onUpdate, 
       } else {
         await onCreate(payload);
         setMessage(`${unitName} added successfully.`);
-        const addAnother = window.confirm("Unit created successfully. Add another unit?");
         setForm({ ...EMPTY_UNIT_FORM, service: currentService });
-        setMode(addAnother ? "form" : "list");
+        setMode("list");
+        setAddAnotherPrompt({
+          itemLabel: "unit",
+          message: `${unitName} has been added to the unit directory.`,
+          addLabel: "Add Another Unit",
+          onAddAnother: () => {
+            setForm({ ...EMPTY_UNIT_FORM, service: currentService });
+            setMode("form");
+          },
+        });
       }
       setQuery("");
       setServiceFilter("");
@@ -512,6 +534,13 @@ function UnitDirectoryContent({ units, formations, loading, onCreate, onUpdate, 
           </div>
         )}
       </div>
+      {addAnotherPrompt && (
+        <AddAnotherModal
+          {...addAnotherPrompt}
+          onAddAnother={confirmAddAnother}
+          onDone={finishAddAnother}
+        />
+      )}
     </div>
   );
 }
