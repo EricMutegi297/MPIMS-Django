@@ -15,6 +15,11 @@ class DetachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Detachment
         fields = ["id", "battalion", "company", "name", "aor", "mobile_no", "email", "case_count"]
+        extra_kwargs = {
+            "aor": {"required": False, "allow_blank": True},
+            "mobile_no": {"required": False, "allow_blank": True},
+            "email": {"required": False, "allow_blank": True},
+        }
 
 
 class UnitSerializer(serializers.ModelSerializer):

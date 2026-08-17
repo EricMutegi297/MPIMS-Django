@@ -76,7 +76,7 @@ class Detachment(models.Model):
     battalion = models.ForeignKey(Battalion, on_delete=models.CASCADE, related_name="detachments")
     company = models.CharField(max_length=1, choices=Company.choices)
     name = models.CharField(max_length=100)
-    aor = models.CharField(max_length=200)
+    aor = models.CharField(max_length=200, blank=True)
     mobile_no = models.CharField(max_length=30, blank=True)
     email = models.EmailField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

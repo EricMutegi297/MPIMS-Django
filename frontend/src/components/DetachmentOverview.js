@@ -840,14 +840,14 @@ function CompanyCreateModal({ mode = "add", battalionName, initial, saving, onSa
             </select>
           </div>
           <CompanyInput label="Company Name *" value={form.name || ""} onChange={s("name")} required />
-          <CompanyInput label="AOR *" value={form.aor || ""} onChange={s("aor")} required />
+          <CompanyInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
           <CompanyInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
           <CompanyInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
             <button
               type="submit"
-              disabled={saving || !form.company || !form.name?.trim() || !form.aor?.trim()}
+              disabled={saving || !form.company || !form.name?.trim()}
               className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}

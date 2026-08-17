@@ -995,12 +995,12 @@ function CompanyModal({ mode = "add", initial, saving, onSave, onClose }) {
           </select>
         </div>
         <FInput label="Company Name *" value={form.name || ""} onChange={s("name")} required />
-        <FInput label="AOR *" value={form.aor || ""} onChange={s("aor")} required />
+        <FInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
         <FInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
         <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
         <SaveCancel
           saving={saving}
-          canSave={!!form.battalion && !!form.company && !!form.name?.trim() && !!form.aor?.trim()}
+          canSave={!!form.battalion && !!form.company && !!form.name?.trim()}
           mode={mode}
           onClose={onClose}
         />
