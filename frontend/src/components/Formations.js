@@ -295,20 +295,33 @@ export default function Formations({ user, mode = "formations" }) {
 
   const saveDetachment = async (form) => {
     setDetSaving(true); setError(""); setMessage("");
+    const adding = detModal.mode === "add";
     try {
       const values = { ...form };
       delete values.battalionName;
       const payload = { ...values, battalion: Number(values.battalion) };
-      if (detModal.mode === "add") {
+      if (adding) {
         await formationService.createDetachment(payload);
         setMessage("Company created.");
       } else {
         await formationService.updateDetachment(detModal.data.id, payload);
         setMessage("Company updated.");
       }
-      setDetModal(null);
       const loaded = await loadAll();
       if (loaded?.battalions) syncDetachmentView(loaded.battalions);
+      if (adding && window.confirm("Company created successfully. Add another Coy?")) {
+        setDetModal({
+          mode: "add",
+          data: {
+            ...EMPTY_DETACHMENT,
+            battalion: String(payload.battalion),
+            battalionName: form.battalionName || "Battalion",
+          },
+          key: Date.now(),
+        });
+      } else {
+        setDetModal(null);
+      }
     } catch (err) {
       const d = err.response?.data;
       setError(
@@ -607,6 +620,7 @@ export default function Formations({ user, mode = "formations" }) {
         )}
         {detModal && (
           <CompanyModal
+            key={detModal.key || `${detModal.mode}-${detModal.data?.id || detModal.data?.battalion || "new"}`}
             mode={detModal.mode}
             initial={detModal.data}
             saving={detSaving}

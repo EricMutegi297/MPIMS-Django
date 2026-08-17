@@ -461,11 +461,12 @@ export default function DetachmentOverview({ user }) {
     setError("");
     setMessage("");
     try {
-      const { id, mode: formMode, ...values } = form;
+      const { id, mode: formMode, key: modalKey, ...values } = form;
       const payload = {
         ...values,
         battalion: Number(selectedBattalionId),
       };
+      const adding = formMode !== "edit";
       if (formMode === "edit" && id) {
         await formationService.updateDetachment(id, payload);
         setMessage("Company updated.");
@@ -473,9 +474,17 @@ export default function DetachmentOverview({ user }) {
         await formationService.createDetachment(payload);
         setMessage("Company created.");
       }
-      setCompanyModal(null);
       await load();
       await loadBattalionOptions();
+      if (adding && window.confirm("Company created successfully. Add another Coy?")) {
+        setCompanyModal({
+          mode: "add",
+          ...EMPTY_COMPANY,
+          key: Date.now(),
+        });
+      } else {
+        setCompanyModal(null);
+      }
     } catch (err) {
       const d = err.response?.data;
       setError(
@@ -785,6 +794,7 @@ export default function DetachmentOverview({ user }) {
       )}
       {companyModal && (
         <CompanyCreateModal
+          key={companyModal.key || `${companyModal.mode || "add"}-${companyModal.id || "new"}`}
           mode={companyModal.mode || "add"}
           battalionName={selectedBattalionRecord?.name || "Selected Battalion"}
           initial={companyModal}
