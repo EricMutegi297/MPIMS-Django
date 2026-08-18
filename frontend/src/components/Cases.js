@@ -486,23 +486,6 @@ function ErrMsg({ msg }) {
 }
 
 const SCANNER_HELPER_URL = "http://127.0.0.1:41527/scan";
-const DEVICE_ACCESS_NOTICE_KEY = "mpims.deviceAccessNoticeAccepted";
-
-function hasAcceptedDeviceAccessNotice() {
-  try {
-    return window.localStorage.getItem(DEVICE_ACCESS_NOTICE_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function acceptDeviceAccessNotice() {
-  try {
-    window.localStorage.setItem(DEVICE_ACCESS_NOTICE_KEY, "true");
-  } catch {
-    // Ignore storage errors; the notice will simply show again next time.
-  }
-}
 
 function unitOptionLabel(unit) {
   if (!unit) return "";
@@ -697,9 +680,7 @@ async function scanFromLocalScanner(documentType) {
   });
 }
 
-function DeviceAccessNoticeModal({ documentLabel, scanning, onContinue, onUpload, onCancel }) {
-  const [remember, setRemember] = useState(false);
-
+function ScannerHelperUnavailableModal({ documentLabel, scanning, onRetry, onUpload, onCancel }) {
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
@@ -711,14 +692,14 @@ function DeviceAccessNoticeModal({ documentLabel, scanning, onContinue, onUpload
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Device Access Notice</p>
-            <h3 className="mt-1 text-xl font-semibold text-slate-950">Scan or upload document</h3>
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-600">Scanner Connection</p>
+            <h3 className="mt-1 text-xl font-semibold text-slate-950">Scanner helper not detected</h3>
           </div>
           <button
             type="button"
             onClick={onCancel}
             className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            aria-label="Close device access notice"
+            aria-label="Close scanner helper notice"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -727,34 +708,25 @@ function DeviceAccessNoticeModal({ documentLabel, scanning, onContinue, onUpload
         </div>
 
         <p className="text-sm leading-6 text-slate-600">
-          To scan {documentLabel || "this document"} directly, MPIMS may contact scanner apps or local services on this device.
-          MPIMS does not read your other files, and nothing is uploaded until you submit the form.
+          MPIMS tried to reach the local scanner service on this computer but it is not running. You can still attach
+          {documentLabel ? ` ${documentLabel.toLowerCase()}` : " the document"} by scanning with the normal scanner app,
+          saving the PDF or image, then choosing the saved file here.
         </p>
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-sm font-semibold text-slate-950">Direct scan</p>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">Use scanner app</p>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              Use this when the MPIMS scanner helper is running on the computer connected to the scanner.
+              Open the scanner software on this PC, scan the document, and save it as PDF or image.
             </p>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-sm font-semibold text-slate-950">Saved file upload</p>
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">Upload saved scan</p>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              Scan with the normal scanner app, save the PDF or image, then choose that saved file here.
+              After saving the scan, select it from this form and submit normally.
             </p>
           </div>
         </div>
-
-        <label className="mt-5 flex items-center gap-2 text-sm text-slate-600">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(event) => setRemember(event.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600"
-          />
-          Do not show this notice again on this computer.
-        </label>
 
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
@@ -767,19 +739,19 @@ function DeviceAccessNoticeModal({ documentLabel, scanning, onContinue, onUpload
           </button>
           <button
             type="button"
-            onClick={() => onUpload(remember)}
+            onClick={onRetry}
             disabled={scanning}
-            className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
-            Choose Saved File
+            Try Direct Scan Again
           </button>
           <button
             type="button"
-            onClick={() => onContinue(remember)}
+            onClick={onUpload}
             disabled={scanning}
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            Continue Direct Scan
+            Choose Saved File
           </button>
         </div>
       </div>
@@ -801,7 +773,7 @@ function ScannableFileInput({
 }) {
   const [scanning, setScanning] = useState(false);
   const [scanNotice, setScanNotice] = useState("");
-  const [showDeviceNotice, setShowDeviceNotice] = useState(false);
+  const [showScannerNotice, setShowScannerNotice] = useState(false);
   const fileInputRef = useRef(null);
   const isLight = variant === "light";
 
@@ -820,36 +792,24 @@ function ScannableFileInput({
       onFileChange(scannedFile);
       setScanNotice("Scanned document attached.");
     } catch {
-      setScanNotice(
-        "Direct scan is unavailable on this computer. Scan with the scanner app, save the file, then upload the saved scan here."
-      );
+      setShowScannerNotice(true);
       onScanError?.("");
     } finally {
       setScanning(false);
     }
   }
 
-  function rememberNoticeIfNeeded(remember) {
-    if (remember) acceptDeviceAccessNotice();
-  }
-
   function handleScanRequest() {
-    if (hasAcceptedDeviceAccessNotice()) {
-      runDirectScan();
-      return;
-    }
-    setShowDeviceNotice(true);
-  }
-
-  function handleContinueDirectScan(remember) {
-    rememberNoticeIfNeeded(remember);
-    setShowDeviceNotice(false);
     runDirectScan();
   }
 
-  function handleChooseSavedFile(remember) {
-    rememberNoticeIfNeeded(remember);
-    setShowDeviceNotice(false);
+  function handleRetryDirectScan() {
+    setShowScannerNotice(false);
+    runDirectScan();
+  }
+
+  function handleChooseSavedFile() {
+    setShowScannerNotice(false);
     setScanNotice("Scan with your scanner app, save the file, then choose the saved scan here.");
     fileInputRef.current?.click();
   }
@@ -909,13 +869,13 @@ function ScannableFileInput({
           </button>
         </div>
       )}
-      {showDeviceNotice && (
-        <DeviceAccessNoticeModal
+      {showScannerNotice && (
+        <ScannerHelperUnavailableModal
           documentLabel={label}
           scanning={scanning}
-          onContinue={handleContinueDirectScan}
+          onRetry={handleRetryDirectScan}
           onUpload={handleChooseSavedFile}
-          onCancel={() => setShowDeviceNotice(false)}
+          onCancel={() => setShowScannerNotice(false)}
         />
       )}
     </div>
