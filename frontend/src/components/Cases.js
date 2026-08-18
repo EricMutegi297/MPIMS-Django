@@ -490,8 +490,8 @@ function unitOptionLabel(unit) {
   return bits.join(" | ");
 }
 
-function unitMatches(unit, query) {
-  const text = [
+function unitSearchText(unit) {
+  return [
     unit.name,
     unit.code,
     unit.service,
@@ -500,23 +500,99 @@ function unitMatches(unit, query) {
     unit.email,
     unit.mobile_no,
   ].filter(Boolean).join(" ").toLowerCase();
-  return text.includes(String(query || "").trim().toLowerCase());
+}
+
+function compactSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function unitMatchesService(unit, serviceFilter) {
+  return !serviceFilter || unit.service === serviceFilter;
+}
+
+function unitMatches(unit, query) {
+  const trimmed = String(query || "").trim().toLowerCase();
+  if (!trimmed) return true;
+  const text = unitSearchText(unit);
+  const compactText = compactSearchText(text);
+  const compactQuery = compactSearchText(trimmed);
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  return (
+    text.includes(trimmed)
+    || (compactQuery && compactText.includes(compactQuery))
+    || tokens.every((token) => text.includes(token) || compactText.includes(compactSearchText(token)))
+  );
+}
+
+function unitRank(unit, query) {
+  const trimmed = String(query || "").trim().toLowerCase();
+  if (!trimmed) return 50;
+  const name = String(unit.name || "").toLowerCase();
+  const code = String(unit.code || "").toLowerCase();
+  if (name === trimmed || code === trimmed) return 0;
+  if (name.startsWith(trimmed) || code.startsWith(trimmed)) return 1;
+  if (unitSearchText(unit).includes(trimmed)) return 2;
+  return 3;
 }
 
 function UnitAutocomplete({ label, units, value, onChange, serviceFilter, placeholder = "Search unit by name or code..." }) {
   const selected = units.find((unit) => String(unit.id) === String(value));
   const [query, setQuery] = useState(selected ? unitOptionLabel(selected) : "");
   const [open, setOpen] = useState(false);
+  const [remoteUnits, setRemoteUnits] = useState([]);
+  const [searchingUnits, setSearchingUnits] = useState(false);
 
   useEffect(() => {
     setQuery(selected ? unitOptionLabel(selected) : "");
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const trimmedQuery = query.trim();
+    if (!open || !trimmedQuery || (selected && trimmedQuery === unitOptionLabel(selected))) {
+      setRemoteUnits([]);
+      setSearchingUnits(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setSearchingUnits(true);
+    const timerId = window.setTimeout(() => {
+      formationService
+        .units({
+          page_size: 25,
+          search: trimmedQuery,
+          ...(serviceFilter ? { service: serviceFilter } : {}),
+        })
+        .then((res) => {
+          if (!cancelled) setRemoteUnits(toArray(res.data));
+        })
+        .catch(() => {
+          if (!cancelled) setRemoteUnits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearchingUnits(false);
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [open, query, selected, serviceFilter]);
+
   const trimmed = query.trim();
-  const matches = units
-    .filter((unit) => !serviceFilter || !unit.service || unit.service === serviceFilter)
+  const mergedUnits = [...units, ...remoteUnits].reduce((acc, unit) => {
+    if (unit?.id && !acc.some((item) => String(item.id) === String(unit.id))) acc.push(unit);
+    return acc;
+  }, []);
+  const matches = mergedUnits
+    .filter((unit) => unitMatchesService(unit, serviceFilter))
     .filter((unit) => !trimmed || unitMatches(unit, trimmed))
-    .slice(0, 8);
+    .sort((a, b) =>
+      unitRank(a, trimmed) - unitRank(b, trimmed)
+      || String(a.name || "").localeCompare(String(b.name || ""))
+    )
+    .slice(0, 20);
 
   return (
     <div className="relative">
@@ -550,7 +626,9 @@ function UnitAutocomplete({ label, units, value, onChange, serviceFilter, placeh
       )}
       {open && (
         <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-300 bg-white shadow-xl">
-          {matches.length === 0 ? (
+          {matches.length === 0 && searchingUnits ? (
+            <div className="px-3 py-2 text-xs text-slate-500">Searching units...</div>
+          ) : matches.length === 0 ? (
             <div className="px-3 py-2 text-xs text-slate-500">No matching units.</div>
           ) : matches.map((unit) => (
             <button
@@ -1117,7 +1195,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     formationService
-      .units({ page_size: 500 })
+      .units({ page_size: 1000 })
       .then((res) => setUnits(toArray(res.data)))
       .catch(() => {});
   }, []);
