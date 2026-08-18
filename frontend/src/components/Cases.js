@@ -680,46 +680,101 @@ async function scanFromLocalScanner(documentType) {
   });
 }
 
-function ScannableFileInput({ label, file, onFileChange, onScanError, accept = ".pdf,.doc,.docx,.jpg,.jpeg,.png", documentType, disabled }) {
+function ScannableFileInput({
+  label,
+  file,
+  onFileChange,
+  onScanError,
+  accept = ".pdf,.doc,.docx,.jpg,.jpeg,.png",
+  documentType,
+  disabled,
+  variant = "dark",
+  helperText = "",
+  clearLabel = "Clear selected file",
+}) {
   const [scanning, setScanning] = useState(false);
+  const [scanNotice, setScanNotice] = useState("");
+  const fileInputRef = useRef(null);
+  const isLight = variant === "light";
+
+  function handleFileSelection(event) {
+    onFileChange(event.target.files?.[0] || null);
+    setScanNotice("");
+    onScanError?.("");
+  }
 
   async function handleScan() {
     setScanning(true);
+    setScanNotice("");
     onScanError?.("");
     try {
       const scannedFile = await scanFromLocalScanner(documentType || label);
       onFileChange(scannedFile);
+      setScanNotice("Scanned document attached.");
     } catch {
-      onScanError?.(
-        "Scanner helper is not running on this computer. Start the MPIMS scanner helper, or use Browse to attach the scanned file."
+      setScanNotice(
+        "Direct scan is unavailable on this computer. Scan with the scanner app, save the file, then upload the saved scan here."
       );
+      onScanError?.("");
     } finally {
       setScanning(false);
     }
   }
 
+  const labelClass = isLight
+    ? "text-xs font-semibold uppercase tracking-wide text-slate-700 block mb-1"
+    : "text-xs text-gray-400 block mb-1";
+  const inputClass = isLight
+    ? "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+    : "w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs disabled:opacity-50";
+  const buttonClass = isLight
+    ? "rounded-lg border border-blue-500 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+    : "rounded border border-sky-500/60 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-600/20 disabled:opacity-50";
+  const selectedClass = isLight ? "mt-2 truncate text-xs text-slate-600" : "mt-2 truncate text-xs text-gray-300";
+  const noticeClass = isLight
+    ? "mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800"
+    : "mt-2 rounded-lg border border-sky-500/30 bg-sky-950/40 px-3 py-2 text-xs text-sky-100";
+  const helperClass = isLight ? "mt-2 text-xs text-slate-500" : "mt-2 text-xs text-gray-500";
+
   return (
     <div>
-      <label className="text-xs text-gray-400 block mb-1">{label}</label>
+      <label className={labelClass}>{label}</label>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
         <input
+          ref={fileInputRef}
           type="file"
-          onChange={(event) => onFileChange(event.target.files?.[0] || null)}
+          onChange={handleFileSelection}
           accept={accept}
           disabled={disabled || scanning}
-          className="w-full text-sm text-gray-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-gray-600 file:text-white file:text-xs disabled:opacity-50"
+          className={inputClass}
         />
         <button
           type="button"
           onClick={handleScan}
           disabled={disabled || scanning}
-          className="rounded border border-sky-500/60 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-600/20 disabled:opacity-50"
+          className={buttonClass}
         >
-          {scanning ? "Scanning..." : "Scan"}
+          {scanning ? "Scanning..." : "Scan then Upload"}
         </button>
       </div>
+      {helperText && <p className={helperClass}>{helperText}</p>}
+      {scanNotice && <p className={noticeClass}>{scanNotice}</p>}
       {file && (
-        <p className="mt-2 truncate text-xs text-gray-300">Selected: {file.name}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <p className={selectedClass}>Selected: {file.name}</p>
+          <button
+            type="button"
+            onClick={() => {
+              onFileChange(null);
+              setScanNotice("");
+              if (fileInputRef.current) fileInputRef.current.value = "";
+            }}
+            disabled={disabled || scanning}
+            className={isLight ? "text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50" : "text-xs font-medium text-red-300 hover:text-red-200 disabled:opacity-50"}
+          >
+            {clearLabel}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -4248,26 +4303,19 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </div>
 
                 <div className="col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <CaseFormLabel>RFI Attachment</CaseFormLabel>
-                  <input
+                  <ScannableFileInput
                     key={createForm.rfi_document ? `rfi-${createForm.rfi_document.name}-${createForm.rfi_document.lastModified}` : "rfi-empty"}
-                    type="file"
+                    label="RFI Attachment"
+                    file={createForm.rfi_document}
+                    onFileChange={(file) => setCreateForm((f) => ({ ...f, rfi_document: file }))}
+                    onScanError={setCreateErr}
                     accept="application/pdf,.pdf,image/*"
-                    onChange={(e) => setCreateForm((f) => ({ ...f, rfi_document: e.target.files?.[0] || null }))}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-blue-700"
+                    documentType="rfi-attachment"
+                    disabled={createSaving}
+                    variant="light"
+                    helperText="Optional during case creation. Upload RFI before closing the case."
+                    clearLabel="Clear selected RFI"
                   />
-                  <p className="mt-2 text-xs text-slate-500">
-                    Optional during case creation. The RFI attachment must be uploaded before the case can be closed.
-                  </p>
-                  {createForm.rfi_document && (
-                    <button
-                      type="button"
-                      onClick={() => setCreateForm((f) => ({ ...f, rfi_document: null }))}
-                      className="mt-2 text-xs font-medium text-red-600 hover:text-red-700"
-                    >
-                      Clear selected RFI
-                    </button>
-                  )}
                 </div>
 
               </div>
