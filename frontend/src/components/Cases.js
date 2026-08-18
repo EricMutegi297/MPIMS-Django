@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import AddAnotherModal from "./common/AddAnotherModal";
+import { openProtectedFile } from "../utils/protectedFiles";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -253,6 +254,40 @@ function ReferenceActions({ url, name }) {
   );
 }
 
+function ProtectedDocumentButton({ url, label = "document", children, className = "", onError, stopPropagation = true }) {
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleOpen = async (event) => {
+    event.preventDefault();
+    if (stopPropagation) event.stopPropagation();
+    setError("");
+    setOpening(true);
+    await openProtectedFile(url, {
+      label,
+      onError: (message) => {
+        setError(message);
+        onError?.(message);
+      },
+    });
+    setOpening(false);
+  };
+
+  return (
+    <span className="inline-flex max-w-full flex-col gap-1">
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={opening}
+        className={className || "text-blue-400 hover:underline disabled:opacity-60"}
+      >
+        {opening ? "Opening..." : children}
+      </button>
+      {error && <span className="max-w-[240px] text-[11px] text-red-400">{error}</span>}
+    </span>
+  );
+}
+
 const STATUS_STYLE = {
   new:                 "bg-gray-500/20 text-gray-300",
   open:                "bg-blue-500/20 text-blue-400",
@@ -305,7 +340,6 @@ const ALL_RANKS = [
   "Warrant Officer Class 1",
   "Warrant Officer Class 2",
   "Senior Sergeant",
-  "Staff Sergeant",
   "Sergeant",
   "Corporal",
   "Lance Corporal",
@@ -326,7 +360,43 @@ const INIT_CREATE = {
   service_offence_severity: "", criminal_offence_type: "",
   accused_entries: [INIT_ACCUSED_ENTRY],
   accused_service: "", submitting_unit: "", date_of_offence: "", place_of_offence: "",
+  rfi_document: null,
 };
+
+function isBlank(value) {
+  return !String(value ?? "").trim();
+}
+
+function validateRequiredCreateCase(form, offencesAvailable) {
+  if (isBlank(form.title)) return "Case title is required.";
+  if (offencesAvailable && !form.offence_ref) return "Select an offence.";
+  if (!offencesAvailable && isBlank(form.offence)) return "Offence is required.";
+  if (!form.offence_type) return "Offence type is required.";
+  if (form.offence_type === "service_offence" && !form.service_offence_severity) {
+    return "Severity is required for service offences.";
+  }
+  if (form.offence_type === "criminal_offence" && !form.criminal_offence_type) {
+    return "Criminal offence type is required.";
+  }
+
+  const accusedEntries = (Array.isArray(form.accused_entries) ? form.accused_entries : [])
+    .filter((entry) => Object.values(entry || {}).some((value) => !isBlank(value)));
+  for (let index = 0; index < accusedEntries.length; index += 1) {
+    const entry = accusedEntries[index] || {};
+    const label = `Accused #${index + 1}`;
+    if (isBlank(entry.name)) return `${label} name is required.`;
+    if (isBlank(entry.rank)) return `${label} rank is required.`;
+    if (isBlank(entry.service_number)) return `${label} service number is required.`;
+    if (isBlank(entry.service)) return `${label} service is required.`;
+    if (!entry.unit) return `${label} unit is required.`;
+  }
+
+  if (!form.submitting_unit) return "Submitting unit is required.";
+  if (!form.date_of_offence) return "Date of offence is required.";
+  if (isBlank(form.place_of_offence)) return "Place of offence is required.";
+  if (isBlank(form.description)) return "Description is required.";
+  return "";
+}
 
 function caseToForm(caseObj) {
   const accusedEntries = toArray(caseObj?.accused_entries).length
@@ -358,6 +428,7 @@ function caseToForm(caseObj) {
     submitting_unit: caseObj?.submitting_unit ? String(caseObj.submitting_unit) : "",
     date_of_offence: normalizeDateForApi(caseObj?.date_of_offence),
     place_of_offence: caseObj?.place_of_offence || "",
+    rfi_document: null,
   };
 }
 
@@ -702,14 +773,13 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
         <div className="mt-2 rounded-md border border-gray-700 bg-gray-800/90 p-2.5 min-w-[220px] space-y-1.5">
           {hasRfi && (
             c.rfi_document ? (
-              <a
-                href={c.rfi_document}
-                target="_blank"
-                rel="noreferrer"
+              <ProtectedDocumentButton
+                url={c.rfi_document}
+                label="RFI document"
                 className="block text-blue-400 hover:underline"
               >
                 RFI Document - View
-              </a>
+              </ProtectedDocumentButton>
             ) : (
               <div className="rounded-lg bg-gray-700/60 p-3 text-gray-300 text-xs">
                 <p className="font-medium text-white">RFI reference</p>
@@ -724,14 +794,13 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
           )}
 
           {hasTaskingLetter && (
-            <a
-              href={c.tasking_letter}
-              target="_blank"
-              rel="noreferrer"
+            <ProtectedDocumentButton
+              url={c.tasking_letter}
+              label="tasking letter"
               className="block text-blue-400 hover:underline"
             >
               Tasking Letter - View
-            </a>
+            </ProtectedDocumentButton>
           )}
 
           {extraCount > 0 && loadingExtra && (
@@ -745,15 +814,14 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
           {extraCount > 0 && !loadingExtra && !extraErr && extraAttachments.length > 0 && (
             <div className="space-y-1">
               {extraAttachments.map((att, idx) => (
-                <a
+                <ProtectedDocumentButton
                   key={att.id || idx}
-                  href={att.file}
-                  target="_blank"
-                  rel="noreferrer"
+                  url={att.file}
+                  label={att.label || "extra attachment"}
                   className="block text-blue-400 hover:underline"
                 >
                   {att.label || att.file_name || `Extra Attachment ${idx + 1}`} - View
-                </a>
+                </ProtectedDocumentButton>
               ))}
             </div>
           )}
@@ -1494,6 +1562,13 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function handleCreate(e) {
     e.preventDefault();
     const editing = caseFormMode === "edit" && selected?.id;
+    if (!editing) {
+      const validationError = validateRequiredCreateCase(createForm, offences.length > 0);
+      if (validationError) {
+        setCreateErr(validationError);
+        return;
+      }
+    }
     setCreateSaving(true);
     setCreateErr("");
     const fd = new FormData();
@@ -1501,6 +1576,10 @@ export default function Cases({ user, criminalTypeFilter }) {
       if (k === "offence_ref") return; // handled separately below
       if (k === "accused_entries") return; // handled separately below
       if (k === "submitting_unit") return; // handled separately
+      if (k === "rfi_document") {
+        if (v) fd.append(k, v);
+        return;
+      }
       if (editing || v) fd.append(k, v || "");
     });
     if (editing || createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref || "");
@@ -2628,15 +2707,14 @@ export default function Cases({ user, criminalTypeFilter }) {
                     {!isDciFilter && isTaskedFilter && (
                       <td className="px-4 py-2.5">
                         {c.tasking_letter ? (
-                          <a
-                            href={c.tasking_letter}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
+                          <ProtectedDocumentButton
+                            url={c.tasking_letter}
+                            label="tasking letter"
+                            onError={(message) => showToast(message, "error")}
                             className="text-xs text-blue-400 hover:underline whitespace-nowrap"
                           >
                             View
-                          </a>
+                          </ProtectedDocumentButton>
                         ) : (
                           <span className="text-gray-500">--</span>
                         )}
@@ -2890,14 +2968,14 @@ export default function Cases({ user, criminalTypeFilter }) {
                   {selected.tasking_letter && (
                     <div className="col-span-2">
                       <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Tasking Letter</p>
-                      <a
-                        href={selected.tasking_letter}
-                        target="_blank"
-                        rel="noreferrer"
+                      <ProtectedDocumentButton
+                        url={selected.tasking_letter}
+                        label="tasking letter"
+                        onError={(message) => showToast(message, "error")}
                         className="text-sm text-blue-400 hover:underline"
                       >
                         View Document
-                      </a>
+                      </ProtectedDocumentButton>
                     </div>
                   )}
                 </div>
@@ -3781,18 +3859,19 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div className="grid grid-cols-2 gap-3">
 
                 <div className="col-span-2">
-                  <CaseFormLabel>Case Title</CaseFormLabel>
+                  <CaseFormLabel>Case Title *</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.title}
                     onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
                     placeholder="Short case title"
+                    required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <CaseFormLabel>Offence</CaseFormLabel>
+                  <CaseFormLabel>Offence *</CaseFormLabel>
                   {offences.length > 0 ? (
                     <select
                       value={createForm.offence_ref}
@@ -3804,6 +3883,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                           offence: selected ? selected.name : "",
                         }));
                       }}
+                      required={caseFormMode === "create"}
                       className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select offence…</option>
@@ -3820,16 +3900,18 @@ export default function Cases({ user, criminalTypeFilter }) {
                       value={createForm.offence}
                       onChange={(e) => setCreateForm((f) => ({ ...f, offence: e.target.value }))}
                       placeholder="No offences defined yet — type manually"
+                      required={caseFormMode === "create"}
                       className={CASE_FORM_CONTROL}
                     />
                   )}
                 </div>
 
                 <div>
-                  <CaseFormLabel>Offence Type</CaseFormLabel>
+                  <CaseFormLabel>Offence Type *</CaseFormLabel>
                   <select
                     value={createForm.offence_type}
                     onChange={(e) => setCreateForm((f) => ({ ...f, offence_type: e.target.value }))}
+                    required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   >
                     <option value="">Select…</option>
@@ -3840,10 +3922,11 @@ export default function Cases({ user, criminalTypeFilter }) {
 
                 {createForm.offence_type === "service_offence" && (
                   <div>
-                    <CaseFormLabel>Severity</CaseFormLabel>
+                    <CaseFormLabel>Severity *</CaseFormLabel>
                     <select
                       value={createForm.service_offence_severity}
                       onChange={(e) => setCreateForm((f) => ({ ...f, service_offence_severity: e.target.value }))}
+                      required={caseFormMode === "create"}
                       className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select…</option>
@@ -3855,10 +3938,11 @@ export default function Cases({ user, criminalTypeFilter }) {
 
                 {createForm.offence_type === "criminal_offence" && (
                   <div>
-                    <CaseFormLabel>Criminal Offence Type</CaseFormLabel>
+                    <CaseFormLabel>Criminal Offence Type *</CaseFormLabel>
                     <select
                       value={createForm.criminal_offence_type}
                       onChange={(e) => setCreateForm((f) => ({ ...f, criminal_offence_type: e.target.value }))}
+                      required={caseFormMode === "create"}
                       className={CASE_FORM_CONTROL}
                     >
                       <option value="">Select…</option>
@@ -3980,13 +4064,13 @@ export default function Cases({ user, criminalTypeFilter }) {
                     >
                       Add another accused
                     </button>
-                    <p className="text-xs text-slate-500">Leave accused fields blank if the accused is not yet identified.</p>
+                    <p className="text-xs text-slate-500">Leave accused fields blank if the accused is not yet identified. The accused can be added later from Edit Case once identified.</p>
                   </div>
                 </div>
 
 
                 <UnitAutocomplete
-                  label="Submitting Unit"
+                  label="Submitting Unit *"
                   units={units}
                   value={createForm.submitting_unit}
                   onChange={(value) => setCreateForm((f) => ({ ...f, submitting_unit: value }))}
@@ -3994,34 +4078,60 @@ export default function Cases({ user, criminalTypeFilter }) {
                 />
 
                 <div>
-                  <CaseFormLabel>Date of Offence</CaseFormLabel>
+                  <CaseFormLabel>Date of Offence *</CaseFormLabel>
                   <input
                     type="date"
                     value={createForm.date_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, date_of_offence: e.target.value }))}
+                    required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <CaseFormLabel>Place of Offence</CaseFormLabel>
+                  <CaseFormLabel>Place of Offence *</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.place_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, place_of_offence: e.target.value }))}
                     placeholder="e.g. Embakasi, Kahawa, barracks, office, road, or scene"
+                    required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <CaseFormLabel>Description</CaseFormLabel>
+                  <CaseFormLabel>Description *</CaseFormLabel>
                   <textarea
                     value={createForm.description}
                     onChange={(e) => setCreateForm((f) => ({ ...f, description: e.target.value }))}
                     rows={3}
+                    required={caseFormMode === "create"}
                     className={`${CASE_FORM_CONTROL} resize-none`}
                   />
+                </div>
+
+                <div className="col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <CaseFormLabel>RFI Attachment</CaseFormLabel>
+                  <input
+                    key={createForm.rfi_document ? `rfi-${createForm.rfi_document.name}-${createForm.rfi_document.lastModified}` : "rfi-empty"}
+                    type="file"
+                    accept="application/pdf,.pdf,image/*"
+                    onChange={(e) => setCreateForm((f) => ({ ...f, rfi_document: e.target.files?.[0] || null }))}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 file:mr-3 file:rounded-md file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-blue-700"
+                  />
+                  <p className="mt-2 text-xs text-slate-500">
+                    Optional during case creation. The RFI attachment must be uploaded before the case can be closed.
+                  </p>
+                  {createForm.rfi_document && (
+                    <button
+                      type="button"
+                      onClick={() => setCreateForm((f) => ({ ...f, rfi_document: null }))}
+                      className="mt-2 text-xs font-medium text-red-600 hover:text-red-700"
+                    >
+                      Clear selected RFI
+                    </button>
+                  )}
                 </div>
 
               </div>

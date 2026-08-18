@@ -56,6 +56,7 @@ api.interceptors.response.use(
   async (error) => {
     const original = error.config || {};
     const is401 = error.response?.status === 401;
+    const skipAuthRedirect = Boolean(original.skipAuthRedirect);
 
     if (is401 && !original._retry && !isAuthRequest(original.url)) {
       original._retry = true;
@@ -64,7 +65,7 @@ api.interceptors.response.use(
         sessionStorage.removeItem("access_token");
         sessionStorage.removeItem("refresh_token");
         sessionStorage.removeItem(USER_CACHE_KEY);
-        if (!_authRedirecting && window.location.pathname !== "/login") {
+        if (!skipAuthRedirect && !_authRedirecting && window.location.pathname !== "/login") {
           _authRedirecting = true;
           window.location.href = "/login";
         }
@@ -85,7 +86,7 @@ api.interceptors.response.use(
             sessionStorage.removeItem("access_token");
             sessionStorage.removeItem("refresh_token");
             sessionStorage.removeItem(USER_CACHE_KEY);
-            if (!_authRedirecting && window.location.pathname !== "/login") {
+            if (!skipAuthRedirect && !_authRedirecting && window.location.pathname !== "/login") {
               _authRedirecting = true;
               window.location.href = "/login";
             }

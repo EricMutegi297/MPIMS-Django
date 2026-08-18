@@ -668,6 +668,54 @@ class CaseSerializer(serializers.ModelSerializer):
         if errors:
             raise serializers.ValidationError(errors)
 
+    @staticmethod
+    def _blank(value):
+        return not str(value or "").strip()
+
+    def _validate_required_create_fields(self, attrs):
+        errors = {}
+
+        if self._blank(attrs.get("title")):
+            errors["title"] = "Case title is required."
+        if not attrs.get("offence_ref") and self._blank(attrs.get("offence")):
+            errors["offence"] = "Offence is required."
+        if not attrs.get("offence_type"):
+            errors["offence_type"] = "Offence type is required."
+        if attrs.get("offence_type") == Case.OffenceType.SERVICE and not attrs.get("service_offence_severity"):
+            errors["service_offence_severity"] = "Severity is required for service offences."
+        if attrs.get("offence_type") == Case.OffenceType.CRIMINAL and not attrs.get("criminal_offence_type"):
+            errors["criminal_offence_type"] = "Criminal offence type is required."
+        if not attrs.get("submitting_unit"):
+            errors["submitting_unit"] = "Submitting unit is required."
+        if not attrs.get("date_of_offence"):
+            errors["date_of_offence"] = "Date of offence is required."
+        if self._blank(attrs.get("place_of_offence")):
+            errors["place_of_offence"] = "Place of offence is required."
+        if self._blank(attrs.get("description")):
+            errors["description"] = "Description is required."
+
+        accused_entries = attrs.get("accused_entries") or []
+        entry_errors = []
+        for item in accused_entries:
+            missing = []
+            if self._blank(item.get("name")):
+                missing.append("name")
+            if self._blank(item.get("rank")):
+                missing.append("rank")
+            if self._blank(item.get("service_number")):
+                missing.append("service number")
+            if self._blank(item.get("service")):
+                missing.append("service")
+            if not item.get("unit"):
+                missing.append("unit")
+            if missing:
+                entry_errors.append(f"Accused entry requires {', '.join(missing)}.")
+        if entry_errors:
+            errors["accused_entries"] = entry_errors
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
     def validate(self, attrs):
         request = self.context.get("request")
         user = getattr(request, "user", None)
@@ -765,6 +813,7 @@ class CaseSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Only a superuser or HQ battalion admin can create a new case."
                 )
+            self._validate_required_create_fields(attrs)
 
         if tasked_battalion and tasked_battalion.battalion_type not in {
             Battalion.BattalionType.SPECIAL,

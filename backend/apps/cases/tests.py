@@ -80,12 +80,16 @@ class CaseApiTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.superuser)
 
-    def test_create_case_without_accused_entries_allows_hqs_admin(self):
+    def test_create_case_without_accused_or_rfi_allows_hqs_admin(self):
         url = reverse("case-list")
         payload = {
-            "description": "HQS case without accused entries",
+            "title": "HQS case without accused or RFI",
+            "description": "HQS case without accused or RFI attachment",
             "offence": "Theft",
+            "offence_type": Case.OffenceType.SERVICE,
+            "service_offence_severity": Case.ServiceOffenceSeverity.SERIOUS,
             "date_of_offence": "2026-06-28",
+            "place_of_offence": "Kahawa Barracks",
             "submitting_unit": str(self.unit.id),
         }
 
@@ -94,6 +98,23 @@ class CaseApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertIn("case_number", response.data)
         self.assertEqual(Case.objects.filter(case_number=response.data["case_number"]).count(), 1)
+
+    def test_create_case_requires_core_fields_but_not_accused_or_rfi(self):
+        response = self.client.post(reverse("case-list"), {}, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        for field in [
+            "title",
+            "offence",
+            "offence_type",
+            "submitting_unit",
+            "date_of_offence",
+            "place_of_offence",
+            "description",
+        ]:
+            self.assertIn(field, response.data)
+        self.assertNotIn("accused_entries", response.data)
+        self.assertNotIn("rfi_document", response.data)
 
     def test_create_case_with_multipart_json_accused_entries_creates_duplicate_cases(self):
         url = reverse("case-list")
@@ -114,9 +135,13 @@ class CaseApiTests(TestCase):
             },
         ]
         payload = {
+            "title": "HQS multipart create",
             "description": "HQS multipart create",
             "offence": "Theft",
+            "offence_type": Case.OffenceType.SERVICE,
+            "service_offence_severity": Case.ServiceOffenceSeverity.SERIOUS,
             "date_of_offence": "2026-06-28",
+            "place_of_offence": "Embakasi Barracks",
             "submitting_unit": str(self.unit.id),
             "accused_entries": json.dumps(accused_data),
         }

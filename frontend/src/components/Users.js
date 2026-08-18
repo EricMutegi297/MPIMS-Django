@@ -132,7 +132,6 @@ export default function Users({ user }) {
     "Warrant Officer Class 1",
     "Warrant Officer Class 2",
     "Senior Sergeant",
-    "Staff Sergeant",
     "Sergeant",
     "Corporal",
     "Lance Corporal",

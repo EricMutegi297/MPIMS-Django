@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, teamService, attachmentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import { openProtectedFile } from "../utils/protectedFiles";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -310,6 +311,11 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
     }
   };
 
+  const handleProtectedOpen = async (url, label) => {
+    setErr("");
+    await openProtectedFile(url, { label, onError: setErr });
+  };
+
   // Official documents: RFI is always shown when the case has RFI metadata,
   // even if no uploaded RFI file exists yet.
   const systemFiles = [
@@ -496,10 +502,9 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-500 font-medium shrink-0">official</span>
                         {sf.url ? (
                           <>
-                            <a
-                              href={sf.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => handleProtectedOpen(sf.url, sf.label || "document")}
                               className="text-gray-500 hover:text-blue-400 transition-colors p-1 shrink-0"
                               title="View / Open"
                             >
@@ -507,7 +512,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                               </svg>
-                            </a>
+                            </button>
                             <a
                               href={sf.url}
                               download
@@ -562,10 +567,9 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                             <p className="text-gray-600 text-[10px]">by {att.uploaded_by_name}</p>
                           )}
                         </div>
-                        <a
-                          href={att.file}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => handleProtectedOpen(att.file, att.label || "attachment")}
                           className="text-gray-500 hover:text-blue-400 transition-colors p-1 shrink-0"
                           title="View / Open"
                         >
@@ -573,7 +577,7 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                           </svg>
-                        </a>
+                        </button>
                         <a
                           href={att.file}
                           download

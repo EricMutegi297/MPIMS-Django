@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { attachmentService, caseService, guardroomService, incidentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import { openProtectedFile } from "../utils/protectedFiles";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toArray(data) {
@@ -320,7 +321,9 @@ export default function HQDashboard({ user }) {
   const [totalGuardrooms, setTotalGuardrooms] = useState(0);
   const [activeFilter, setActiveFilter] = useState("all");
   const [expandedDesc, setExpandedDesc] = useState({});
+  const [documentError, setDocumentError] = useState("");
   const [closingCase, setClosingCase] = useState(null);
+  useAutoDismiss(documentError, setDocumentError);
 
   // ── fetch per-status counts (once, tiny requests) ──────────────────────────
   const loadCounts = useCallback(async () => {
@@ -388,6 +391,11 @@ export default function HQDashboard({ user }) {
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
+  const handleProtectedDocumentOpen = async (url, label = "document") => {
+    setDocumentError("");
+    await openProtectedFile(url, { label, onError: setDocumentError });
+  };
+
   const FILTERS = [
     { key: "all",                 label: "All",              style: "bg-gray-600 text-gray-200"   },
     { key: "new",                 label: "New",              style: "bg-gray-500/20 text-gray-300"},
@@ -431,6 +439,12 @@ export default function HQDashboard({ user }) {
       </div>
 
       {/* ── Row 1: Summary Cards ────────────────────────────────────── */}
+      {documentError && (
+        <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          {documentError}
+        </p>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         <StatCard
           loading={loadingCounts}
@@ -632,14 +646,13 @@ export default function HQDashboard({ user }) {
                       <>
                         <td className="px-3 md:px-5 py-3">
                           {c.tasking_letter ? (
-                            <a
-                              href={c.tasking_letter}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => handleProtectedDocumentOpen(c.tasking_letter, "tasking letter")}
                               className="text-xs text-blue-400 hover:underline whitespace-nowrap"
                             >
                               View
-                            </a>
+                            </button>
                           ) : (
                             <span className="text-xs text-gray-500">--</span>
                           )}

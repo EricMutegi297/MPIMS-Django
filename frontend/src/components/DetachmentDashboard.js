@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { caseService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import { openProtectedFile } from "../utils/protectedFiles";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -102,6 +103,7 @@ export default function DetachmentDashboard({ user }) {
   });
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [expandedDesc, setExpandedDesc] = useState({});
+  const [documentError, setDocumentError] = useState("");
 
   // Teams
   const [teams, setTeams]               = useState([]);
@@ -129,6 +131,7 @@ export default function DetachmentDashboard({ user }) {
   const [createTeamError, setCreateTeamError] = useState("");
   useAutoDismiss(assignError, setAssignError);
   useAutoDismiss(createTeamError, setCreateTeamError);
+  useAutoDismiss(documentError, setDocumentError);
   const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
   const sortedDetUsers = [...detUsers].sort(sortUsersByWorkload(workloadMap));
   const investigators = sortedDetUsers.filter((u) => u.role === "investigator" && u.is_active !== false);
@@ -302,6 +305,11 @@ export default function DetachmentDashboard({ user }) {
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const displayName = [user?.rank, user?.name?.split(" ")[0] || user?.service_number || "Officer"].filter(Boolean).join(" ");
 
+  const handleProtectedDocumentOpen = async (url, label = "document") => {
+    setDocumentError("");
+    await openProtectedFile(url, { label, onError: setDocumentError });
+  };
+
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
 
@@ -367,6 +375,11 @@ export default function DetachmentDashboard({ user }) {
             View All →
           </button>
         </div>
+        {documentError && (
+          <p className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {documentError}
+          </p>
+        )}
         <div className="bg-gray-800 rounded-xl overflow-hidden">
           {loadingCases ? (
             <div className="p-4 space-y-3">
@@ -430,14 +443,13 @@ export default function DetachmentDashboard({ user }) {
                     </td>
                     <td className="px-3 md:px-5 py-3">
                       {c.tasking_letter ? (
-                        <a
-                          href={c.tasking_letter}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => handleProtectedDocumentOpen(c.tasking_letter, "tasking letter")}
                           className="text-xs text-blue-400 hover:underline whitespace-nowrap"
                         >
                           View
-                        </a>
+                        </button>
                       ) : (
                         <span className="text-xs text-gray-500">--</span>
                       )}
