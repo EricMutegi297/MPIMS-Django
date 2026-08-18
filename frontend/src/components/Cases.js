@@ -812,7 +812,7 @@ function ScannableFileInput({
 
   function handleScanRequest() {
     setDirectScanFailed(false);
-    setShowScanGuide(true);
+    runDirectScan();
   }
 
   function handleDirectScan() {
