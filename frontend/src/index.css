@@ -91,6 +91,122 @@
 	color: #374151;
 }
 
+/* Compact dashboard density: keeps operational pages from feeling browser-zoomed. */
+.dashboard-compact .dashboard-main .text-2xl {
+	font-size: 1.25rem !important;
+	line-height: 1.75rem !important;
+}
+
+.dashboard-compact .dashboard-main .text-xl {
+	font-size: 1.125rem !important;
+	line-height: 1.5rem !important;
+}
+
+.dashboard-compact .dashboard-main .text-lg {
+	font-size: 1rem !important;
+	line-height: 1.5rem !important;
+}
+
+.dashboard-compact .dashboard-main .text-sm {
+	font-size: 0.8125rem !important;
+	line-height: 1.25rem !important;
+}
+
+.dashboard-compact .dashboard-main .p-6 {
+	padding: 1rem !important;
+}
+
+.dashboard-compact .dashboard-main .p-5 {
+	padding: 0.875rem !important;
+}
+
+.dashboard-compact .dashboard-main .p-4 {
+	padding: 0.75rem !important;
+}
+
+.dashboard-compact .dashboard-main .px-6 {
+	padding-left: 1rem !important;
+	padding-right: 1rem !important;
+}
+
+.dashboard-compact .dashboard-main .px-5,
+.dashboard-compact .dashboard-main .px-4 {
+	padding-left: 0.875rem !important;
+	padding-right: 0.875rem !important;
+}
+
+.dashboard-compact .dashboard-main .py-6 {
+	padding-top: 1rem !important;
+	padding-bottom: 1rem !important;
+}
+
+.dashboard-compact .dashboard-main .py-5,
+.dashboard-compact .dashboard-main .py-4 {
+	padding-top: 0.875rem !important;
+	padding-bottom: 0.875rem !important;
+}
+
+.dashboard-compact .dashboard-main .gap-6 {
+	gap: 1rem !important;
+}
+
+.dashboard-compact .dashboard-main .gap-5,
+.dashboard-compact .dashboard-main .gap-4 {
+	gap: 0.875rem !important;
+}
+
+.dashboard-compact .dashboard-main .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+	--tw-space-y-reverse: 0;
+	margin-top: calc(1rem * calc(1 - var(--tw-space-y-reverse))) !important;
+	margin-bottom: calc(1rem * var(--tw-space-y-reverse)) !important;
+}
+
+.dashboard-compact .dashboard-main .space-y-5 > :not([hidden]) ~ :not([hidden]),
+.dashboard-compact .dashboard-main .space-y-4 > :not([hidden]) ~ :not([hidden]) {
+	--tw-space-y-reverse: 0;
+	margin-top: calc(0.875rem * calc(1 - var(--tw-space-y-reverse))) !important;
+	margin-bottom: calc(0.875rem * var(--tw-space-y-reverse)) !important;
+}
+
+.dashboard-compact .dashboard-main .min-h-\[82px\] {
+	min-height: 4.25rem !important;
+}
+
+.dashboard-compact .dashboard-main .h-\[82px\] {
+	height: 4.25rem !important;
+}
+
+@media (min-width: 768px) {
+	.dashboard-compact .dashboard-main .md\:p-6 {
+		padding: 1rem !important;
+	}
+
+	.dashboard-compact .dashboard-main .md\:p-5,
+	.dashboard-compact .dashboard-main .md\:p-4 {
+		padding: 0.875rem !important;
+	}
+
+	.dashboard-compact .dashboard-main .md\:px-6,
+	.dashboard-compact .dashboard-main .md\:px-5,
+	.dashboard-compact .dashboard-main .md\:px-4 {
+		padding-left: 0.875rem !important;
+		padding-right: 0.875rem !important;
+	}
+
+	.dashboard-compact .dashboard-main .md\:py-6,
+	.dashboard-compact .dashboard-main .md\:py-5,
+	.dashboard-compact .dashboard-main .md\:py-4 {
+		padding-top: 0.875rem !important;
+		padding-bottom: 0.875rem !important;
+	}
+
+	.dashboard-compact .dashboard-main .md\:gap-6,
+	.dashboard-compact .dashboard-main .md\:gap-5,
+	.dashboard-compact .dashboard-main .md\:gap-4 {
+		gap: 0.875rem !important;
+	}
+}
+
 @media print {
 	@page {
 		size: A4;

@@ -678,7 +678,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="dashboard-light min-h-screen bg-gray-900 flex">
+    <div className="dashboard-light dashboard-compact min-h-screen bg-gray-900 flex">
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-56 bg-gray-800 flex-col">
         <div className="px-5 py-4 border-b border-gray-700">
@@ -836,7 +836,7 @@ export default function Dashboard() {
       )}
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-gray-900 pt-14 lg:pt-0">
+      <main className="dashboard-main flex-1 overflow-auto bg-gray-900 pt-14 lg:pt-0">
         <Suspense fallback={<ModuleFallback />}>
           <Routes>
             <Route path="/" element={
