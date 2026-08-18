@@ -680,7 +680,7 @@ async function scanFromLocalScanner(documentType) {
   });
 }
 
-function ScannerHelperUnavailableModal({ documentLabel, scanning, onRetry, onUpload, onCancel }) {
+function ScanThenUploadModal({ documentLabel, scanning, directScanFailed, onDirectScan, onUpload, onCancel }) {
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
@@ -692,14 +692,14 @@ function ScannerHelperUnavailableModal({ documentLabel, scanning, onRetry, onUpl
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-amber-600">Scanner Connection</p>
-            <h3 className="mt-1 text-xl font-semibold text-slate-950">Scanner helper not detected</h3>
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Scan Then Upload</p>
+            <h3 className="mt-1 text-xl font-semibold text-slate-950">Attach a scanned document</h3>
           </div>
           <button
             type="button"
             onClick={onCancel}
             className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-            aria-label="Close scanner helper notice"
+            aria-label="Close scan instructions"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -708,22 +708,29 @@ function ScannerHelperUnavailableModal({ documentLabel, scanning, onRetry, onUpl
         </div>
 
         <p className="text-sm leading-6 text-slate-600">
-          MPIMS tried to reach the local scanner service on this computer but it is not running. You can still attach
-          {documentLabel ? ` ${documentLabel.toLowerCase()}` : " the document"} by scanning with the normal scanner app,
-          saving the PDF or image, then choosing the saved file here.
+          Use your scanner software to scan {documentLabel ? documentLabel.toLowerCase() : "the document"}, save it as
+          a PDF or image, then upload the saved scan here. If the MPIMS scanner helper is already running on this
+          computer, you can use direct scan as a shortcut.
         </p>
 
+        {directScanFailed && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Direct scan is not available on this computer right now. You can still scan with the normal scanner app and
+            upload the saved file.
+          </div>
+        )}
+
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-            <p className="text-sm font-semibold text-slate-950">Use scanner app</p>
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">1. Scan and save</p>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              Open the scanner software on this PC, scan the document, and save it as PDF or image.
+              Open the scanner app on this PC, scan the document, and save it as PDF, JPG, or PNG.
             </p>
           </div>
-          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <p className="text-sm font-semibold text-slate-950">Upload saved scan</p>
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-sm font-semibold text-slate-950">2. Upload saved file</p>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              After saving the scan, select it from this form and submit normally.
+              Return to MPIMS, choose the saved scan, and submit the form normally.
             </p>
           </div>
         </div>
@@ -739,11 +746,11 @@ function ScannerHelperUnavailableModal({ documentLabel, scanning, onRetry, onUpl
           </button>
           <button
             type="button"
-            onClick={onRetry}
+            onClick={onDirectScan}
             disabled={scanning}
             className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
-            Try Direct Scan Again
+            {scanning ? "Scanning..." : "Scan Directly"}
           </button>
           <button
             type="button"
@@ -773,7 +780,8 @@ function ScannableFileInput({
 }) {
   const [scanning, setScanning] = useState(false);
   const [scanNotice, setScanNotice] = useState("");
-  const [showScannerNotice, setShowScannerNotice] = useState(false);
+  const [showScanGuide, setShowScanGuide] = useState(false);
+  const [directScanFailed, setDirectScanFailed] = useState(false);
   const fileInputRef = useRef(null);
   const isLight = variant === "light";
 
@@ -790,9 +798,12 @@ function ScannableFileInput({
     try {
       const scannedFile = await scanFromLocalScanner(documentType || label);
       onFileChange(scannedFile);
+      setShowScanGuide(false);
+      setDirectScanFailed(false);
       setScanNotice("Scanned document attached.");
     } catch {
-      setShowScannerNotice(true);
+      setShowScanGuide(true);
+      setDirectScanFailed(true);
       onScanError?.("");
     } finally {
       setScanning(false);
@@ -800,16 +811,18 @@ function ScannableFileInput({
   }
 
   function handleScanRequest() {
-    runDirectScan();
+    setDirectScanFailed(false);
+    setShowScanGuide(true);
   }
 
-  function handleRetryDirectScan() {
-    setShowScannerNotice(false);
+  function handleDirectScan() {
+    setDirectScanFailed(false);
     runDirectScan();
   }
 
   function handleChooseSavedFile() {
-    setShowScannerNotice(false);
+    setShowScanGuide(false);
+    setDirectScanFailed(false);
     setScanNotice("Scan with your scanner app, save the file, then choose the saved scan here.");
     fileInputRef.current?.click();
   }
@@ -869,13 +882,14 @@ function ScannableFileInput({
           </button>
         </div>
       )}
-      {showScannerNotice && (
-        <ScannerHelperUnavailableModal
+      {showScanGuide && (
+        <ScanThenUploadModal
           documentLabel={label}
           scanning={scanning}
-          onRetry={handleRetryDirectScan}
+          directScanFailed={directScanFailed}
+          onDirectScan={handleDirectScan}
           onUpload={handleChooseSavedFile}
-          onCancel={() => setShowScannerNotice(false)}
+          onCancel={() => setShowScanGuide(false)}
         />
       )}
     </div>
