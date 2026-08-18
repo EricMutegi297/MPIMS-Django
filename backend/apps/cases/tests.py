@@ -83,7 +83,6 @@ class CaseApiTests(TestCase):
     def test_create_case_without_accused_or_rfi_allows_hqs_admin(self):
         url = reverse("case-list")
         payload = {
-            "title": "HQS case without accused or RFI",
             "description": "HQS case without accused or RFI attachment",
             "offence": "Theft",
             "offence_type": Case.OffenceType.SERVICE,
@@ -99,12 +98,11 @@ class CaseApiTests(TestCase):
         self.assertIn("case_number", response.data)
         self.assertEqual(Case.objects.filter(case_number=response.data["case_number"]).count(), 1)
 
-    def test_create_case_requires_core_fields_but_not_accused_or_rfi(self):
+    def test_create_case_requires_core_fields_but_not_title_accused_or_rfi(self):
         response = self.client.post(reverse("case-list"), {}, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         for field in [
-            "title",
             "offence",
             "offence_type",
             "submitting_unit",
@@ -113,8 +111,27 @@ class CaseApiTests(TestCase):
             "description",
         ]:
             self.assertIn(field, response.data)
+        self.assertNotIn("title", response.data)
         self.assertNotIn("accused_entries", response.data)
         self.assertNotIn("rfi_document", response.data)
+
+    def test_create_case_with_rfi_attachment_requires_rfi_no_and_date(self):
+        payload = {
+            "description": "Case with RFI file but missing reference metadata",
+            "offence": "Theft",
+            "offence_type": Case.OffenceType.SERVICE,
+            "service_offence_severity": Case.ServiceOffenceSeverity.SERIOUS,
+            "date_of_offence": "2026-06-28",
+            "place_of_offence": "Kahawa Barracks",
+            "submitting_unit": str(self.unit.id),
+            "rfi_document": SimpleUploadedFile("rfi.pdf", b"%PDF-1.4\n", content_type="application/pdf"),
+        }
+
+        response = self.client.post(reverse("case-list"), payload, format="multipart")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rfi_no", response.data)
+        self.assertIn("rfi_date", response.data)
 
     def test_create_case_with_multipart_json_accused_entries_creates_duplicate_cases(self):
         url = reverse("case-list")
@@ -179,6 +196,7 @@ class CaseApiTests(TestCase):
                     b"%PDF-1.4\n",
                     content_type="application/pdf",
                 ),
+                "tasking_no": "TASK/001/2026",
                 "tasking_date": timezone.now().isoformat(),
             },
             format="multipart",
@@ -186,6 +204,31 @@ class CaseApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assert_notification_message(case, "tasked to Special Investigation Battalion")
+
+    def test_tasking_case_requires_tasking_no(self):
+        case = Case.objects.create(
+            title="Tasking number required",
+            offence="Theft",
+            status=Case.Status.NEW,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "tasked_battalion": str(self.special_battalion.id),
+                "tasking_letter": SimpleUploadedFile(
+                    "tasking.pdf",
+                    b"%PDF-1.4\n",
+                    content_type="application/pdf",
+                ),
+                "tasking_date": timezone.now().isoformat(),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("tasking_no", response.data)
 
     def test_corps_commander_notified_when_case_served(self):
         case = Case.objects.create(

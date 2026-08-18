@@ -675,8 +675,6 @@ class CaseSerializer(serializers.ModelSerializer):
     def _validate_required_create_fields(self, attrs):
         errors = {}
 
-        if self._blank(attrs.get("title")):
-            errors["title"] = "Case title is required."
         if not attrs.get("offence_ref") and self._blank(attrs.get("offence")):
             errors["offence"] = "Offence is required."
         if not attrs.get("offence_type"):
@@ -733,6 +731,10 @@ class CaseSerializer(serializers.ModelSerializer):
             "tasking_date",
             getattr(instance, "tasking_date", None),
         )
+        tasking_no = attrs.get(
+            "tasking_no",
+            getattr(instance, "tasking_no", ""),
+        )
         tasked_detachment = attrs.get(
             "tasked_detachment",
             getattr(instance, "tasked_detachment", None),
@@ -769,6 +771,13 @@ class CaseSerializer(serializers.ModelSerializer):
         prev_status = getattr(instance, "status", None)
         mentioning_date = attrs.get("mentioning_date", getattr(instance, "mentioning_date", None))
         mentioning_remarks = attrs.get("mentioning_remarks", getattr(instance, "mentioning_remarks", ""))
+        rfi_document = attrs.get("rfi_document", getattr(instance, "rfi_document", None))
+        rfi_no = attrs.get("rfi_no", getattr(instance, "rfi_no", ""))
+        rfi_date = attrs.get("rfi_date", getattr(instance, "rfi_date", None))
+        tasking_requested = any(
+            field in attrs
+            for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
+        )
 
         if instance and instance.status == Case.Status.CLOSED:
             blocked_file_fields = sorted(field for field in CASE_FILE_FIELDS if field in attrs)
@@ -823,25 +832,42 @@ class CaseSerializer(serializers.ModelSerializer):
                 {"tasked_battalion": "Cases can only be tasked to Special or Normal battalions."}
             )
 
-        if tasked_battalion and not tasking_letter:
+        if rfi_document:
+            rfi_errors = {}
+            if self._blank(rfi_no):
+                rfi_errors["rfi_no"] = "RFI number is required when an RFI attachment is uploaded."
+            if not rfi_date:
+                rfi_errors["rfi_date"] = "RFI date is required when an RFI attachment is uploaded."
+            if rfi_errors:
+                raise serializers.ValidationError(rfi_errors)
+
+        tasking_validation_requested = tasking_requested or (status_in_payload and target_status == Case.Status.TASKED)
+        if tasking_validation_requested and not tasked_battalion:
+            raise serializers.ValidationError(
+                {"tasked_battalion": "Select a battalion before completing tasking."}
+            )
+
+        if tasking_validation_requested and tasked_battalion and not tasking_letter:
             raise serializers.ValidationError(
                 {"tasking_letter": "Attach a tasking letter before completing tasking."}
             )
 
-        if tasked_battalion and not tasking_date:
+        if tasking_validation_requested and tasked_battalion and not tasking_date:
             raise serializers.ValidationError(
                 {"tasking_date": "Tasking date and time is required when tasking a battalion."}
             )
 
-        tasking_requested = any(
-            field in attrs
-            for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
-        )
+        if tasking_validation_requested and tasked_battalion and self._blank(tasking_no):
+            raise serializers.ValidationError(
+                {"tasking_no": "Tasking number is required before this case can be tasked."}
+            )
+
         if (
             tasking_requested
             and tasked_battalion
             and tasking_letter
             and tasking_date
+            and not self._blank(tasking_no)
             and not status_in_payload
             and target_status in {Case.Status.NEW, Case.Status.OPEN}
         ):

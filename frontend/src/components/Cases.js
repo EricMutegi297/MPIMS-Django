@@ -360,6 +360,7 @@ const INIT_CREATE = {
   service_offence_severity: "", criminal_offence_type: "",
   accused_entries: [INIT_ACCUSED_ENTRY],
   accused_service: "", submitting_unit: "", date_of_offence: "", place_of_offence: "",
+  rfi_no: "", rfi_date: "", tasking_no: "",
   rfi_document: null,
 };
 
@@ -368,7 +369,6 @@ function isBlank(value) {
 }
 
 function validateRequiredCreateCase(form, offencesAvailable) {
-  if (isBlank(form.title)) return "Case title is required.";
   if (offencesAvailable && !form.offence_ref) return "Select an offence.";
   if (!offencesAvailable && isBlank(form.offence)) return "Offence is required.";
   if (!form.offence_type) return "Offence type is required.";
@@ -395,6 +395,12 @@ function validateRequiredCreateCase(form, offencesAvailable) {
   if (!form.date_of_offence) return "Date of offence is required.";
   if (isBlank(form.place_of_offence)) return "Place of offence is required.";
   if (isBlank(form.description)) return "Description is required.";
+  if (form.rfi_document && isBlank(form.rfi_no)) {
+    return "RFI number is required when an RFI attachment is selected.";
+  }
+  if (form.rfi_document && !form.rfi_date) {
+    return "RFI date is required when an RFI attachment is selected.";
+  }
   return "";
 }
 
@@ -428,6 +434,9 @@ function caseToForm(caseObj) {
     submitting_unit: caseObj?.submitting_unit ? String(caseObj.submitting_unit) : "",
     date_of_offence: normalizeDateForApi(caseObj?.date_of_offence),
     place_of_offence: caseObj?.place_of_offence || "",
+    rfi_no: caseObj?.rfi_no || "",
+    rfi_date: normalizeDateForApi(caseObj?.rfi_date),
+    tasking_no: caseObj?.tasking_no || "",
     rfi_document: null,
   };
 }
@@ -1039,6 +1048,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [showTask, setShowTask]       = useState(false);
   const [taskModalMode, setTaskModalMode] = useState(false);
   const [taskBattalion, setTaskBattalion] = useState("");
+  const [taskingNo, setTaskingNo] = useState("");
   const [taskingDate, setTaskingDate] = useState("");
   const [taskFile, setTaskFile]       = useState(null);
   const [taskSaving, setTaskSaving]   = useState(false);
@@ -1734,6 +1744,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function handleTask(e) {
     e.preventDefault();
     if (!taskBattalion) { setTaskErr("Select a battalion."); return; }
+    if (!taskingNo.trim()) { setTaskErr("Enter the tasking number."); return; }
     if (!taskFile)      { setTaskErr("Attach a tasking letter."); return; }
     if (!taskingDate)   { setTaskErr("Set a tasking date."); return; }
     const normalized = normalizeDateForApi(taskingDate);
@@ -1747,6 +1758,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     const taskingDateTime = `${taskingDate}T${hh}:${mm}:${ss}`;
     const fd = new FormData();
     fd.append("tasked_battalion", taskBattalion);
+    fd.append("tasking_no", taskingNo.trim());
     fd.append("tasking_letter", taskFile);
     fd.append("tasking_date", taskingDateTime);
     fd.append("status", "tasked");
@@ -1771,6 +1783,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       setShowTask(false);
       setTaskModalMode(false);
       setTaskBattalion("");
+      setTaskingNo("");
       setTaskFile(null);
       setTaskingDate("");
     } catch (err) {
@@ -2278,6 +2291,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     const willShow = !showTask;
     if (willShow) {
       setTaskBattalion("");
+      setTaskingNo(selected?.tasking_no || "");
       setTaskFile(null);
       setTaskingDate(todayISO);
     }
@@ -2350,6 +2364,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskModalMode(true);
     setTaskErr("");
     setTaskBattalion("");
+    setTaskingNo(c?.tasking_no || "");
     setTaskFile(null);
     setTaskingDate(todayISO);
     setShowTask(true);
@@ -3033,6 +3048,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
                   <Field label="Tasked Battalion" value={selected.tasked_battalion_name} />
                   <Field label="Type" value={selected.tasked_battalion_type} />
+                  <Field label="Tasking No" value={selected.tasking_no} />
                   <Field
                     label="Tasking Date"
                     value={selected.tasking_date ? new Date(selected.tasking_date).toLocaleString("en-GB") : null}
@@ -3061,7 +3077,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             )}
 
             {/* RFI */}
-            {selected.rfi_no && (
+            {(selected.rfi_no || selected.rfi_date || selected.rfi_document) && (
               <div>
                 <SectionLabel>RFI</SectionLabel>
                 <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
@@ -3303,6 +3319,16 @@ export default function Cases({ user, criminalTypeFilter }) {
                       </select>
                     </div>
                     <div>
+                      <label className="text-xs text-gray-400 block mb-1">Tasking No *</label>
+                      <input
+                        type="text"
+                        value={taskingNo}
+                        onChange={(e) => { setTaskingNo(e.target.value); if (taskErr) setTaskErr(""); }}
+                        placeholder="Enter tasking number"
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      />
+                    </div>
+                    <div>
                       <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
                       <input
                         type="date"
@@ -3326,7 +3352,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <ErrMsg msg={taskErr} />
                     <button
                       type="submit"
-                      disabled={taskSaving || !taskFile}
+                      disabled={taskSaving || !taskingNo.trim() || !taskFile}
                       className="w-full py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
                     >
                       {taskSaving ? "Tasking…" : "Submit Tasking"}
@@ -3870,16 +3896,26 @@ export default function Cases({ user, criminalTypeFilter }) {
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                 >
                   <option value="">Select battalion…</option>
-                  {battalions.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
-                <input
+              {battalions.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Tasking No *</label>
+            <input
+              type="text"
+              value={taskingNo}
+              onChange={(e) => { setTaskingNo(e.target.value); if (taskErr) setTaskErr(""); }}
+              placeholder="Enter tasking number"
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
+            <input
                   type="date"
                   value={taskingDate}
                   onChange={(e) => setTaskingDate(e.target.value)}
@@ -3899,11 +3935,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                 disabled={taskSaving}
               />
               <ErrMsg msg={taskErr} />
-              <button
-                type="submit"
-                disabled={taskSaving || !taskFile}
-                className="w-full py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
-              >
+            <button
+              type="submit"
+              disabled={taskSaving || !taskingNo.trim() || !taskFile}
+              className="w-full py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+            >
                 {taskSaving ? "Tasking…" : "Submit Tasking"}
               </button>
             </form>
@@ -3935,18 +3971,6 @@ export default function Cases({ user, criminalTypeFilter }) {
 
             <form onSubmit={handleCreate} className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-
-                <div className="col-span-2">
-                  <CaseFormLabel>Case Title *</CaseFormLabel>
-                  <input
-                    type="text"
-                    value={createForm.title}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
-                    placeholder="Short case title"
-                    required={caseFormMode === "create"}
-                    className={CASE_FORM_CONTROL}
-                  />
-                </div>
 
                 <div className="col-span-2">
                   <CaseFormLabel>Offence *</CaseFormLabel>
@@ -4186,6 +4210,40 @@ export default function Cases({ user, criminalTypeFilter }) {
                     rows={3}
                     required={caseFormMode === "create"}
                     className={`${CASE_FORM_CONTROL} resize-none`}
+                  />
+                </div>
+
+                <div>
+                  <CaseFormLabel>RFI No{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
+                  <input
+                    type="text"
+                    value={createForm.rfi_no}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, rfi_no: e.target.value }))}
+                    placeholder="Enter RFI number"
+                    required={caseFormMode === "create" && Boolean(createForm.rfi_document)}
+                    className={CASE_FORM_CONTROL}
+                  />
+                </div>
+
+                <div>
+                  <CaseFormLabel>RFI Date{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
+                  <input
+                    type="date"
+                    value={createForm.rfi_date}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, rfi_date: e.target.value }))}
+                    required={caseFormMode === "create" && Boolean(createForm.rfi_document)}
+                    className={CASE_FORM_CONTROL}
+                  />
+                </div>
+
+                <div className="col-span-2">
+                  <CaseFormLabel>Tasking No</CaseFormLabel>
+                  <input
+                    type="text"
+                    value={createForm.tasking_no}
+                    onChange={(e) => setCreateForm((f) => ({ ...f, tasking_no: e.target.value }))}
+                    placeholder="Optional until the case is tasked"
+                    className={CASE_FORM_CONTROL}
                   />
                 </div>
 

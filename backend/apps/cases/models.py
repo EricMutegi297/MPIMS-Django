@@ -123,6 +123,7 @@ class Case(models.Model):
     )
     rfi_document = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     tasking_letter = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    tasking_no = models.CharField(max_length=50, blank=True)
     tasking_date = models.DateTimeField(null=True, blank=True)
     assigned_team = models.ForeignKey(
         "InvestigationTeam",
