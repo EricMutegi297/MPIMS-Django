@@ -56,6 +56,52 @@ function normalizeDateForInput(value) {
   return isoPrefix ? isoPrefix[1] : "";
 }
 
+function coyLabel(detachment) {
+  if (!detachment) return "";
+  const company = detachment.company ? `${detachment.company} Coy` : "Coy";
+  return [company, detachment.name].filter(Boolean).join(" - ");
+}
+
+function compactSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function coySearchText(detachment) {
+  return [
+    detachment?.company,
+    detachment?.name,
+    detachment?.aor,
+    detachment?.mobile_no,
+    detachment?.email,
+    coyLabel(detachment),
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function coyMatches(detachment, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const text = coySearchText(detachment);
+  const compactText = compactSearchText(text);
+  const compactNeedle = compactSearchText(needle);
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  return (
+    text.includes(needle)
+    || (compactNeedle && compactText.includes(compactNeedle))
+    || tokens.every((token) => text.includes(token) || compactText.includes(compactSearchText(token)))
+  );
+}
+
+function coyRank(detachment, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return 50;
+  const company = String(detachment?.company || "").toLowerCase();
+  const name = String(detachment?.name || "").toLowerCase();
+  if (company === needle || name === needle) return 0;
+  if (company.startsWith(needle) || name.startsWith(needle)) return 1;
+  if (coySearchText(detachment).includes(needle)) return 2;
+  return 3;
+}
+
 const PAGE_SIZE = 25;
 
 const STATUS_STYLE = {
@@ -98,6 +144,101 @@ function Badge({ label, style }) {
     <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium capitalize ${style}`}>
       {label?.replace(/_/g, " ")}
     </span>
+  );
+}
+
+function CoySearchPicker({ detachments, value, onChange, disabled }) {
+  const selected = detachments.find((detachment) => String(detachment.id) === String(value));
+  const [query, setQuery] = useState(selected ? coyLabel(selected) : "");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setQuery(selected ? coyLabel(selected) : "");
+  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const trimmed = query.trim();
+  const matches = detachments
+    .filter((detachment) => coyMatches(detachment, trimmed))
+    .sort((a, b) =>
+      coyRank(a, trimmed) - coyRank(b, trimmed)
+      || coyLabel(a).localeCompare(coyLabel(b))
+    )
+    .slice(0, 20);
+
+  return (
+    <div className="relative mb-4">
+      <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+        Select Coy
+      </label>
+      <input
+        type="search"
+        value={query}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(event) => {
+          const nextQuery = event.target.value;
+          setQuery(nextQuery);
+          setOpen(true);
+          if (value || !nextQuery.trim()) onChange("");
+        }}
+        disabled={disabled}
+        placeholder="Search Coy by letter, name, AOR, mobile, email..."
+        className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pr-14 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-yellow-500 disabled:opacity-60"
+      />
+      {value && !disabled && (
+        <button
+          type="button"
+          onClick={() => {
+            onChange("");
+            setQuery("");
+            setOpen(true);
+          }}
+          className="absolute right-2 top-8 text-xs font-medium text-gray-400 hover:text-white"
+        >
+          Clear
+        </button>
+      )}
+
+      {open && !disabled && (
+        <div className="absolute z-[70] mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 shadow-2xl">
+          {detachments.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-orange-300">No companies found under this battalion.</div>
+          ) : matches.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-gray-400">No matching Coy found.</div>
+          ) : matches.map((detachment) => (
+            <button
+              key={detachment.id}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(String(detachment.id));
+                setQuery(coyLabel(detachment));
+                setOpen(false);
+              }}
+              className="block w-full border-b border-gray-700/60 px-3 py-2 text-left text-sm text-gray-200 last:border-b-0 hover:bg-gray-700"
+            >
+              <span className="block font-semibold text-white">{coyLabel(detachment)}</span>
+              <span className="mt-0.5 block text-xs text-gray-400">
+                {[detachment.aor && `AOR: ${detachment.aor}`, detachment.mobile_no, detachment.email]
+                  .filter(Boolean)
+                  .join(" | ") || "No extra details"}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {selected && (
+        <div className="mt-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2">
+          <p className="text-xs font-semibold text-yellow-200">Selected: {coyLabel(selected)}</p>
+          {(selected.aor || selected.mobile_no || selected.email) && (
+            <p className="mt-0.5 text-xs text-gray-400">
+              {[selected.aor && `AOR: ${selected.aor}`, selected.mobile_no, selected.email].filter(Boolean).join(" | ")}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -751,21 +892,12 @@ export default function BattalionDashboard({ user }) {
               {taskModal.title || taskModal.offence}
             </p>
 
-            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
-              Select Coy
-            </label>
-            <select
+            <CoySearchPicker
+              detachments={detachments}
               value={selDetachment}
-              onChange={(e) => setSelDetachment(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500 mb-4"
-            >
-              <option value="">-- Choose Coy --</option>
-              {detachments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.company ? `${d.company} Coy` : "Coy"}{d.name ? ` - ${d.name}` : ""}
-                </option>
-              ))}
-            </select>
+              onChange={setSelDetachment}
+              disabled={taskingCase}
+            />
 
             {detachments.length === 0 && (
               <p className="text-xs text-orange-400 mb-4">No companies found under this battalion.</p>
