@@ -12,13 +12,22 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [totpStep, setTotpStep] = useState(null);
   const [totpCode, setTotpCode] = useState("");
+  const [emailOtpStep, setEmailOtpStep] = useState(null);
+  const [emailOtpCode, setEmailOtpCode] = useState("");
   useAutoDismiss(error, setError);
+
+  const challengeActive = Boolean(totpStep || emailOtpStep);
 
   const handleChange = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
   const handleTotpChange = (e) => {
     setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6));
+    setError("");
+  };
+
+  const handleEmailOtpChange = (e) => {
+    setEmailOtpCode(e.target.value.replace(/\D/g, "").slice(0, 8));
     setError("");
   };
 
@@ -58,11 +67,38 @@ export default function Login() {
     }
   };
 
+  const handleEmailOtpSubmit = async (e) => {
+    e.preventDefault();
+    if (!emailOtpStep?.challenge_id) {
+      setError("Sign in again to request a new email verification code.");
+      return;
+    }
+    if (emailOtpCode.length < 6) {
+      setError("Enter the verification code sent to your email.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const res = await authService.verifyEmailOtpLogin(emailOtpStep.challenge_id, emailOtpCode);
+      navigateAfterAuth(res.data);
+    } catch (err) {
+      setError(
+        err.response?.data?.detail ||
+          "Email verification failed."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setTotpStep(null);
     setTotpCode("");
+    setEmailOtpStep(null);
+    setEmailOtpCode("");
     setLoading(true);
     try {
       const res = await authService.login(form.service_number, form.password);
@@ -72,6 +108,10 @@ export default function Login() {
       }
       if (res.data.requiresTotp && res.data.totpChallenge) {
         setTotpStep(res.data.totpChallenge);
+        return;
+      }
+      if (res.data.requiresEmailOtp && res.data.emailOtpChallenge) {
+        setEmailOtpStep(res.data.emailOtpChallenge);
         return;
       }
       navigateAfterAuth(res.data);
@@ -94,7 +134,10 @@ export default function Login() {
         </div>
       )}
 
-      <form onSubmit={totpStep ? handleTotpSubmit : handleSubmit} className="space-y-3 sm:space-y-4">
+      <form
+        onSubmit={emailOtpStep ? handleEmailOtpSubmit : totpStep ? handleTotpSubmit : handleSubmit}
+        className="space-y-3 sm:space-y-4"
+      >
           <div>
             <label className="mb-1.5 block font-serif text-base font-bold text-black sm:text-lg">
               *Username:
@@ -105,7 +148,7 @@ export default function Login() {
               value={form.service_number}
               onChange={handleChange}
               required
-              disabled={!!totpStep}
+              disabled={challengeActive}
               className="w-full rounded-md border border-slate-400 bg-white px-3 py-2.5 text-center text-base text-slate-900 placeholder-slate-500 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-slate-100"
               placeholder="*Enter Your Service Number"
             />
@@ -122,7 +165,7 @@ export default function Login() {
                 value={form.password}
                 onChange={handleChange}
                 required
-                disabled={!!totpStep}
+                disabled={challengeActive}
                 className="w-full rounded-md border border-slate-400 bg-white px-3 py-2.5 pr-11 text-center text-base text-slate-900 placeholder-slate-500 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:bg-slate-100"
                 placeholder="*Enter your Password"
               />
@@ -170,8 +213,44 @@ export default function Login() {
                 onClick={() => {
                   setTotpStep(null);
                   setTotpCode("");
+                  setEmailOtpStep(null);
+                  setEmailOtpCode("");
                 }}
                 className="mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900"
+              >
+                Use different credentials
+              </button>
+            </div>
+          )}
+
+          {emailOtpStep && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <label className="mb-1.5 block text-sm font-semibold text-emerald-900">
+                Email Verification Code
+              </label>
+              <p className="mb-2 text-xs text-emerald-800">
+                We sent a login code to {emailOtpStep.sent_to || "your email"}.
+              </p>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={emailOtpCode}
+                onChange={handleEmailOtpChange}
+                autoFocus
+                required
+                className="w-full rounded-lg border border-emerald-300 bg-white px-3 py-2.5 text-center text-xl font-bold tracking-[0.3em] text-slate-950 outline-none focus:ring-2 focus:ring-emerald-300"
+                placeholder="000000"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setTotpStep(null);
+                  setTotpCode("");
+                  setEmailOtpStep(null);
+                  setEmailOtpCode("");
+                }}
+                className="mt-2 text-xs font-semibold text-emerald-700 hover:text-emerald-900"
               >
                 Use different credentials
               </button>
@@ -183,10 +262,10 @@ export default function Login() {
             disabled={loading}
             className="mx-auto block rounded-md bg-black px-6 py-2.5 font-serif text-base font-bold text-white transition-colors hover:bg-slate-800 disabled:opacity-60"
           >
-            {loading ? "Signing in..." : totpStep ? "Verify Code" : "Login"}
+            {loading ? "Signing in..." : challengeActive ? "Verify Code" : "Login"}
           </button>
 
-          {!totpStep && (
+          {!challengeActive && (
             <div className="pt-1 text-center">
               <Link
                 to="/forgot-password"

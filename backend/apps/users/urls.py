@@ -13,6 +13,7 @@ urlpatterns = [
     path("totp/setup/", views.totp_setup, name="totp-setup"),
     path("totp/setup/confirm/", views.totp_setup_confirm, name="totp-setup-confirm"),
     path("totp/login/verify/", views.totp_login_verify, name="totp-login-verify"),
+    path("email-otp/login/verify/", views.email_otp_login_verify, name="email-otp-login-verify"),
     path("users/<int:pk>/totp-reset/", views.user_totp_reset, name="user-totp-reset"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("users/", views.UserListCreateView.as_view(), name="user-list"),

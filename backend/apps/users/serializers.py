@@ -24,6 +24,7 @@ class UserSerializer(serializers.ModelSerializer):
             "unit", "battalion", "formation", "detachment",
             "battalion_name", "battalion_type", "detachment_name",
             "is_active", "is_superuser", "must_change_password",
+            "mfa_exempt", "email_otp_enabled",
             "totp_configured", "totp_required",
             "created_at",
         ]
@@ -50,7 +51,25 @@ class UserSerializer(serializers.ModelSerializer):
     def get_totp_required(self, obj):
         from django.conf import settings
 
-        return bool(getattr(settings, "TOTP_REQUIRED", True))
+        return bool(getattr(settings, "TOTP_REQUIRED", True) and not obj.mfa_exempt)
+
+    def validate(self, attrs):
+        mfa_exempt = attrs.get("mfa_exempt", getattr(self.instance, "mfa_exempt", False))
+        email_otp_enabled = attrs.get(
+            "email_otp_enabled",
+            getattr(self.instance, "email_otp_enabled", False),
+        )
+        email = attrs.get("email", getattr(self.instance, "email", ""))
+
+        if email_otp_enabled and not mfa_exempt:
+            raise serializers.ValidationError(
+                {"email_otp_enabled": "Email OTP can only be enabled for Google Authenticator exempt users."}
+            )
+        if email_otp_enabled and not str(email or "").strip():
+            raise serializers.ValidationError(
+                {"email": "Email is required before enabling email OTP."}
+            )
+        return attrs
 
 
 class UserCreateSerializer(serializers.ModelSerializer):

@@ -1,20 +1,23 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
+from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
 
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
-    list_display = ("service_number", "name", "rank", "role", "unit", "is_active", "mfa_enabled")
-    list_filter = ("role", "is_active", "mfa_enabled", "formation")
+    list_display = (
+        "service_number", "name", "rank", "role", "unit",
+        "is_active", "mfa_exempt", "email_otp_enabled",
+    )
+    list_filter = ("role", "is_active", "mfa_exempt", "email_otp_enabled", "formation")
     search_fields = ("service_number", "name", "email")
     ordering = ("name",)
     fieldsets = (
         (None, {"fields": ("service_number", "password")}),
         ("Personal", {"fields": ("name", "rank", "email")}),
         ("Organisation", {"fields": ("role", "unit", "battalion", "formation", "detachment")}),
-        ("Flags", {"fields": ("is_active", "is_staff", "is_superuser", "must_change_password", "mfa_enabled")}),
-        ("MFA", {"fields": ("mfa_secret",)}),
+        ("Flags", {"fields": ("is_active", "is_staff", "is_superuser", "must_change_password")}),
+        ("MFA", {"fields": ("mfa_exempt", "email_otp_enabled")}),
     )
     add_fieldsets = (
         (None, {
@@ -41,6 +44,17 @@ class TOTPLoginChallengeAdmin(admin.ModelAdmin):
     list_filter = ("consumed_at",)
     search_fields = ("user__service_number", "user__name")
     readonly_fields = ("user", "challenge_id", "expires_at", "attempts", "consumed_at", "created_at")
+
+
+@admin.register(EmailOTPLoginChallenge)
+class EmailOTPLoginChallengeAdmin(admin.ModelAdmin):
+    list_display = ("user", "sent_to", "expires_at", "attempts", "consumed_at", "created_at")
+    list_filter = ("consumed_at",)
+    search_fields = ("user__service_number", "user__name", "sent_to")
+    readonly_fields = (
+        "user", "challenge_id", "code_hash", "sent_to",
+        "expires_at", "attempts", "consumed_at", "created_at",
+    )
 
 
 @admin.register(LoginThrottle)

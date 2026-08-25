@@ -46,6 +46,22 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function mfaBadge(user) {
+  if (user?.email_otp_enabled) {
+    return { label: "Email OTP", className: "bg-emerald-500/20 text-emerald-300" };
+  }
+  if (user?.mfa_exempt) {
+    return { label: "Exempt", className: "bg-amber-500/20 text-amber-300" };
+  }
+  if (user?.totp_configured) {
+    return { label: "Authenticator", className: "bg-blue-500/20 text-blue-300" };
+  }
+  if (user?.totp_required) {
+    return { label: "Setup Required", className: "bg-red-500/20 text-red-300" };
+  }
+  return { label: "Optional", className: "bg-gray-600 text-gray-300" };
+}
+
 export default function Users({ user }) {
   const [users, setUsers]       = useState([]);
   const [loading, setLoading]   = useState(true);
@@ -163,14 +179,19 @@ export default function Users({ user }) {
   };
 
   const openEdit = (u) => {
-    setEditTarget(u);
-    setEditForm({
+    const nextForm = {
       name: u.name || "",
       rank: u.rank || "",
       email: u.email || "",
       role: u.role || "",
       is_active: u.is_active,
-    });
+    };
+    if (isSuperuser) {
+      nextForm.mfa_exempt = Boolean(u.mfa_exempt);
+      nextForm.email_otp_enabled = Boolean(u.email_otp_enabled);
+    }
+    setEditTarget(u);
+    setEditForm(nextForm);
     setEditError("");
     setShowEdit(true);
   };
@@ -180,7 +201,12 @@ export default function Users({ user }) {
     setEditing(true);
     setEditError("");
     try {
-      await userService.update(editTarget.id, editForm);
+      const payload = { ...editForm };
+      if (!isSuperuser) {
+        delete payload.mfa_exempt;
+        delete payload.email_otp_enabled;
+      }
+      await userService.update(editTarget.id, payload);
       setShowEdit(false);
       loadUsers();
     } catch (err) {
@@ -398,6 +424,7 @@ export default function Users({ user }) {
                   <th className="text-left px-5 py-3 font-medium">Role</th>
                   <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Battalion</th>
                   <th className="text-left px-5 py-3 font-medium">Status</th>
+                  <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">MFA</th>
                   {canManage && <th className="text-left px-5 py-3 font-medium">Actions</th>}
                 </tr>
               </thead>
@@ -442,6 +469,11 @@ export default function Users({ user }) {
                         {u.is_active ? "Active" : "Inactive"}
                       </span>
                     </td>
+                    <td className="px-5 py-3 hidden lg:table-cell">
+                      <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${mfaBadge(u).className}`}>
+                        {mfaBadge(u).label}
+                      </span>
+                    </td>
                     {canManage && MANAGED_ROLES.has(u.role) && (
                       <td className="px-5 py-3">
                         {confirmDeleteId === u.id ? (
@@ -484,7 +516,7 @@ export default function Users({ user }) {
     {/* Create User Modal */}
     {showCreate && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-        <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+        <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 shadow-2xl">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
             <h2 className="text-white font-semibold text-base">Add New User</h2>
             <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-white">
@@ -635,7 +667,7 @@ export default function Users({ user }) {
     {/* Edit User Modal */}
     {showEdit && editTarget && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-        <div className="bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg border border-gray-700">
+        <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-gray-700 bg-gray-800 shadow-2xl">
           <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
             <h2 className="text-white font-semibold text-base">Edit User — {editTarget.name}</h2>
             <button onClick={() => setShowEdit(false)} className="text-gray-400 hover:text-white">
@@ -704,6 +736,53 @@ export default function Users({ user }) {
                   {editForm.is_active ? "Active (click to deactivate)" : "Inactive (click to activate)"}
                 </button>
               </div>
+              {isSuperuser && (
+                <div className="col-span-2 rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+                  <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400">MFA Access</p>
+                  <label className="flex items-start gap-3 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(editForm.mfa_exempt)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setEditForm({
+                          ...editForm,
+                          mfa_exempt: checked,
+                          email_otp_enabled: checked ? editForm.email_otp_enabled : false,
+                        });
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-gray-500 bg-gray-700"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-white">Google Authenticator exempt</span>
+                      <span className="block text-xs text-gray-400">
+                        Use this for users who cannot access a smartphone authenticator app.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="mt-2 flex items-start gap-3 rounded-lg border border-gray-700 bg-gray-800 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(editForm.email_otp_enabled)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setEditForm({
+                          ...editForm,
+                          mfa_exempt: checked ? true : editForm.mfa_exempt,
+                          email_otp_enabled: checked,
+                        });
+                      }}
+                      className="mt-1 h-4 w-4 rounded border-gray-500 bg-gray-700"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-white">Require Email OTP</span>
+                      <span className="block text-xs text-gray-400">
+                        After password login, MPIMS emails this user a one-time verification code.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-3 pt-2">
               <button

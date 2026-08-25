@@ -1,3 +1,5 @@
+import re
+
 import pyotp
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
@@ -11,7 +13,7 @@ from rest_framework.test import APITestCase
 from apps.formations.models import Battalion, Detachment
 from apps.notifications.models import Notification
 
-from .models import LoginThrottle, TOTPDevice, User
+from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, User
 
 
 @override_settings(
@@ -299,6 +301,69 @@ class UserManagementPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(User.objects.filter(service_number="700100").exists())
+
+
+@override_settings(
+    TOTP_REQUIRED=True,
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
+class EmailOTPLoginTests(APITestCase):
+    def setUp(self):
+        self.login_url = reverse("login")
+        self.verify_url = reverse("email-otp-login-verify")
+        self.user = User.objects.create_user(
+            service_number="800001",
+            password="CorrectPass123!",
+            name="Email OTP User",
+            rank="Cpl",
+            email="email.otp@example.test",
+            mfa_exempt=True,
+            email_otp_enabled=True,
+            must_change_password=False,
+        )
+        if hasattr(mail, "outbox"):
+            mail.outbox.clear()
+
+    def test_email_otp_user_receives_code_and_verifies_login(self):
+        response = self.client.post(
+            self.login_url,
+            {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["requiresEmailOtp"])
+        self.assertNotIn("access", response.data)
+        self.assertEqual(EmailOTPLoginChallenge.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(len(mail.outbox), 1)
+
+        code = re.search(r"\b(\d{6,8})\b", mail.outbox[0].body).group(1)
+        verify = self.client.post(
+            self.verify_url,
+            {"challenge_id": response.data["emailOtpChallenge"]["challenge_id"], "code": code},
+            format="json",
+        )
+
+        self.assertEqual(verify.status_code, status.HTTP_200_OK)
+        self.assertIn("access", verify.data)
+        self.assertFalse(verify.data["totpSetupRequired"])
+        self.assertFalse(verify.data["requiresEmailOtp"])
+
+    def test_mfa_exempt_without_email_otp_skips_authenticator_setup(self):
+        self.user.email_otp_enabled = False
+        self.user.save(update_fields=["email_otp_enabled"])
+
+        response = self.client.post(
+            self.login_url,
+            {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+        self.assertFalse(response.data["totpSetupRequired"])
+        self.assertFalse(response.data["requiresEmailOtp"])
+        self.assertEqual(len(mail.outbox), 0)
 
 
 @override_settings(

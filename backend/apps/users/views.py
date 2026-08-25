@@ -24,7 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.notifications.models import Notification
 
-from .models import LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
+from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
 from .access import has_global_read_access, is_admin_hqs, is_battalion_admin, is_detachment_ic, is_hqs_admin
 from .serializers import (
     ChangePasswordSerializer,
@@ -87,7 +87,28 @@ def email_delivery_mode():
 
 
 def totp_required_for_user(user):
-    return bool(user and getattr(settings, "TOTP_REQUIRED", True))
+    return bool(user and getattr(settings, "TOTP_REQUIRED", True) and not getattr(user, "mfa_exempt", False))
+
+
+def email_otp_required_for_user(user):
+    return bool(
+        user
+        and getattr(settings, "TOTP_REQUIRED", True)
+        and getattr(user, "mfa_exempt", False)
+        and getattr(user, "email_otp_enabled", False)
+    )
+
+
+def email_otp_lifetime():
+    minutes = int(getattr(settings, "EMAIL_OTP_LIFETIME_MINUTES", 10))
+    return timedelta(minutes=max(2, minutes))
+
+
+def email_otp_code_length():
+    try:
+        return min(8, max(6, int(getattr(settings, "EMAIL_OTP_CODE_LENGTH", 6))))
+    except (TypeError, ValueError):
+        return 6
 
 
 def totp_issuer_name():
@@ -162,6 +183,7 @@ def authenticated_payload(user, *, mfa_pending=False):
         "user": UserSerializer(user).data,
         "mustChangePassword": user.must_change_password,
         "requiresTotp": False,
+        "requiresEmailOtp": False,
         "totpSetupRequired": setup_required,
         **issue_auth_tokens(user, mfa_pending=mfa_pending),
     }
@@ -605,6 +627,76 @@ def get_usable_totp_challenge(challenge_id):
     return challenge
 
 
+def normalize_email_otp_code(value):
+    return "".join(ch for ch in str(value or "") if ch.isdigit())[:email_otp_code_length()]
+
+
+def email_otp_hash(user, challenge_id, code):
+    secret = str(getattr(settings, "SECRET_KEY", "mpims")).encode("utf-8")
+    payload = f"email-otp:{user.pk}:{challenge_id}:{code}".encode("utf-8")
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def create_email_otp_login_challenge(user):
+    EmailOTPLoginChallenge.objects.filter(
+        user=user,
+        consumed_at__isnull=True,
+        expires_at__lte=timezone.now(),
+    ).delete()
+    code = f"{secrets.randbelow(10 ** email_otp_code_length()):0{email_otp_code_length()}d}"
+    challenge_id = secrets.token_urlsafe(32)
+    challenge = EmailOTPLoginChallenge.objects.create(
+        user=user,
+        challenge_id=challenge_id,
+        code_hash=email_otp_hash(user, challenge_id, code),
+        sent_to=user.email,
+        expires_at=timezone.now() + email_otp_lifetime(),
+    )
+    return challenge, code
+
+
+def send_email_otp_login_code(user, code):
+    minutes = max(1, int(email_otp_lifetime().total_seconds() // 60))
+    message = (
+        f"Dear {user.rank + ' ' if user.rank else ''}{user.name},\n\n"
+        f"Your MPIMS login verification code is: {code}\n\n"
+        f"This code expires in {minutes} minutes. If you did not try to sign in, contact your MPIMS administrator."
+    )
+    try:
+        return bool(send_mail(
+            subject="MPIMS Login Verification Code",
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        ))
+    except Exception:
+        logger.exception("Failed to send email OTP login code for user id %s.", user.pk)
+        return False
+
+
+def get_usable_email_otp_challenge(challenge_id):
+    try:
+        challenge = EmailOTPLoginChallenge.objects.select_related("user").get(challenge_id=challenge_id)
+    except (TypeError, ValueError, EmailOTPLoginChallenge.DoesNotExist):
+        return None
+    if not challenge.is_usable or challenge.attempts >= 5:
+        return None
+    return challenge
+
+
+def masked_email(value):
+    text = str(value or "")
+    if "@" not in text:
+        return text
+    name, domain = text.split("@", 1)
+    if len(name) <= 2:
+        visible = name[:1]
+    else:
+        visible = f"{name[:2]}***{name[-1:]}"
+    return f"{visible}@{domain}"
+
+
 def normalize_totp_code(value):
     return "".join(ch for ch in str(value or "") if ch.isdigit())[:6]
 
@@ -717,6 +809,32 @@ def login_view(request):
 
     user = serializer.validated_data["user"]
     reset_login_failures(service_number, ip_address)
+
+    if email_otp_required_for_user(user):
+        if not user.email:
+            return Response(
+                {"detail": "Email OTP is enabled for this account, but no email address is set."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        challenge, code = create_email_otp_login_challenge(user)
+        if not send_email_otp_login_code(user, code):
+            return Response(
+                {"detail": "Could not send the email verification code. Contact your MPIMS administrator."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({
+            "user": UserSerializer(user).data,
+            "mustChangePassword": user.must_change_password,
+            "requiresTotp": False,
+            "totpSetupRequired": False,
+            "requiresEmailOtp": True,
+            "emailOtpChallenge": {
+                "challenge_id": challenge.challenge_id,
+                "expires_at": challenge.expires_at,
+                "sent_to": masked_email(challenge.sent_to),
+            },
+        })
+
     totp_required = totp_required_for_user(user)
     device = get_confirmed_totp_device(user)
 
@@ -726,6 +844,7 @@ def login_view(request):
             "user": UserSerializer(user).data,
             "mustChangePassword": user.must_change_password,
             "requiresTotp": True,
+            "requiresEmailOtp": False,
             "totpSetupRequired": False,
             "totpChallenge": {
                 "challenge_id": challenge.challenge_id,
@@ -827,6 +946,8 @@ def totp_status(request):
     device = get_totp_device(request.user)
     return Response({
         "required": totp_required_for_user(request.user),
+        "mfa_exempt": bool(getattr(request.user, "mfa_exempt", False)),
+        "email_otp_enabled": bool(getattr(request.user, "email_otp_enabled", False)),
         "configured": bool(device and device.confirmed),
         "pending": bool(device and not device.confirmed),
         "locked_until": device.locked_until if device else None,
@@ -836,6 +957,11 @@ def totp_status(request):
 
 @api_view(["POST"])
 def totp_setup(request):
+    if not totp_required_for_user(request.user):
+        return Response(
+            {"detail": "Google Authenticator is not required for this account."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     existing = get_totp_device(request.user)
     if existing and existing.confirmed:
         return Response(
@@ -865,6 +991,11 @@ def totp_setup(request):
 
 @api_view(["POST"])
 def totp_setup_confirm(request):
+    if not totp_required_for_user(request.user):
+        return Response(
+            {"detail": "Google Authenticator is not required for this account."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     device = get_totp_device(request.user)
     if not device:
         return Response({"detail": "Start authenticator setup first."}, status=status.HTTP_400_BAD_REQUEST)
@@ -904,6 +1035,32 @@ def totp_login_verify(request):
     return Response({
         "detail": "Authenticator code verified.",
         **authenticated_payload(challenge.user, mfa_pending=False),
+    })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def email_otp_login_verify(request):
+    challenge = get_usable_email_otp_challenge(request.data.get("challenge_id"))
+    if not challenge:
+        return Response({"detail": "Email verification expired. Please sign in again."}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = challenge.user
+    if not email_otp_required_for_user(user):
+        return Response({"detail": "Email OTP is not enabled for this account."}, status=status.HTTP_400_BAD_REQUEST)
+
+    code = normalize_email_otp_code(request.data.get("code"))
+    expected_hash = email_otp_hash(user, challenge.challenge_id, code)
+    if len(code) != email_otp_code_length() or not secrets.compare_digest(expected_hash, challenge.code_hash):
+        challenge.attempts = min(99, int(challenge.attempts or 0) + 1)
+        challenge.save(update_fields=["attempts"])
+        return Response({"detail": "Invalid email verification code."}, status=status.HTTP_400_BAD_REQUEST)
+
+    challenge.consume()
+    return Response({
+        "detail": "Email verification code accepted.",
+        **authenticated_payload(user, mfa_pending=False),
     })
 
 
@@ -1018,6 +1175,10 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             and not can_manage_corps_commander_account(actor)
         ):
             raise PermissionDenied(CORPS_COMMANDER_MANAGEMENT_ERROR)
+
+        mfa_policy_fields = {"mfa_exempt", "email_otp_enabled"}
+        if mfa_policy_fields.intersection(serializer.validated_data) and not actor.is_superuser:
+            raise PermissionDenied("Only the superuser can change MFA exemption or email OTP settings.")
 
         if is_battalion_admin(actor):
             detachment = serializer.validated_data.get("detachment", serializer.instance.detachment)

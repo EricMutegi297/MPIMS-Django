@@ -42,6 +42,12 @@ export const authService = {
     storeAuthPayload(res.data);
     return res;
   },
+  verifyEmailOtpLogin: async (challenge_id, code) => {
+    clearSession();
+    const res = await api.post("/api/auth/email-otp/login/verify/", { challenge_id, code });
+    storeAuthPayload(res.data);
+    return res;
+  },
   logout: async () => {
     try {
       return await api.post("/api/auth/logout/");

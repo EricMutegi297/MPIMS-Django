@@ -67,6 +67,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     must_change_password = models.BooleanField(default=True)
     mfa_secret = models.CharField(max_length=64, blank=True)
     mfa_enabled = models.BooleanField(default=False)
+    mfa_exempt = models.BooleanField(
+        default=False,
+        help_text="Exempts the user from Google Authenticator setup and verification.",
+    )
+    email_otp_enabled = models.BooleanField(
+        default=False,
+        help_text="Requires an emailed one-time code after password login for MFA-exempt users.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -142,6 +150,40 @@ class TOTPLoginChallenge(models.Model):
 
     def __str__(self):
         return f"{self.user.service_number} TOTP challenge {self.challenge_id}"
+
+
+class EmailOTPLoginChallenge(models.Model):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="email_otp_login_challenges",
+    )
+    challenge_id = models.CharField(max_length=64, unique=True, db_index=True)
+    code_hash = models.CharField(max_length=64)
+    sent_to = models.EmailField()
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "user_email_otp_login_challenges"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "expires_at"]),
+            models.Index(fields=["consumed_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        return self.consumed_at is None and self.expires_at > timezone.now()
+
+    def consume(self):
+        self.consumed_at = timezone.now()
+        self.save(update_fields=["consumed_at"])
+
+    def __str__(self):
+        return f"{self.user.service_number} email OTP challenge {self.challenge_id}"
 
 
 class LoginThrottle(models.Model):
