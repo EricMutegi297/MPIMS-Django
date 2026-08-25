@@ -1,9 +1,14 @@
+import mimetypes
+from pathlib import PurePosixPath
+from urllib.parse import quote, unquote, urlparse
+
 from rest_framework import viewsets, permissions, status as http_status
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
-from django.http import HttpResponse
+from django.core.files.storage import default_storage
+from django.http import FileResponse, Http404, HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from django.utils import timezone
 from django.core.mail import send_mail
@@ -1061,6 +1066,62 @@ class CaseViewSet(viewsets.ModelViewSet):
         if team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()):
             return True
         return False
+
+    def _case_media_name_from_param(self, value):
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            raise ValidationError({"path": "File path is required."})
+
+        parsed = urlparse(raw_value)
+        raw_path = parsed.path if parsed.scheme or parsed.netloc else raw_value.split("?", 1)[0]
+        raw_path = unquote(raw_path).replace("\\", "/").lstrip("/")
+
+        media_prefix = django_settings.MEDIA_URL.lstrip("/")
+        if media_prefix and raw_path.startswith(media_prefix):
+            raw_path = raw_path[len(media_prefix):]
+
+        path = PurePosixPath(raw_path)
+        if (
+            not raw_path
+            or raw_path.startswith("/")
+            or ".." in path.parts
+            or not raw_path.startswith("cases/")
+        ):
+            raise ValidationError({"path": "Invalid case file path."})
+        return raw_path
+
+    def _case_file_scope_q(self, media_name):
+        return (
+            Q(rfi_document=media_name)
+            | Q(tasking_letter=media_name)
+            | Q(chargesheet=media_name)
+            | Q(part_one_orders=media_name)
+            | Q(extra_attachments__file=media_name)
+            | Q(brief__file=media_name)
+            | Q(brief__back_brief__file=media_name)
+            | Q(activity_logs__reference_pdf=media_name)
+            | Q(exhibit_storage_requests__photo=media_name)
+            | Q(exhibit_storage_requests__lifecycle_attachment=media_name)
+        )
+
+    @action(detail=False, methods=["get"], url_path="protected-file", parser_classes=[JSONParser])
+    def protected_file(self, request):
+        media_name = self._case_media_name_from_param(
+            request.query_params.get("path") or request.query_params.get("url")
+        )
+        case = self.get_queryset().filter(self._case_file_scope_q(media_name)).distinct().first()
+        if not case or not default_storage.exists(media_name):
+            raise Http404("File not found.")
+
+        content_type = mimetypes.guess_type(media_name)[0] or "application/octet-stream"
+        file_handle = default_storage.open(media_name, "rb")
+        response = FileResponse(file_handle, content_type=content_type)
+        filename = media_name.rsplit("/", 1)[-1]
+        safe_filename = filename.replace("\\", "_").replace('"', "")
+        response["Content-Disposition"] = (
+            f'inline; filename="{safe_filename}"; filename*=UTF-8\'\'{quote(filename)}'
+        )
+        return response
 
     def _brief_case_scope(self, user, qs):
         if has_global_read_access(user):

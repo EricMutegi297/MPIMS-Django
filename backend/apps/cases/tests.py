@@ -1,7 +1,9 @@
 import json
+import shutil
+import tempfile
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -484,3 +486,50 @@ class CaseApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("rfi_document", response.data)
+
+    def test_protected_file_streams_case_media_for_authorized_user(self):
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(media_root, ignore_errors=True))
+        with override_settings(MEDIA_ROOT=media_root):
+            case = Case.objects.create(
+                title="Protected Tasking Letter",
+                offence="Theft",
+                status=Case.Status.TASKED,
+                tasking_letter=SimpleUploadedFile(
+                    "tasking.pdf",
+                    b"%PDF-1.4\nprotected-tasking\n",
+                    content_type="application/pdf",
+                ),
+                created_by=self.superuser,
+            )
+
+            response = self.client.get(
+                reverse("case-protected-file"),
+                {"path": f"/media/{case.tasking_letter.name}"},
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn(b"protected-tasking", b"".join(response.streaming_content))
+
+    def test_protected_file_hides_case_media_from_unauthorized_user(self):
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(media_root, ignore_errors=True))
+        with override_settings(MEDIA_ROOT=media_root):
+            case = Case.objects.create(
+                title="Hidden Tasking Letter",
+                offence="Theft",
+                status=Case.Status.TASKED,
+                tasking_letter=SimpleUploadedFile(
+                    "hidden-tasking.pdf",
+                    b"%PDF-1.4\nhidden-tasking\n",
+                    content_type="application/pdf",
+                ),
+                created_by=self.superuser,
+            )
+            path = f"/media/{case.tasking_letter.name}"
+
+            self.client.force_authenticate(user=self.investigator)
+            response = self.client.get(reverse("case-protected-file"), {"path": path})
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

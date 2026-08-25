@@ -44,6 +44,27 @@ function normalizeProtectedFileUrl(url) {
   }
 }
 
+function protectedFileRequestTarget(url) {
+  if (!url || typeof window === "undefined") {
+    return { url, config: {} };
+  }
+
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const isSameHost = parsed.hostname === window.location.hostname;
+    if (isSameHost && parsed.pathname.startsWith("/media/")) {
+      return {
+        url: "/api/cases/protected-file/",
+        config: { params: { path: parsed.pathname } },
+      };
+    }
+  } catch {
+    // Fall back to the original URL below.
+  }
+
+  return { url, config: {} };
+}
+
 function filenameFromUrl(url, fallback) {
   try {
     const parsed = new URL(url, window.location.origin);
@@ -162,7 +183,9 @@ export async function openProtectedFile(url, { label = "document", onError } = {
 
   try {
     const safeUrl = normalizeProtectedFileUrl(url);
-    const response = await api.get(safeUrl, {
+    const target = protectedFileRequestTarget(safeUrl);
+    const response = await api.get(target.url, {
+      ...target.config,
       responseType: "blob",
       skipAuthRedirect: true,
     });
