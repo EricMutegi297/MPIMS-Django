@@ -22,6 +22,8 @@ def _as_bool(value, default=True):
 DEBUG = _as_bool(config("DEBUG", default=True))
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
+USE_X_FORWARDED_HOST = _as_bool(config("USE_X_FORWARDED_HOST", default=True))
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
