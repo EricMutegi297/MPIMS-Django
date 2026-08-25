@@ -58,7 +58,8 @@ export default function Users({ user }) {
   const isSuperuser     = Boolean(user?.is_superuser);
   const isBattalionAdmin = user?.role === "admin" && !isHqsAdmin && !isSuperuser;
   const isDetachmentIC  = user?.role === "detachment";
-  const canManage       = isSuperuser || isHqsAdmin || isBattalionAdmin || isDetachmentIC;
+  const canCreateUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin;
+  const canManage       = canCreateUsers || isDetachmentIC;
 
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
@@ -142,8 +143,8 @@ export default function Users({ user }) {
   const openCreate = () => {
     const prefill = {
       ...BLANK_FORM,
-      battalion: isBattalionAdmin || isDetachmentIC ? String(user.battalion ?? "") : "",
-      detachment: isDetachmentIC ? String(user.detachment ?? "") : "",
+      battalion: isBattalionAdmin ? String(user.battalion ?? "") : "",
+      detachment: "",
     };
     setForm(prefill);
     setCreateError("");
@@ -156,7 +157,7 @@ export default function Users({ user }) {
         .catch(() => {});
     }
     // Pre-load detachments when battalion is already known
-    if ((isBattalionAdmin || isDetachmentIC) && user.battalion) {
+    if (isBattalionAdmin && user.battalion) {
       loadDetachments(String(user.battalion));
     }
   };
@@ -211,13 +212,18 @@ export default function Users({ user }) {
     e.preventDefault();
     setCreating(true);
     setCreateError("");
+    if (!canCreateUsers) {
+      setCreateError("You do not have permission to add users.");
+      setCreating(false);
+      return;
+    }
     try {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
       if (!payload.battalion) delete payload.battalion;
       delete payload.password;
-      // For battalion admin/IC COY the backend auto-assigns battalion; for superuser use form value
-      if (isBattalionAdmin || isDetachmentIC) delete payload.battalion;
+      // For battalion admin the backend auto-assigns battalion; for superuser use form value.
+      if (isBattalionAdmin) delete payload.battalion;
       const res = await userService.create(payload);
       const email = res.data?.activation_email || payload.email;
       const sent = Boolean(res.data?.activation_email_sent);
@@ -318,7 +324,7 @@ export default function Users({ user }) {
             Add User
           </button>
         )}
-        {(isBattalionAdmin || isDetachmentIC) && (
+        {isBattalionAdmin && (
           <button
             onClick={openCreate}
             className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"

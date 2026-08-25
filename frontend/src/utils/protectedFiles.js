@@ -22,6 +22,21 @@ function writeViewerMessage(viewer, message) {
   }
 }
 
+function normalizeProtectedFileUrl(url) {
+  if (!url || typeof window === "undefined") return url;
+
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const isSameHost = parsed.hostname === window.location.hostname;
+    if (window.location.protocol === "https:" && parsed.protocol === "http:" && isSameHost) {
+      parsed.protocol = "https:";
+    }
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
 export async function openProtectedFile(url, { label = "document", onError } = {}) {
   if (!url) {
     const message = `No ${label} is attached.`;
@@ -35,7 +50,8 @@ export async function openProtectedFile(url, { label = "document", onError } = {
   }
 
   try {
-    const response = await api.get(url, {
+    const safeUrl = normalizeProtectedFileUrl(url);
+    const response = await api.get(safeUrl, {
       responseType: "blob",
       skipAuthRedirect: true,
     });

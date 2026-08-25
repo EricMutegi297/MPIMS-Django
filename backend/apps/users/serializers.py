@@ -5,7 +5,7 @@ from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
-from .access import is_battalion_admin, is_detachment_ic
+from .access import is_battalion_admin
 from .models import User
 
 
@@ -70,10 +70,14 @@ class UserCreateSerializer(serializers.ModelSerializer):
         role = data.get("role", "")
         battalion = data.get("battalion")
         detachment = data.get("detachment")
+        if battalion and detachment and detachment.battalion_id != battalion.id:
+            raise serializers.ValidationError(
+                {"detachment": "Company must belong to the selected battalion."}
+            )
         if role not in exempt_roles and not battalion and not detachment:
             request = self.context.get("request")
             actor = getattr(request, "user", None)
-            if is_battalion_admin(actor) or is_detachment_ic(actor):
+            if is_battalion_admin(actor):
                 return data
             raise serializers.ValidationError(
                 {"battalion": "Battalion or Company is required for this role."}

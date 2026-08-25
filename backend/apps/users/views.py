@@ -995,11 +995,12 @@ class UserListCreateView(generics.ListCreateAPIView):
         if is_battalion_admin(actor):
             if new_role not in BATTALION_ADMIN_ROLES:
                 raise PermissionDenied(f"Battalion admin cannot create users with role '{new_role}'.")
+            detachment = serializer.validated_data.get("detachment")
+            if detachment and detachment.battalion_id != actor.battalion_id:
+                raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
             return serializer.save(battalion=actor.battalion)
         if is_detachment_ic(actor):
-            if new_role not in DET_IC_ROLES:
-                raise PermissionDenied("IC COY can only create personnel or investigator users.")
-            return serializer.save(battalion=actor.battalion, detachment=actor.detachment)
+            raise PermissionDenied("IC COY cannot add users. Ask the battalion admin to create company users.")
         raise PermissionDenied("You do not have permission to create users.")
 
 
@@ -1017,6 +1018,24 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             and not can_manage_corps_commander_account(actor)
         ):
             raise PermissionDenied(CORPS_COMMANDER_MANAGEMENT_ERROR)
+
+        if is_battalion_admin(actor):
+            detachment = serializer.validated_data.get("detachment", serializer.instance.detachment)
+            battalion = serializer.validated_data.get("battalion", serializer.instance.battalion)
+            if battalion and battalion != actor.battalion:
+                raise PermissionDenied("Cannot move users outside your battalion.")
+            if detachment and detachment.battalion_id != actor.battalion_id:
+                raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
+            serializer.save(battalion=actor.battalion)
+            return
+
+        if is_detachment_ic(actor):
+            detachment = serializer.validated_data.get("detachment", serializer.instance.detachment)
+            battalion = serializer.validated_data.get("battalion", serializer.instance.battalion)
+            if battalion and battalion != actor.battalion:
+                raise PermissionDenied("Cannot move users outside your battalion.")
+            if detachment and detachment != actor.detachment:
+                raise PermissionDenied("Cannot move users outside your company.")
 
         serializer.save()
 

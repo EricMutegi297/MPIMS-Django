@@ -8,6 +8,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from apps.formations.models import Battalion, Detachment
 from apps.notifications.models import Notification
 
 from .models import LoginThrottle, TOTPDevice, User
@@ -206,6 +207,98 @@ class PasswordResetTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertIn("Too many invalid password reset attempts", response.data["detail"])
+
+
+@override_settings(
+    TOTP_REQUIRED=False,
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+)
+class UserManagementPermissionTests(APITestCase):
+    def setUp(self):
+        self.user_list_url = reverse("user-list")
+        self.battalion = Battalion.objects.create(name="1 MP BN")
+        self.other_battalion = Battalion.objects.create(name="2 MP BN")
+        self.company = Detachment.objects.create(
+            battalion=self.battalion,
+            company=Detachment.Company.A,
+            name="A Coy",
+        )
+        self.other_company = Detachment.objects.create(
+            battalion=self.other_battalion,
+            company=Detachment.Company.B,
+            name="B Coy",
+        )
+        self.battalion_admin = User.objects.create_user(
+            service_number="700001",
+            password="AdminPass123!",
+            name="Battalion Admin",
+            rank="Maj",
+            email="bn.admin@example.test",
+            role=User.Role.ADMIN,
+            battalion=self.battalion,
+            must_change_password=False,
+        )
+        self.company_ic = User.objects.create_user(
+            service_number="700002",
+            password="IcPass123!",
+            name="Company IC",
+            rank="Capt",
+            email="ic@example.test",
+            role=User.Role.DETACHMENT,
+            battalion=self.battalion,
+            detachment=self.company,
+            must_change_password=False,
+        )
+
+    def user_payload(self, service_number="700100", detachment=None):
+        payload = {
+            "service_number": service_number,
+            "name": "New Personnel",
+            "rank": "Cpl",
+            "email": f"{service_number}@example.test",
+            "role": User.Role.PERSONNEL,
+        }
+        if detachment:
+            payload["detachment"] = detachment.id
+        return payload
+
+    def test_ic_coy_cannot_create_users(self):
+        self.client.force_authenticate(self.company_ic)
+
+        response = self.client.post(
+            self.user_list_url,
+            self.user_payload(detachment=self.company),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(User.objects.filter(service_number="700100").exists())
+
+    def test_battalion_admin_can_create_user_for_own_company(self):
+        self.client.force_authenticate(self.battalion_admin)
+
+        response = self.client.post(
+            self.user_list_url,
+            self.user_payload(detachment=self.company),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = User.objects.get(service_number="700100")
+        self.assertEqual(created.battalion, self.battalion)
+        self.assertEqual(created.detachment, self.company)
+
+    def test_battalion_admin_cannot_create_user_for_other_battalion_company(self):
+        self.client.force_authenticate(self.battalion_admin)
+
+        response = self.client.post(
+            self.user_list_url,
+            self.user_payload(detachment=self.other_company),
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(User.objects.filter(service_number="700100").exists())
 
 
 @override_settings(
