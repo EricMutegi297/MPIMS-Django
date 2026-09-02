@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "django_filters",
     "channels",
+    "django_apscheduler",
     # Local apps
     "apps.users",
     "apps.cases",
@@ -196,6 +197,14 @@ TOTP_ISSUER_NAME = config("TOTP_ISSUER_NAME", default="MPIMS")
 TOTP_CODE_WINDOW = config("TOTP_CODE_WINDOW", default=1, cast=int)
 TOTP_SETUP_TOKEN_LIFETIME_MINUTES = config("TOTP_SETUP_TOKEN_LIFETIME_MINUTES", default=30, cast=int)
 TOTP_LOCKOUT_MINUTES = config("TOTP_LOCKOUT_MINUTES", default=15, cast=int)
+
+# Case reminder scheduler. Keep it off by default in local DEBUG runs so a
+# stopped database does not block the development server reload cycle.
+CASE_REMINDER_SCHEDULER_ENABLED = config(
+    "CASE_REMINDER_SCHEDULER_ENABLED",
+    default=not DEBUG,
+    cast=bool,
+)
 
 # Brute-force protection.
 LOGIN_FAILURE_LIMIT = config("LOGIN_FAILURE_LIMIT", default=5, cast=int)

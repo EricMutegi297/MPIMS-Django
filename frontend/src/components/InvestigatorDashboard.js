@@ -9,6 +9,15 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function responseCount(response) {
+  const value = Number(response?.data?.count);
+  return Number.isFinite(value) ? value : toArray(response?.data).length;
+}
+
+function settledResponse(result) {
+  return result.status === "fulfilled" ? result.value : null;
+}
+
 function scheduleAfterPaint(callback) {
   if (typeof window === "undefined") {
     callback();
@@ -1572,7 +1581,7 @@ function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3">Abstract</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Date Closed</th>
-            <th className="text-left px-3 py-3">Action Taken</th>
+            <th className="text-left px-3 py-3">Verdict</th>
           </tr>
         </thead>
         <tbody>
@@ -1888,20 +1897,20 @@ export default function InvestigatorDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, uiRes, taskedRes, peRes, seRes, clRes] = await Promise.all([
+      const [allRes, uiRes, taskedRes, peRes, seRes, clRes] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "under_investigation" }),
         caseService.list({ page_size: 1, status: "tasked" }),
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
-      ]);
+      ])).map(settledResponse);
       setStatusCounts({
-        all:                allRes.data.count || 0,
-        under_investigation: (uiRes.data.count || 0) + (taskedRes.data.count || 0),
-        pending:            peRes.data.count || 0,
-        served:             seRes.data.count || 0,
-        closed:             clRes.data.count || 0,
+        all:                 responseCount(allRes),
+        under_investigation: responseCount(uiRes) + responseCount(taskedRes),
+        pending:             responseCount(peRes),
+        served:              responseCount(seRes),
+        closed:              responseCount(clRes),
       });
     } catch {
       // keep zeros
@@ -1927,7 +1936,7 @@ export default function InvestigatorDashboard({ user }) {
         ? loadedCases.map((c) => (c.status === "tasked" ? { ...c, status: "under_investigation" } : c))
         : loadedCases;
       setCases(normalizedCases);
-      setTotalCount(res.data.count || 0);
+      setTotalCount(responseCount(res));
     } catch {
       setCases([]);
       setTotalCount(0);

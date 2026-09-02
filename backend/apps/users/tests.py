@@ -374,6 +374,7 @@ class EmailOTPLoginTests(APITestCase):
 class TOTPSetupTests(APITestCase):
     def setUp(self):
         self.login_url = reverse("login")
+        self.login_verify_url = reverse("totp-login-verify")
         self.setup_url = reverse("totp-setup")
         self.confirm_url = reverse("totp-setup-confirm")
         self.user = User.objects.create_user(
@@ -428,3 +429,32 @@ class TOTPSetupTests(APITestCase):
         device = TOTPDevice.objects.get(user=self.user)
         self.assertTrue(device.confirmed)
         self.assertEqual(device.failed_attempts, 0)
+
+    def test_invalid_totp_secret_returns_bad_request(self):
+        TOTPDevice.objects.create(
+            user=self.user,
+            secret="not-valid-base32!",
+            confirmed=True,
+        )
+
+        login = self.client.post(
+            self.login_url,
+            {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_200_OK)
+
+        response = self.client.post(
+            self.login_verify_url,
+            {
+                "challenge_id": login.data["totpChallenge"]["challenge_id"],
+                "code": "123456",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["detail"],
+            "Authenticator setup is invalid. Ask a superuser to reset MFA for this account.",
+        )

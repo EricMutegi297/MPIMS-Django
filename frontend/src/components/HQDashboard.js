@@ -10,6 +10,15 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function responseCount(response) {
+  const value = Number(response?.data?.count);
+  return Number.isFinite(value) ? value : toArray(response?.data).length;
+}
+
+function settledResponse(result) {
+  return result.status === "fulfilled" ? result.value : null;
+}
+
 function scheduleAfterPaint(callback) {
   if (typeof window === "undefined") {
     callback();
@@ -39,6 +48,34 @@ const STATUS_STYLE = {
   closed:              "bg-green-500/20 text-green-400",
   referred:            "bg-cyan-500/20 text-cyan-400",
 };
+
+const CLOSURE_BASIS_OPTIONS = [
+  { value: "part_ii_orders", label: "Part II Orders" },
+  { value: "cancellation_letter", label: "Cancellation Letter" },
+  { value: "service_hqs_authority", label: "Authority From Service HQs" },
+];
+
+function closureDocumentLabel(value) {
+  if (value === "part_ii_orders") return "Part II Orders PDF";
+  if (value === "cancellation_letter") return "Cancellation Letter PDF";
+  if (value === "service_hqs_authority") return "Authority From Service HQs PDF";
+  return "Closure PDF";
+}
+
+function formatDateForDisplay(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) return `${match[3]}/${match[2]}/${match[1]}`;
+  return text;
+}
+
+function parseDisplayDateForApi(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (match) return `${match[3]}-${match[2]}-${match[1]}`;
+  return text;
+}
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function StatCard({ icon, label, value, accent, loading, onClick }) {
@@ -98,31 +135,61 @@ function Footer() {
 
 function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
-  const [actionTaken, setActionTaken] = useState(caseObj?.action_taken || "");
-  const [chargesheetFile, setChargesheetFile] = useState(null);
-  const [partOneOrdersFile, setPartOneOrdersFile] = useState(null);
+  const [verdict, setVerdict] = useState(caseObj?.action_taken || "");
+  const [closureBasis, setClosureBasis] = useState(caseObj?.closure_basis || "");
+  const [closureFile, setClosureFile] = useState(null);
+  const [partIiOrderSerialNo, setPartIiOrderSerialNo] = useState(caseObj?.part_ii_order_serial_no || "");
+  const [partIiOrderDate, setPartIiOrderDate] = useState(formatDateForDisplay(caseObj?.part_ii_order_date || ""));
   const [rfiFile, setRfiFile] = useState(null);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const isDciCiv = caseObj?.criminal_offence_type === "dci_civ_police";
   const closureFileLabel = isDciCiv ? "Closure Files" : "Judgment Files";
-  const hasReport = Boolean(chargesheetFile || partOneOrdersFile || caseObj?.chargesheet || caseObj?.part_one_orders);
+  const isPartIiOrders = closureBasis === "part_ii_orders";
+  const hasClosureFile = isPartIiOrders
+    ? true
+    : Boolean(closureBasis && (closureFile || caseObj?.chargesheet));
+  const hasPartIiDetails = !isPartIiOrders || (String(partIiOrderSerialNo).trim() && partIiOrderDate);
   const hasRfi = Boolean(rfiFile || caseObj?.rfi_document);
-  const canClose = judgmentFiles.length > 0 && String(actionTaken).trim() && hasReport && hasRfi;
+  const canClose = Boolean(
+    closureBasis &&
+    String(verdict).trim() &&
+    hasClosureFile &&
+    hasPartIiDetails &&
+    judgmentFiles.length > 0 &&
+    hasRfi
+  );
   useAutoDismiss(err, setErr);
 
   const handleCloseCase = async () => {
+    const partIiOrderDateApi = parseDisplayDateForApi(partIiOrderDate);
+    if (!closureBasis) {
+      setErr("Select what this case is being closed with.");
+      return;
+    }
+    if (isPartIiOrders && !String(partIiOrderSerialNo).trim()) {
+      setErr("Part II Order Serial No is required.");
+      return;
+    }
+    if (isPartIiOrders && !partIiOrderDate) {
+      setErr("Part II Order Date is required.");
+      return;
+    }
+    if (isPartIiOrders && !/^\d{4}-\d{2}-\d{2}$/.test(partIiOrderDateApi)) {
+      setErr("Use date format dd/mm/yyyy.");
+      return;
+    }
+    if (!isPartIiOrders && !hasClosureFile) {
+      setErr(`Attach the ${closureDocumentLabel(closureBasis)} before closing.`);
+      return;
+    }
     if (!judgmentFiles.length) {
       setErr(`Attach at least one ${closureFileLabel.toLowerCase()} PDF before closing.`);
       return;
     }
-    if (!String(actionTaken).trim()) {
-      setErr("Action taken is required before closing.");
-      return;
-    }
-    if (!hasReport) {
-      setErr("Attach a Chargesheet or report before closing.");
+    if (!String(verdict).trim()) {
+      setErr("Verdict is required before closing.");
       return;
     }
     if (!hasRfi) {
@@ -144,9 +211,14 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
 
       const fd = new FormData();
       fd.append("status", "closed");
-      fd.append("action_taken", actionTaken.trim());
-      if (chargesheetFile) fd.append("chargesheet", chargesheetFile);
-      if (partOneOrdersFile) fd.append("part_one_orders", partOneOrdersFile);
+      fd.append("closure_basis", closureBasis);
+      fd.append("action_taken", verdict.trim());
+      if (isPartIiOrders) {
+        fd.append("part_ii_order_serial_no", partIiOrderSerialNo.trim());
+        fd.append("part_ii_order_date", partIiOrderDateApi);
+      } else if (closureFile) {
+        fd.append("chargesheet", closureFile);
+      }
       if (rfiFile) fd.append("rfi_document", rfiFile);
       await caseService.close(caseObj.id, fd);
       onClosed();
@@ -167,7 +239,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+      <div className="bg-gray-800 rounded-xl w-full max-w-lg shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Close Case</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
@@ -176,35 +248,71 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Action Taken <span className="text-red-400">*</span></label>
-            <textarea
-              rows={3}
-              value={actionTaken}
-              onChange={(e) => { setActionTaken(e.target.value); setErr(""); }}
-              placeholder="Describe final action taken before closing"
-              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500 resize-none"
-            />
+            <label className="block text-xs text-gray-400 mb-1.5">Close With <span className="text-red-400">*</span></label>
+            <select
+              value={closureBasis}
+              onChange={(e) => {
+                setClosureBasis(e.target.value);
+                setClosureFile(null);
+                setErr("");
+              }}
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500"
+            >
+              <option value="">Select close document...</option>
+              {CLOSURE_BASIS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {closureBasis && !isPartIiOrders && (
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Chargesheet / Report</label>
+              <label className="block text-xs text-gray-400 mb-1.5">{closureDocumentLabel(closureBasis)} <span className="text-red-400">*</span></label>
               <input
                 type="file"
-                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                onChange={(e) => { setChargesheetFile(e.target.files?.[0] || null); setErr(""); }}
+                accept="application/pdf,.pdf"
+                onChange={(e) => { setClosureFile(e.target.files?.[0] || null); setErr(""); }}
                 className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
               />
+              {closureFile && <p className="mt-2 text-xs text-gray-300">Selected: {closureFile.name}</p>}
             </div>
+          )}
+          {isPartIiOrders && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Part II Order Serial No <span className="text-red-400">*</span></label>
+                <input
+                  type="text"
+                  value={partIiOrderSerialNo}
+                  onChange={(e) => { setPartIiOrderSerialNo(e.target.value); setErr(""); }}
+                  placeholder="Enter serial number"
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Part II Order Date <span className="text-red-400">*</span></label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={partIiOrderDate}
+                  onChange={(e) => { setPartIiOrderDate(e.target.value); setErr(""); }}
+                  placeholder="dd/mm/yyyy"
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
+                />
+              </div>
+            </div>
+          )}
+          {closureBasis && (
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Part One Orders</label>
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                onChange={(e) => { setPartOneOrdersFile(e.target.files?.[0] || null); setErr(""); }}
-                className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+              <label className="block text-xs text-gray-400 mb-1.5">Verdict <span className="text-red-400">*</span></label>
+              <textarea
+                rows={3}
+                value={verdict}
+                onChange={(e) => { setVerdict(e.target.value); setErr(""); }}
+                placeholder="Enter the final verdict"
+                className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500 resize-none"
               />
             </div>
-          </div>
+          )}
           {!caseObj.rfi_document && (
             <div>
               <label className="block text-xs text-gray-400 mb-1.5">RFI Document <span className="text-red-400">*</span></label>
@@ -333,7 +441,7 @@ export default function HQDashboard({ user }) {
         allRes, newRes, openRes, taskedRes,
         uiRes, peRes, seRes, clRes, rfRes,
         incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, guardroomRes,
-      ] = await Promise.all([
+      ] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
         caseService.list({ page_size: 1, status: "open" }),
@@ -348,23 +456,23 @@ export default function HQDashboard({ user }) {
         caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
         caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
         guardroomService.list(),
-      ]);
+      ])).map(settledResponse);
       setStatusCounts({
-        total:               allRes.data.count    || 0,
-        new:                 newRes.data.count    || 0,
-        newOpen:             (newRes.data.count   || 0) + (openRes.data.count || 0),
-        tasked:              taskedRes.data.count || 0,
-        under_investigation: uiRes.data.count     || 0,
-        pending:             peRes.data.count     || 0,
-        served:              seRes.data.count     || 0,
-        closed:              clRes.data.count     || 0,
-        referred:            rfRes.data.count     || 0,
+        total:               responseCount(allRes),
+        new:                 responseCount(newRes),
+        newOpen:             responseCount(newRes) + responseCount(openRes),
+        tasked:              responseCount(taskedRes),
+        under_investigation: responseCount(uiRes),
+        pending:             responseCount(peRes),
+        served:              responseCount(seRes),
+        closed:              responseCount(clRes),
+        referred:            responseCount(rfRes),
       });
-      setTotalInc(incRes.data.count    || 0);
-      setOpenInc(incOpenRes.data.count || 0);
-      setCourtMartialCount(courtMartialRes.data.count || 0);
-      setDciCivPoliceCount(dciCivPoliceRes.data.count || 0);
-      setTotalGuardrooms(toArray(guardroomRes.data).length);
+      setTotalInc(responseCount(incRes));
+      setOpenInc(responseCount(incOpenRes));
+      setCourtMartialCount(responseCount(courtMartialRes));
+      setDciCivPoliceCount(responseCount(dciCivPoliceRes));
+      setTotalGuardrooms(toArray(guardroomRes?.data).length);
     } catch (_) {}
     finally { setLoadingCounts(false); }
   }, []);
@@ -377,7 +485,7 @@ export default function HQDashboard({ user }) {
       if (activeFilter !== "all") params.status = activeFilter;
       const res = await caseService.list(params);
       setCases(toArray(res.data));
-      setTotalCount(res.data.count || 0);
+      setTotalCount(responseCount(res));
     } catch (_) {}
     finally { setLoadingCases(false); }
   }, [page, activeFilter]);
@@ -402,8 +510,8 @@ export default function HQDashboard({ user }) {
     { key: "tasked",              label: "Tasked",           style: "bg-yellow-500/20 text-yellow-300"},
     { key: "under_investigation", label: "Under Invest.",    style: "bg-indigo-500/20 text-indigo-300"},
     { key: "pending",             label: "Pending",          style: "bg-orange-500/20 text-orange-300"},
-    { key: "served",              label: "Served",           style: "bg-purple-500/20 text-purple-300"},
-    { key: "closed",              label: "Closed",           style: "bg-green-500/20 text-green-300"},
+    { key: "served",              label: "Unactioned",       style: "bg-purple-500/20 text-purple-300"},
+    { key: "closed",              label: "Actioned",         style: "bg-green-500/20 text-green-300"},
   ];
 
   const handleFilter = (key) => { setActiveFilter(key); setPage(1); };
@@ -538,10 +646,10 @@ export default function HQDashboard({ user }) {
           <StatCard loading={loadingCounts} label="Pending"           value={statusCounts.pending}             accent="bg-orange-500/10" onClick={() => navigate("/dashboard/cases?status=pending")}
             icon={<svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           />
-          <StatCard loading={loadingCounts} label="Served"            value={statusCounts.served}              accent="bg-purple-500/10" onClick={() => navigate("/dashboard/cases?status=served")}
+          <StatCard loading={loadingCounts} label="Unactioned"        value={statusCounts.served}              accent="bg-purple-500/10" onClick={() => navigate("/dashboard/cases?status=served")}
             icon={<svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
           />
-          <StatCard loading={loadingCounts} label="Closed"            value={statusCounts.closed}              accent="bg-green-500/10"  onClick={() => navigate("/dashboard/cases?status=closed")}
+          <StatCard loading={loadingCounts} label="Actioned"          value={statusCounts.closed}              accent="bg-green-500/10"  onClick={() => navigate("/dashboard/cases?status=closed")}
             icon={<svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>}
           />
         </div>
@@ -598,7 +706,7 @@ export default function HQDashboard({ user }) {
                     <>
                       <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
                       {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Date Closed</th>}
-                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Action Taken</th>}
+                      {isClosedFilter && <th className="text-left px-3 md:px-5 py-3 font-medium">Verdict</th>}
                       {showActionColumn && <th className="text-left px-3 md:px-5 py-3 font-medium">Action</th>}
                     </>
                   )}

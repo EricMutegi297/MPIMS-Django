@@ -70,9 +70,22 @@ function normalizeDateForApi(value) {
 
 function normalizeDateForDisplay(value) {
   const normalized = normalizeDateForApi(value);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return `${match[3]}/${match[2]}/${match[1]}`;
   if (normalized) return normalized;
   if (!value) return "";
   return String(value);
+}
+
+function parseDisplayDateForApi(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (match) return `${match[3]}-${match[2]}-${match[1]}`;
+  return normalizeDateForApi(text);
+}
+
+function isApiDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
 }
 
 function formatDateTimeForReport(value) {
@@ -326,6 +339,23 @@ const COURT_MILESTONE_TYPES = [
   { value: "judgment", label: "Judgment" },
 ];
 
+const CLOSURE_BASIS_OPTIONS = [
+  { value: "part_ii_orders", label: "Part II Orders" },
+  { value: "cancellation_letter", label: "Cancellation Letter" },
+  { value: "service_hqs_authority", label: "Authority From Service HQs" },
+];
+
+function closureBasisLabel(value) {
+  return CLOSURE_BASIS_OPTIONS.find((option) => option.value === value)?.label || "";
+}
+
+function closureDocumentLabel(value) {
+  if (value === "part_ii_orders") return "Part II Orders PDF";
+  if (value === "cancellation_letter") return "Cancellation Letter PDF";
+  if (value === "service_hqs_authority") return "Authority From Service HQs PDF";
+  return "Closure PDF";
+}
+
 const ALL_RANKS = [
   "General",
   "Lieutenant General",
@@ -393,13 +423,17 @@ function validateRequiredCreateCase(form, offencesAvailable) {
 
   if (!form.submitting_unit) return "Submitting unit is required.";
   if (!form.date_of_offence) return "Date of offence is required.";
+  if (!isApiDate(parseDisplayDateForApi(form.date_of_offence))) return "Use date format dd/mm/yyyy for Date of Offence.";
   if (isBlank(form.place_of_offence)) return "Place of offence is required.";
   if (isBlank(form.description)) return "Description is required.";
   if (form.rfi_document && isBlank(form.rfi_no)) {
-    return "RFI number is required when an RFI attachment is selected.";
+    return "RFI REF No is required when an RFI attachment is selected.";
   }
   if (form.rfi_document && !form.rfi_date) {
     return "RFI date is required when an RFI attachment is selected.";
+  }
+  if (form.rfi_document && !isApiDate(parseDisplayDateForApi(form.rfi_date))) {
+    return "Use date format dd/mm/yyyy for RFI Date.";
   }
   return "";
 }
@@ -432,10 +466,10 @@ function caseToForm(caseObj) {
     accused_entries: accusedEntries.length ? accusedEntries : [INIT_ACCUSED_ENTRY],
     accused_service: caseObj?.accused_service || "",
     submitting_unit: caseObj?.submitting_unit ? String(caseObj.submitting_unit) : "",
-    date_of_offence: normalizeDateForApi(caseObj?.date_of_offence),
+    date_of_offence: normalizeDateForDisplay(caseObj?.date_of_offence),
     place_of_offence: caseObj?.place_of_offence || "",
     rfi_no: caseObj?.rfi_no || "",
-    rfi_date: normalizeDateForApi(caseObj?.rfi_date),
+    rfi_date: normalizeDateForDisplay(caseObj?.rfi_date),
     tasking_no: caseObj?.tasking_no || "",
     rfi_document: null,
   };
@@ -1042,7 +1076,7 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
               <div className="rounded-lg bg-gray-700/60 p-3 text-gray-300 text-xs">
                 <p className="font-medium text-white">RFI reference</p>
                 <p className="text-gray-400 mt-1">
-                  {[c.rfi_no && `No: ${c.rfi_no}`, c.rfi_date && `Date: ${c.rfi_date}`]
+                  {[c.rfi_no && `REF No: ${c.rfi_no}`, c.rfi_date && `Date: ${normalizeDateForDisplay(c.rfi_date)}`]
                     .filter(Boolean)
                     .join(" | ") || "RFI reference"
                   }
@@ -1284,8 +1318,10 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [courtCloseSaving, setCourtCloseSaving] = useState(false);
   const [courtCloseErr, setCourtCloseErr] = useState("");
   const [closeActionTaken, setCloseActionTaken] = useState("");
+  const [closeClosureBasis, setCloseClosureBasis] = useState("");
+  const [closePartIiOrderSerialNo, setClosePartIiOrderSerialNo] = useState("");
+  const [closePartIiOrderDate, setClosePartIiOrderDate] = useState("");
   const [closeChargesheetFile, setCloseChargesheetFile] = useState(null);
-  const [closePartOneOrdersFile, setClosePartOneOrdersFile] = useState(null);
   const [closeRfiFile, setCloseRfiFile] = useState(null);
   const [dateFieldActive, setDateFieldActive] = useState(false);
   const [caseActivity, setCaseActivity] = useState([]);
@@ -1459,8 +1495,10 @@ export default function Cases({ user, criminalTypeFilter }) {
       setCourtCloseCase(null);
       setJudgmentFileRows([]);
       setCloseActionTaken("");
+      setCloseClosureBasis("");
+      setClosePartIiOrderSerialNo("");
+      setClosePartIiOrderDate("");
       setCloseChargesheetFile(null);
-      setClosePartOneOrdersFile(null);
       setCloseRfiFile(null);
       setCourtCloseErr("");
     }
@@ -1655,8 +1693,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     setCourtCloseCase(null);
     setJudgmentFileRows([]);
     setCloseActionTaken("");
+    setCloseClosureBasis("");
+    setClosePartIiOrderSerialNo("");
+    setClosePartIiOrderDate("");
     setCloseChargesheetFile(null);
-    setClosePartOneOrdersFile(null);
     setCloseRfiFile(null);
     setCourtCloseErr("");
   }
@@ -1669,8 +1709,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
     setCourtCloseErr("");
     setCloseActionTaken(caseObj.action_taken || "");
+    setCloseClosureBasis(caseObj.closure_basis || "");
+    setClosePartIiOrderSerialNo(caseObj.part_ii_order_serial_no || "");
+    setClosePartIiOrderDate(normalizeDateForDisplay(caseObj.part_ii_order_date || ""));
     setCloseChargesheetFile(null);
-    setClosePartOneOrdersFile(null);
     setCloseRfiFile(null);
     setJudgmentFileRows([newJudgmentFileRow()]);
     setShowCourtCloseModal(true);
@@ -1696,21 +1738,39 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function submitCourtCloseWithJudgmentFiles() {
     const closeCase = courtCloseCase || selected;
     if (!closeCase) return;
+    const closeBasisIsPartIi = closeClosureBasis === "part_ii_orders";
+    const partIiOrderDateApi = parseDisplayDateForApi(closePartIiOrderDate);
+    const hasSelectedClosureFile = closeBasisIsPartIi
+      ? true
+      : Boolean(closeClosureBasis && (closeChargesheetFile || closeCase.chargesheet));
     const rowsWithFiles = judgmentFileRows.filter((r) => r.file);
+    if (!closeClosureBasis) {
+      setCourtCloseErr("Select what this case is being closed with.");
+      return;
+    }
+    if (!hasSelectedClosureFile) {
+      setCourtCloseErr(`Attach the ${closureDocumentLabel(closeClosureBasis)} before closing this case.`);
+      return;
+    }
+    if (closeBasisIsPartIi && !String(closePartIiOrderSerialNo || "").trim()) {
+      setCourtCloseErr("Part II Order Serial No is required.");
+      return;
+    }
+    if (closeBasisIsPartIi && !closePartIiOrderDate) {
+      setCourtCloseErr("Part II Order Date is required.");
+      return;
+    }
+    if (closeBasisIsPartIi && !isApiDate(partIiOrderDateApi)) {
+      setCourtCloseErr("Use date format dd/mm/yyyy.");
+      return;
+    }
     if (!rowsWithFiles.length) {
       setCourtCloseErr("Attach at least one Judgment PDF file.");
       return;
     }
 
     if (!String(closeActionTaken || "").trim()) {
-      setCourtCloseErr("Action taken is required before closing this case.");
-      return;
-    }
-
-    const hasExistingChargesheet = Boolean(closeCase.chargesheet);
-    const hasExistingPartOneOrders = Boolean(closeCase.part_one_orders);
-    if (!closeChargesheetFile && !closePartOneOrdersFile && !hasExistingChargesheet && !hasExistingPartOneOrders) {
-      setCourtCloseErr("Attach a Chargesheet or report before closing this case.");
+      setCourtCloseErr("Verdict is required before closing this case.");
       return;
     }
 
@@ -1760,9 +1820,14 @@ export default function Cases({ user, criminalTypeFilter }) {
 
       const fd = new FormData();
       fd.append("status", "closed");
+      fd.append("closure_basis", closeClosureBasis);
       fd.append("action_taken", closeActionTaken.trim());
-      if (closeChargesheetFile) fd.append("chargesheet", closeChargesheetFile);
-      if (closePartOneOrdersFile) fd.append("part_one_orders", closePartOneOrdersFile);
+      if (closeBasisIsPartIi) {
+        fd.append("part_ii_order_serial_no", closePartIiOrderSerialNo.trim());
+        fd.append("part_ii_order_date", partIiOrderDateApi);
+      } else if (closeChargesheetFile) {
+        fd.append("chargesheet", closeChargesheetFile);
+      }
       if (closeRfiFile) fd.append("rfi_document", closeRfiFile);
 
       const res = await caseService.update(closeCase.id, fd);
@@ -1774,8 +1839,10 @@ export default function Cases({ user, criminalTypeFilter }) {
       setCourtCloseCase(null);
       setJudgmentFileRows([]);
       setCloseActionTaken("");
+      setCloseClosureBasis("");
+      setClosePartIiOrderSerialNo("");
+      setClosePartIiOrderDate("");
       setCloseChargesheetFile(null);
-      setClosePartOneOrdersFile(null);
       setCloseRfiFile(null);
       setCourtCloseErr("");
       setStatusErr("");
@@ -1837,6 +1904,11 @@ export default function Cases({ user, criminalTypeFilter }) {
       if (k === "submitting_unit") return; // handled separately
       if (k === "rfi_document") {
         if (v) fd.append(k, v);
+        return;
+      }
+      if (k === "date_of_offence" || k === "rfi_date") {
+        const normalizedDate = parseDisplayDateForApi(v);
+        if (editing || normalizedDate) fd.append(k, normalizedDate || "");
         return;
       }
       if (editing || v) fd.append(k, v || "");
@@ -1915,10 +1987,11 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function handleTask(e) {
     e.preventDefault();
     if (!taskBattalion) { setTaskErr("Select a battalion."); return; }
-    if (!taskingNo.trim()) { setTaskErr("Enter the tasking number."); return; }
+    if (!taskingNo.trim()) { setTaskErr("Enter the Tasking REF No."); return; }
     if (!taskFile)      { setTaskErr("Attach a tasking letter."); return; }
     if (!taskingDate)   { setTaskErr("Set a tasking date."); return; }
-    const normalized = normalizeDateForApi(taskingDate);
+    const normalized = parseDisplayDateForApi(taskingDate);
+    if (!isApiDate(normalized)) { setTaskErr("Use date format dd/mm/yyyy."); return; }
     if (normalized !== todayISO) { setTaskErr("Tasking date must be today's date."); return; }
     setTaskSaving(true);
     setTaskErr("");
@@ -1926,7 +1999,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     const hh = String(now.getHours()).padStart(2, "0");
     const mm = String(now.getMinutes()).padStart(2, "0");
     const ss = String(now.getSeconds()).padStart(2, "0");
-    const taskingDateTime = `${taskingDate}T${hh}:${mm}:${ss}`;
+    const taskingDateTime = `${normalized}T${hh}:${mm}:${ss}`;
     const fd = new FormData();
     fd.append("tasked_battalion", taskBattalion);
     fd.append("tasking_no", taskingNo.trim());
@@ -2464,7 +2537,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       setTaskBattalion("");
       setTaskingNo(selected?.tasking_no || "");
       setTaskFile(null);
-      setTaskingDate(todayISO);
+      setTaskingDate(normalizeDateForDisplay(todayISO));
     }
     setShowTask((prev) => !prev);
     setTaskErr("");
@@ -2537,7 +2610,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskBattalion("");
     setTaskingNo(c?.tasking_no || "");
     setTaskFile(null);
-    setTaskingDate(todayISO);
+    setTaskingDate(normalizeDateForDisplay(todayISO));
     setShowTask(true);
   }
 
@@ -2862,7 +2935,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <th className="text-left px-4 py-3 font-medium">Date Closed</th>
                   )}
                   {!isDciFilter && isClosedFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Action Taken</th>
+                    <th className="text-left px-4 py-3 font-medium">Verdict</th>
                   )}
                 </tr>
               </thead>
@@ -3219,7 +3292,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
                   <Field label="Tasked Battalion" value={selected.tasked_battalion_name} />
                   <Field label="Type" value={selected.tasked_battalion_type} />
-                  <Field label="Tasking No" value={selected.tasking_no} />
+                  <Field label="Tasking REF No" value={selected.tasking_no} />
                   <Field
                     label="Tasking Date"
                     value={selected.tasking_date ? new Date(selected.tasking_date).toLocaleString("en-GB") : null}
@@ -3252,18 +3325,29 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div>
                 <SectionLabel>RFI</SectionLabel>
                 <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
-                  <Field label="RFI No" value={selected.rfi_no} />
-                  <Field label="RFI Date" value={selected.rfi_date} />
+                  <Field label="RFI REF No" value={selected.rfi_no} />
+                  <Field label="RFI Date" value={normalizeDateForDisplay(selected.rfi_date)} />
                 </div>
               </div>
             )}
 
-            {/* Remarks / Action Taken */}
+            {(selected.closure_basis || selected.part_ii_order_serial_no || selected.part_ii_order_date) && (
+              <div>
+                <SectionLabel>Closure</SectionLabel>
+                <div className="grid grid-cols-2 gap-3 bg-gray-700/30 rounded-lg p-3">
+                  <Field label="Closed With" value={closureBasisLabel(selected.closure_basis)} />
+                  <Field label="Part II Order Serial No" value={selected.part_ii_order_serial_no} />
+                  <Field label="Part II Order Date" value={normalizeDateForDisplay(selected.part_ii_order_date)} />
+                </div>
+              </div>
+            )}
+
+            {/* Remarks / Verdict */}
             {(selected.action_taken || selected.remarks) && (
               <div className="space-y-2">
                 {selected.action_taken && (
                   <div>
-                    <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-1">Action Taken</p>
+                    <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-1">Verdict</p>
                     <p className="text-sm text-gray-200 bg-gray-700/30 rounded-lg p-3">{selected.action_taken}</p>
                   </div>
                 )}
@@ -3490,23 +3574,23 @@ export default function Cases({ user, criminalTypeFilter }) {
                       </select>
                     </div>
                     <div>
-                      <label className="text-xs text-gray-400 block mb-1">Tasking No *</label>
+                      <label className="text-xs text-gray-400 block mb-1">Tasking REF No *</label>
                       <input
                         type="text"
                         value={taskingNo}
                         onChange={(e) => { setTaskingNo(e.target.value); if (taskErr) setTaskErr(""); }}
-                        placeholder="Enter tasking number"
+                        placeholder="Enter tasking reference number"
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       />
                     </div>
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
                       <input
-                        type="date"
+                        type="text"
+                        inputMode="numeric"
                         value={taskingDate}
                         onChange={(e) => setTaskingDate(e.target.value)}
-                        min={todayISO}
-                        max={todayISO}
+                        placeholder="dd/mm/yyyy"
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       />
                       <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
@@ -3892,44 +3976,83 @@ export default function Cases({ user, criminalTypeFilter }) {
             <div className="space-y-3">
               <div className="grid grid-cols-1 gap-4">
                 <div>
-                  <label className="text-xs text-gray-400 block mb-1">Action Taken *</label>
-                  <textarea
-                    value={closeActionTaken}
-                    onChange={(e) => setCloseActionTaken(e.target.value)}
+                  <label className="text-xs text-gray-400 block mb-1">Close With *</label>
+                  <select
+                    value={closeClosureBasis}
+                    onChange={(e) => {
+                      setCloseClosureBasis(e.target.value);
+                      setCloseChargesheetFile(null);
+                      setCourtCloseErr("");
+                    }}
                     disabled={courtCloseSaving}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                    rows={4}
-                    placeholder="Describe the action taken in closing this case"
-                  />
+                  >
+                    <option value="">Select close document...</option>
+                    {CLOSURE_BASIS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
                 </div>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {closeClosureBasis && closeClosureBasis !== "part_ii_orders" && (
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Chargesheet / Report</label>
+                    <label className="text-xs text-gray-400 block mb-1">{closureDocumentLabel(closeClosureBasis)} *</label>
                     <input
                       type="file"
-                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                      onChange={(e) => setCloseChargesheetFile(e.target.files?.[0] || null)}
+                      accept="application/pdf,.pdf"
+                      onChange={(e) => {
+                        setCloseChargesheetFile(e.target.files?.[0] || null);
+                        setCourtCloseErr("");
+                      }}
                       disabled={courtCloseSaving}
                       className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
                     />
                     {closeChargesheetFile && (
-                      <p className="mt-2 text-xs text-gray-300">Selected: {closeChargesheetFile.name}</p>
+                      <p className="mt-2 text-xs text-gray-300">
+                        Selected: {closeChargesheetFile.name}
+                      </p>
                     )}
                   </div>
+                )}
+                {closeClosureBasis === "part_ii_orders" && (
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Part II Order Serial No *</label>
+                      <input
+                        type="text"
+                        value={closePartIiOrderSerialNo}
+                        onChange={(e) => { setClosePartIiOrderSerialNo(e.target.value); setCourtCloseErr(""); }}
+                        disabled={courtCloseSaving}
+                        placeholder="Enter serial number"
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Part II Order Date *</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={closePartIiOrderDate}
+                        onChange={(e) => { setClosePartIiOrderDate(e.target.value); setCourtCloseErr(""); }}
+                        disabled={courtCloseSaving}
+                        placeholder="dd/mm/yyyy"
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      />
+                    </div>
+                  </div>
+                )}
+                {closeClosureBasis && (
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Part One Orders</label>
-                    <input
-                      type="file"
-                      accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
-                      onChange={(e) => setClosePartOneOrdersFile(e.target.files?.[0] || null)}
+                    <label className="text-xs text-gray-400 block mb-1">Verdict *</label>
+                    <textarea
+                      value={closeActionTaken}
+                      onChange={(e) => setCloseActionTaken(e.target.value)}
                       disabled={courtCloseSaving}
-                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      rows={4}
+                      placeholder="Enter the final verdict"
                     />
-                    {closePartOneOrdersFile && (
-                      <p className="mt-2 text-xs text-gray-300">Selected: {closePartOneOrdersFile.name}</p>
-                    )}
                   </div>
-                </div>
+                )}
                 {!activeCloseCase?.rfi_document && (
 
                   <div>
@@ -4075,23 +4198,23 @@ export default function Cases({ user, criminalTypeFilter }) {
             </select>
           </div>
           <div>
-            <label className="text-xs text-gray-400 block mb-1">Tasking No *</label>
+            <label className="text-xs text-gray-400 block mb-1">Tasking REF No *</label>
             <input
               type="text"
               value={taskingNo}
               onChange={(e) => { setTaskingNo(e.target.value); if (taskErr) setTaskErr(""); }}
-              placeholder="Enter tasking number"
+              placeholder="Enter tasking reference number"
               className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
             />
           </div>
           <div>
             <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
             <input
-                  type="date"
+                  type="text"
+                  inputMode="numeric"
                   value={taskingDate}
                   onChange={(e) => setTaskingDate(e.target.value)}
-                  min={todayISO}
-                  max={todayISO}
+                  placeholder="dd/mm/yyyy"
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                 />
                 <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
@@ -4353,9 +4476,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <div>
                   <CaseFormLabel>Date of Offence *</CaseFormLabel>
                   <input
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
                     value={createForm.date_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, date_of_offence: e.target.value }))}
+                    placeholder="dd/mm/yyyy"
                     required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   />
@@ -4385,12 +4510,12 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </div>
 
                 <div>
-                  <CaseFormLabel>RFI No{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
+                  <CaseFormLabel>RFI REF No{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.rfi_no}
                     onChange={(e) => setCreateForm((f) => ({ ...f, rfi_no: e.target.value }))}
-                    placeholder="Enter RFI number"
+                    placeholder="Enter RFI reference number"
                     required={caseFormMode === "create" && Boolean(createForm.rfi_document)}
                     className={CASE_FORM_CONTROL}
                   />
@@ -4399,16 +4524,18 @@ export default function Cases({ user, criminalTypeFilter }) {
                 <div>
                   <CaseFormLabel>RFI Date{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
                   <input
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
                     value={createForm.rfi_date}
                     onChange={(e) => setCreateForm((f) => ({ ...f, rfi_date: e.target.value }))}
+                    placeholder="dd/mm/yyyy"
                     required={caseFormMode === "create" && Boolean(createForm.rfi_document)}
                     className={CASE_FORM_CONTROL}
                   />
                 </div>
 
                 <div className="col-span-2">
-                  <CaseFormLabel>Tasking No</CaseFormLabel>
+                  <CaseFormLabel>Tasking REF No</CaseFormLabel>
                   <input
                     type="text"
                     value={createForm.tasking_no}

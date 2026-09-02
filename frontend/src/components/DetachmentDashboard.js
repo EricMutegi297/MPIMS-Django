@@ -9,6 +9,15 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function responseCount(response) {
+  const value = Number(response?.data?.count);
+  return Number.isFinite(value) ? value : toArray(response?.data).length;
+}
+
+function settledResponse(result) {
+  return result.status === "fulfilled" ? result.value : null;
+}
+
 function userLabel(user) {
   if (!user) return "";
   const name = [user.rank, user.name].filter(Boolean).join(" ").trim();
@@ -152,7 +161,7 @@ export default function DetachmentDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, newRes, taskedRes, uiRes, peRes, seRes, clRes] = await Promise.all([
+      const [allRes, newRes, taskedRes, uiRes, peRes, seRes, clRes] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
         caseService.list({ page_size: 1, status: "tasked" }),
@@ -160,15 +169,15 @@ export default function DetachmentDashboard({ user }) {
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
-      ]);
+      ])).map(settledResponse);
       setStatusCounts({
-        total:               allRes.data.count || 0,
-        new:                 newRes.data.count || 0,
-        tasked:              taskedRes.data.count || 0,
-        under_investigation: uiRes.data.count || 0,
-        pending:             peRes.data.count || 0,
-        served:              seRes.data.count || 0,
-        closed:              clRes.data.count || 0,
+        total:               responseCount(allRes),
+        new:                 responseCount(newRes),
+        tasked:              responseCount(taskedRes),
+        under_investigation: responseCount(uiRes),
+        pending:             responseCount(peRes),
+        served:              responseCount(seRes),
+        closed:              responseCount(clRes),
       });
     } catch {
       // keep zeros

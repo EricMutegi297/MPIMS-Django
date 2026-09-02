@@ -8,6 +8,15 @@ function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
 
+function responseCount(response) {
+  const value = Number(response?.data?.count);
+  return Number.isFinite(value) ? value : toArray(response?.data).length;
+}
+
+function settledResponse(result) {
+  return result.status === "fulfilled" ? result.value : null;
+}
+
 function userLabel(user) {
   if (!user) return "";
   const name = [user.rank, user.name].filter(Boolean).join(" ").trim();
@@ -387,8 +396,8 @@ export default function BattalionDashboard({ user }) {
         courtMartialRes,
         dciCivPoliceRes,
         guardroomRes,
-      ] =
-        await Promise.all([
+      ] = (
+        await Promise.allSettled([
           caseService.list({ page_size: 1 }),
           caseService.list({ page_size: 1, status: "new" }),
           caseService.list({ page_size: 1, status: "open" }),
@@ -402,22 +411,23 @@ export default function BattalionDashboard({ user }) {
           caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
           caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
           guardroomService.list(),
-        ]);
+        ])
+      ).map(settledResponse);
       setStatusCounts({
-        total:               allRes.data.count   || 0,
-        new:                 newRes.data.count   || 0,
-        newOpen:             (newRes.data.count || 0) + (openRes.data.count || 0),
-        tasked:              taskedRes.data.count || 0,
-        under_investigation: (uiRes.data.count || 0) + (isInvestigator ? (taskedRes.data.count || 0) : 0),
-        pending:             peRes.data.count    || 0,
-        served:              seRes.data.count    || 0,
-        closed:              clRes.data.count    || 0,
+        total:               responseCount(allRes),
+        new:                 responseCount(newRes),
+        newOpen:             responseCount(newRes) + responseCount(openRes),
+        tasked:              responseCount(taskedRes),
+        under_investigation: responseCount(uiRes) + (isInvestigator ? responseCount(taskedRes) : 0),
+        pending:             responseCount(peRes),
+        served:              responseCount(seRes),
+        closed:              responseCount(clRes),
       });
-      setTotalInc(incRes.data.count || 0);
-      setOpenInc(incOpenRes.data.count || 0);
-      setCourtMartialCount(courtMartialRes.data.count || 0);
-      setDciCivPoliceCount(dciCivPoliceRes.data.count || 0);
-      setTotalGuardrooms(toArray(guardroomRes.data).length);
+      setTotalInc(responseCount(incRes));
+      setOpenInc(responseCount(incOpenRes));
+      setCourtMartialCount(responseCount(courtMartialRes));
+      setDciCivPoliceCount(responseCount(dciCivPoliceRes));
+      setTotalGuardrooms(toArray(guardroomRes?.data).length);
     } catch {
       // keep zeros
     } finally {
@@ -431,7 +441,7 @@ export default function BattalionDashboard({ user }) {
     try {
       const res = await caseService.list({ page, page_size: PAGE_SIZE });
       setCases(toArray(res.data));
-      setTotalCount(res.data.count || 0);
+      setTotalCount(responseCount(res));
     } catch {
       setCases([]);
       setTotalCount(0);

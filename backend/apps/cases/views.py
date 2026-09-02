@@ -1827,10 +1827,10 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         if not recipients:
             return
-        action_taken = (case.action_taken or "").strip() or "Not provided."
+        verdict = (case.action_taken or "").strip() or "Not provided."
         msg = (
             f"Case #{case.case_number} -- '{case.title}' has been officially closed. "
-            f"Action taken: {action_taken}"
+            f"Verdict: {verdict}"
         )
         Notification.objects.bulk_create([
             Notification(

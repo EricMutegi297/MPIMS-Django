@@ -73,6 +73,11 @@ class Case(models.Model):
         DCI_CIV = "dci_civ_police", "DCI/Civ Police"
         COURT_MARTIAL = "court_martial", "Court Martial"
 
+    class ClosureBasis(models.TextChoices):
+        PART_II_ORDERS = "part_ii_orders", "Part II Orders"
+        CANCELLATION_LETTER = "cancellation_letter", "Cancellation Letter"
+        SERVICE_HQS_AUTHORITY = "service_hqs_authority", "Authority From Service HQs"
+
     case_number = models.CharField(max_length=30, unique=True, blank=True)
     title = models.CharField(max_length=200, blank=True)
     description = EncryptedTextField(blank=True)
@@ -147,6 +152,9 @@ class Case(models.Model):
     remarks = EncryptedTextField(blank=True)
     chargesheet = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     part_one_orders = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    closure_basis = models.CharField(max_length=35, choices=ClosureBasis.choices, blank=True)
+    part_ii_order_serial_no = models.CharField(max_length=50, blank=True)
+    part_ii_order_date = models.DateField(null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
     mentioning_remarks = EncryptedTextField(blank=True)
     close_requested = models.BooleanField(default=False)

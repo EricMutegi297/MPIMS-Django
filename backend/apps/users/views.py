@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import hmac
 import io
@@ -755,16 +756,20 @@ def verify_totp_device(device, code, request=None):
             return False, totp_lockout_message()
         return False, "Enter the 6-digit code from Google Authenticator."
 
-    totp = pyotp.TOTP(device.secret)
-    now = timezone.now()
-    current_counter = totp_counter_for_time(now)
-    matched_counter = None
-    for offset in range(-totp_code_window(), totp_code_window() + 1):
-        counter = current_counter + offset
-        expected = totp.at(counter * 30)
-        if secrets.compare_digest(expected, code):
-            matched_counter = counter
-            break
+    try:
+        totp = pyotp.TOTP(device.secret)
+        now = timezone.now()
+        current_counter = totp_counter_for_time(now)
+        matched_counter = None
+        for offset in range(-totp_code_window(), totp_code_window() + 1):
+            counter = current_counter + offset
+            expected = totp.at(counter * 30)
+            if secrets.compare_digest(expected, code):
+                matched_counter = counter
+                break
+    except (binascii.Error, TypeError, ValueError):
+        logger.exception("Invalid TOTP secret for user id %s.", device.user_id)
+        return False, "Authenticator setup is invalid. Ask a superuser to reset MFA for this account."
 
     if matched_counter is None:
         if mark_totp_failure(device):

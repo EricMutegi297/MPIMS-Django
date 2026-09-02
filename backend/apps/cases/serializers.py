@@ -774,6 +774,15 @@ class CaseSerializer(serializers.ModelSerializer):
         rfi_document = attrs.get("rfi_document", getattr(instance, "rfi_document", None))
         rfi_no = attrs.get("rfi_no", getattr(instance, "rfi_no", ""))
         rfi_date = attrs.get("rfi_date", getattr(instance, "rfi_date", None))
+        closure_basis = attrs.get("closure_basis", getattr(instance, "closure_basis", ""))
+        part_ii_order_serial_no = attrs.get(
+            "part_ii_order_serial_no",
+            getattr(instance, "part_ii_order_serial_no", ""),
+        )
+        part_ii_order_date = attrs.get(
+            "part_ii_order_date",
+            getattr(instance, "part_ii_order_date", None),
+        )
         tasking_requested = any(
             field in attrs
             for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
@@ -835,7 +844,7 @@ class CaseSerializer(serializers.ModelSerializer):
         if rfi_document:
             rfi_errors = {}
             if self._blank(rfi_no):
-                rfi_errors["rfi_no"] = "RFI number is required when an RFI attachment is uploaded."
+                rfi_errors["rfi_no"] = "RFI REF No is required when an RFI attachment is uploaded."
             if not rfi_date:
                 rfi_errors["rfi_date"] = "RFI date is required when an RFI attachment is uploaded."
             if rfi_errors:
@@ -859,7 +868,7 @@ class CaseSerializer(serializers.ModelSerializer):
 
         if tasking_validation_requested and tasked_battalion and self._blank(tasking_no):
             raise serializers.ValidationError(
-                {"tasking_no": "Tasking number is required before this case can be tasked."}
+                {"tasking_no": "Tasking REF No is required before this case can be tasked."}
             )
 
         if (
@@ -942,17 +951,28 @@ class CaseSerializer(serializers.ModelSerializer):
                     {"status": "Cases can only be closed after creation and service workflow."}
                 )
 
+            closure_errors = {}
+            if self._blank(closure_basis):
+                closure_errors["closure_basis"] = "Select what this case is being closed with."
+            elif closure_basis == Case.ClosureBasis.PART_II_ORDERS:
+                if self._blank(part_ii_order_serial_no):
+                    closure_errors["part_ii_order_serial_no"] = "Part II Order Serial No is required."
+                if not part_ii_order_date:
+                    closure_errors["part_ii_order_date"] = "Part II Order Date is required."
+            if closure_errors:
+                raise serializers.ValidationError(closure_errors)
+
             if not str(attrs.get("action_taken") or getattr(instance, "action_taken", "") or "").strip():
                 raise serializers.ValidationError(
-                    {"action_taken": "Action taken is required before closing this case."}
+                    {"action_taken": "Verdict is required before closing this case."}
                 )
 
-            if not (
-                attrs.get("chargesheet") or getattr(instance, "chargesheet", None)
-                or attrs.get("part_one_orders") or getattr(instance, "part_one_orders", None)
+            if (
+                closure_basis != Case.ClosureBasis.PART_II_ORDERS
+                and not (attrs.get("chargesheet") or getattr(instance, "chargesheet", None))
             ):
                 raise serializers.ValidationError(
-                    {"chargesheet": "Attach a Chargesheet or report before closing this case."}
+                    {"chargesheet": "Attach the selected closure PDF before closing this case."}
                 )
 
             if not (attrs.get("rfi_document") or getattr(instance, "rfi_document", None)):

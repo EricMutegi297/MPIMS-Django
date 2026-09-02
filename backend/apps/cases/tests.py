@@ -275,6 +275,7 @@ class CaseApiTests(TestCase):
             reverse("case-detail", args=[case.id]),
             {
                 "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.CANCELLATION_LETTER,
                 "action_taken": action_taken,
             },
             format="json",
@@ -282,6 +283,130 @@ class CaseApiTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assert_notification_message(case, action_taken)
+
+    def test_close_case_requires_closure_basis_and_verdict(self):
+        case = Case.objects.create(
+            title="Close Validation",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            rfi_document="cases/rfi.pdf",
+            chargesheet="cases/closure.pdf",
+            created_by=self.superuser,
+        )
+        CaseAttachment.objects.create(
+            case=case,
+            label="Judgment",
+            document_type=CaseAttachment.DocumentType.JUDGMENT,
+            file="cases/judgment.pdf",
+            uploaded_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {"status": Case.Status.CLOSED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("closure_basis", response.data)
+        self.assertIn("action_taken", response.data)
+
+    def test_part_ii_orders_close_requires_serial_no_and_date(self):
+        case = Case.objects.create(
+            title="Part II Validation",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            rfi_document="cases/rfi.pdf",
+            created_by=self.superuser,
+        )
+        CaseAttachment.objects.create(
+            case=case,
+            label="Judgment",
+            document_type=CaseAttachment.DocumentType.JUDGMENT,
+            file="cases/judgment.pdf",
+            uploaded_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.PART_II_ORDERS,
+                "action_taken": "Convicted and punished.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("part_ii_order_serial_no", response.data)
+        self.assertIn("part_ii_order_date", response.data)
+
+    def test_cancellation_letter_close_requires_pdf(self):
+        case = Case.objects.create(
+            title="Cancellation Close",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            rfi_document="cases/rfi.pdf",
+            created_by=self.superuser,
+        )
+        CaseAttachment.objects.create(
+            case=case,
+            label="Judgment",
+            document_type=CaseAttachment.DocumentType.JUDGMENT,
+            file="cases/judgment.pdf",
+            uploaded_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.CANCELLATION_LETTER,
+                "action_taken": "Cancelled by competent authority.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("chargesheet", response.data)
+
+    def test_part_ii_orders_close_does_not_require_pdf(self):
+        case = Case.objects.create(
+            title="Part II Close",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            rfi_document="cases/rfi.pdf",
+            created_by=self.superuser,
+        )
+        CaseAttachment.objects.create(
+            case=case,
+            label="Judgment",
+            document_type=CaseAttachment.DocumentType.JUDGMENT,
+            file="cases/judgment.pdf",
+            uploaded_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.PART_II_ORDERS,
+                "part_ii_order_serial_no": "P2/001/2026",
+                "part_ii_order_date": "2026-09-02",
+                "action_taken": "Convicted and sentenced.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def assert_notification_message(self, case, expected):
         notifications = Notification.objects.filter(

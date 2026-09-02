@@ -1,5 +1,6 @@
 import os
 from django.apps import AppConfig
+from django.conf import settings
 
 
 class CasesConfig(AppConfig):
@@ -7,6 +8,9 @@ class CasesConfig(AppConfig):
     name = "apps.cases"
 
     def ready(self):
+        if not getattr(settings, "CASE_REMINDER_SCHEDULER_ENABLED", False):
+            return
+
         # Avoid double-start when Django dev server auto-reloads
         if os.environ.get("RUN_MAIN") != "true":
             return
