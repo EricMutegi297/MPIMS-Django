@@ -376,6 +376,38 @@ class CaseApiTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("chargesheet", response.data)
 
+    def test_cancellation_letter_close_requires_new_pdf_even_if_previous_file_exists(self):
+        case = Case.objects.create(
+            title="Cancellation Close Existing File",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            rfi_document="cases/rfi.pdf",
+            chargesheet="cases/old-closure.pdf",
+            created_by=self.superuser,
+        )
+        CaseAttachment.objects.create(
+            case=case,
+            label="Judgment",
+            document_type=CaseAttachment.DocumentType.JUDGMENT,
+            file="cases/judgment.pdf",
+            uploaded_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.CANCELLATION_LETTER,
+                "action_taken": "Cancelled by competent authority.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("chargesheet", response.data)
+
     def test_part_ii_orders_close_does_not_require_pdf(self):
         case = Case.objects.create(
             title="Part II Close",

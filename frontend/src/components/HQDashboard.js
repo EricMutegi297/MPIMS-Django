@@ -149,7 +149,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const isPartIiOrders = closureBasis === "part_ii_orders";
   const hasClosureFile = isPartIiOrders
     ? true
-    : Boolean(closureBasis && (closureFile || caseObj?.chargesheet));
+    : Boolean(closureBasis && closureFile);
   const hasPartIiDetails = !isPartIiOrders || (String(partIiOrderSerialNo).trim() && partIiOrderDate);
   const hasRfi = Boolean(rfiFile || caseObj?.rfi_document);
   const canClose = Boolean(

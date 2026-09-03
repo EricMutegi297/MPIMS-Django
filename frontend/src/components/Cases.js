@@ -1742,7 +1742,7 @@ export default function Cases({ user, criminalTypeFilter }) {
     const partIiOrderDateApi = parseDisplayDateForApi(closePartIiOrderDate);
     const hasSelectedClosureFile = closeBasisIsPartIi
       ? true
-      : Boolean(closeClosureBasis && (closeChargesheetFile || closeCase.chargesheet));
+      : Boolean(closeClosureBasis && closeChargesheetFile);
     const rowsWithFiles = judgmentFileRows.filter((r) => r.file);
     if (!closeClosureBasis) {
       setCourtCloseErr("Select what this case is being closed with.");

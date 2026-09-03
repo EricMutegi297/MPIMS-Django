@@ -969,7 +969,7 @@ class CaseSerializer(serializers.ModelSerializer):
 
             if (
                 closure_basis != Case.ClosureBasis.PART_II_ORDERS
-                and not (attrs.get("chargesheet") or getattr(instance, "chargesheet", None))
+                and not attrs.get("chargesheet")
             ):
                 raise serializers.ValidationError(
                     {"chargesheet": "Attach the selected closure PDF before closing this case."}
