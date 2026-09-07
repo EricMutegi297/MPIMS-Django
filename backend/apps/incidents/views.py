@@ -132,6 +132,10 @@ class IncidentViewSet(viewsets.ModelViewSet):
             "place_of_offence": first_value("place_of_offence", incident.location or ""),
             "submitting_unit": first_value("submitting_unit"),
             "police_station": first_value("police_station", incident.police_ob_reference or ""),
+            "accused_name": first_value("accused_name"),
+            "accused_rank": first_value("accused_rank"),
+            "accused_service_number": first_value("accused_service_number"),
+            "accused_service": first_value("accused_service"),
             "status": Case.Status.NEW,
         }
         if data.get("offence_ref"):

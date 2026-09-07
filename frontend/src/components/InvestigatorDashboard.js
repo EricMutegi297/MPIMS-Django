@@ -4,6 +4,7 @@ import { caseService, caseBriefService, teamService, attachmentService } from ".
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
+import { RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -119,6 +120,19 @@ const FILTERS = [
     ),
   },
 ];
+
+const RTA_FILTER_CARD = {
+  key: "rta",
+  label: "RTA Cases",
+  valueColor: "text-amber-400",
+  ring: "ring-amber-500",
+  activeBg: "bg-amber-500/10",
+  icon: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 17h12M7 17a2 2 0 11-4 0 2 2 0 014 0zm14 0a2 2 0 11-4 0 2 2 0 014 0zM5 17l1.3-4.5A2 2 0 018.22 11h7.56a2 2 0 011.92 1.5L19 17M8 11l1.5-3h5L16 11" />
+    </svg>
+  ),
+};
 
 function FilterCard({ cfg, value, isActive, loading, onClick }) {
   return (
@@ -1863,6 +1877,7 @@ export default function InvestigatorDashboard({ user }) {
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [statusCounts, setStatusCounts] = useState({ all: 0, under_investigation: 0, pending: 0, served: 0, closed: 0 });
+  const [rtaCaseCount, setRtaCaseCount] = useState(0);
   const [loadingCounts, setLoadingCounts] = useState(true);
 
   useEffect(() => {
@@ -1897,13 +1912,14 @@ export default function InvestigatorDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, uiRes, taskedRes, peRes, seRes, clRes] = (await Promise.allSettled([
+      const [allRes, uiRes, taskedRes, peRes, seRes, clRes, rtaCaseRes] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "under_investigation" }),
         caseService.list({ page_size: 1, status: "tasked" }),
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
+        caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }),
       ])).map(settledResponse);
       setStatusCounts({
         all:                 responseCount(allRes),
@@ -1912,6 +1928,7 @@ export default function InvestigatorDashboard({ user }) {
         served:              responseCount(seRes),
         closed:              responseCount(clRes),
       });
+      setRtaCaseCount(responseCount(rtaCaseRes));
     } catch {
       // keep zeros
     } finally {
@@ -2000,7 +2017,7 @@ export default function InvestigatorDashboard({ user }) {
         <NotificationBell />
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {FILTERS.map((cfg) => (
           <FilterCard
             key={cfg.key}
@@ -2011,6 +2028,13 @@ export default function InvestigatorDashboard({ user }) {
             onClick={() => handleFilterChange(cfg.key)}
           />
         ))}
+        <FilterCard
+          cfg={RTA_FILTER_CARD}
+          value={rtaCaseCount}
+          isActive={false}
+          loading={loadingCounts}
+          onClick={() => navigate(`/dashboard/cases?case_type=${RTA_CASE_TYPE}`)}
+        />
       </div>
 
       <section>

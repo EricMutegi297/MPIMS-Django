@@ -4,6 +4,7 @@ import { attachmentService, caseService, guardroomService, incidentService } fro
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
+import { RTA_CASE_TYPE } from "../utils/caseTypes";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toArray(data) {
@@ -426,6 +427,7 @@ export default function HQDashboard({ user }) {
   const [openInc, setOpenInc]   = useState(0);
   const [courtMartialCount, setCourtMartialCount] = useState(0);
   const [dciCivPoliceCount, setDciCivPoliceCount] = useState(0);
+  const [rtaCaseCount, setRtaCaseCount] = useState(0);
   const [totalGuardrooms, setTotalGuardrooms] = useState(0);
   const [activeFilter, setActiveFilter] = useState("all");
   const [expandedDesc, setExpandedDesc] = useState({});
@@ -440,7 +442,7 @@ export default function HQDashboard({ user }) {
       const [
         allRes, newRes, openRes, taskedRes,
         uiRes, peRes, seRes, clRes, rfRes,
-        incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, guardroomRes,
+        incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, rtaCaseRes, guardroomRes,
       ] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
@@ -455,6 +457,7 @@ export default function HQDashboard({ user }) {
         incidentService.list({ page_size: 1, status: "reported" }),
         caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
         caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
+        caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }),
         guardroomService.list(),
       ])).map(settledResponse);
       setStatusCounts({
@@ -472,6 +475,7 @@ export default function HQDashboard({ user }) {
       setOpenInc(responseCount(incOpenRes));
       setCourtMartialCount(responseCount(courtMartialRes));
       setDciCivPoliceCount(responseCount(dciCivPoliceRes));
+      setRtaCaseCount(responseCount(rtaCaseRes));
       setTotalGuardrooms(toArray(guardroomRes?.data).length);
     } catch (_) {}
     finally { setLoadingCounts(false); }
@@ -553,7 +557,7 @@ export default function HQDashboard({ user }) {
         </p>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
         <StatCard
           loading={loadingCounts}
           label="Total Cases"
@@ -587,6 +591,18 @@ export default function HQDashboard({ user }) {
           icon={
             <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="RTA Cases"
+          value={rtaCaseCount}
+          accent="bg-amber-500/10"
+          onClick={() => navigate(`/dashboard/cases?case_type=${RTA_CASE_TYPE}`)}
+          icon={
+            <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 17h12M7 17a2 2 0 11-4 0 2 2 0 014 0zm14 0a2 2 0 11-4 0 2 2 0 014 0zM5 17l1.3-4.5A2 2 0 018.22 11h7.56a2 2 0 011.92 1.5L19 17M8 11l1.5-3h5L16 11" />
             </svg>
           }
         />

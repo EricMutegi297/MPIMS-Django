@@ -2,9 +2,15 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, formationService, incidentService, userService } from "../services/api";
 import { UnitDirectoryModal } from "./UnitDirectory";
+import { isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function responseCount(response) {
+  const value = Number(response?.data?.count);
+  return Number.isFinite(value) ? value : toArray(response?.data).length;
 }
 
 function scheduleAfterPaint(callback) {
@@ -99,6 +105,7 @@ export default function Overview({ user }) {
   const [users, setUsers] = useState([]);
   const [units, setUnits] = useState([]);
   const [formations, setFormations] = useState([]);
+  const [rtaCaseCount, setRtaCaseCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [expandedDesc, setExpandedDesc] = useState({});
   const [unitDirectoryOpen, setUnitDirectoryOpen] = useState(false);
@@ -107,12 +114,15 @@ export default function Overview({ user }) {
     setLoading(true);
     Promise.all([
       caseService.list({ page_size: 200 }).catch(() => null),
+      caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }).catch(() => null),
       incidentService.list({ page_size: 200 }).catch(() => null),
       userService.list({ page_size: 200 }).catch(() => null),
       isSuperuser ? formationService.units({ page_size: 1000 }).catch(() => null) : Promise.resolve(null),
       isSuperuser ? formationService.formations().catch(() => null) : Promise.resolve(null),
-    ]).then(([cRes, iRes, uRes, unitRes, formationRes]) => {
-      setCases(toArray(cRes?.data));
+    ]).then(([cRes, rtaRes, iRes, uRes, unitRes, formationRes]) => {
+      const loadedCases = toArray(cRes?.data);
+      setCases(loadedCases);
+      setRtaCaseCount(rtaRes ? responseCount(rtaRes) : loadedCases.filter(isRoadTrafficAccidentCase).length);
       setIncidents(toArray(iRes?.data));
       setUsers(toArray(uRes?.data));
       setUnits(toArray(unitRes?.data));
@@ -204,7 +214,7 @@ export default function Overview({ user }) {
       </div>
 
       {/* KPI Cards */}
-      <div className={`grid grid-cols-1 sm:grid-cols-2 ${isSuperuser ? "lg:grid-cols-4 xl:grid-cols-7" : "lg:grid-cols-6"} gap-3 md:gap-4`}>
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${isSuperuser ? "lg:grid-cols-4 xl:grid-cols-8" : "lg:grid-cols-7"} gap-3 md:gap-4`}>
         <StatCard
           loading={loading} label="Total Cases" value={cases.length}
           sub={`${openCases.length} open`} accent="border-blue-500"
@@ -222,6 +232,12 @@ export default function Overview({ user }) {
           sub={dciCivPoliceCases.length ? "criminal offence" : undefined} accent="border-cyan-500"
           onClick={() => navigate("/dashboard/dci-civ-police")}
           icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>}
+        />
+        <StatCard
+          loading={loading} label="RTA Cases" value={rtaCaseCount}
+          sub={rtaCaseCount ? "road traffic accident" : undefined} accent="border-amber-500"
+          onClick={() => navigate(`/dashboard/cases?case_type=${RTA_CASE_TYPE}`)}
+          icon={<svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 17h12M7 17a2 2 0 11-4 0 2 2 0 014 0zm14 0a2 2 0 11-4 0 2 2 0 014 0zM5 17l1.3-4.5A2 2 0 018.22 11h7.56a2 2 0 011.92 1.5L19 17M8 11l1.5-3h5L16 11"/></svg>}
         />
         <StatCard
           loading={loading} label="Closed / Served" value={closedCases.length}

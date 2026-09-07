@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService } from "../services/api";
+import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService, incidentService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
-import AddAnotherModal from "./common/AddAnotherModal";
+import ActionModal from "./common/ActionModal";
 import { openProtectedFile } from "../utils/protectedFiles";
+import { isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -345,6 +346,42 @@ const CLOSURE_BASIS_OPTIONS = [
   { value: "service_hqs_authority", label: "Authority From Service HQs" },
 ];
 
+const CASE_SOURCE_RFI = "rfi";
+const CASE_SOURCE_INCIDENT = "incident";
+const CASE_SOURCE_RTA = "road_traffic_accident";
+
+const CASE_SOURCE_OPTIONS = [
+  {
+    value: CASE_SOURCE_RFI,
+    label: "RFI Case",
+    summary: "Create a case from an RFI reference and attachment.",
+  },
+  {
+    value: CASE_SOURCE_INCIDENT,
+    label: "Incident",
+    summary: "Capture incident details directly at Admin HQ.",
+  },
+  {
+    value: CASE_SOURCE_RTA,
+    label: "Road Traffic Accident",
+    summary: "Capture RTA vehicles, drivers, casualties, and accident history.",
+  },
+];
+
+const ROAD_TRAFFIC_TYPES = [
+  ["injury", "Injury Road Traffic Accident"],
+  ["non_injury", "Non-Injury Road Traffic Accident"],
+  ["self_involved", "Self Involved Road Traffic Accident"],
+  ["fatal", "Fatal Road Traffic Accident"],
+  ["hit_and_run", "Hit and Run Road Traffic Accident"],
+];
+
+const INJURY_SEVERITIES = [
+  ["minor", "Minor"],
+  ["serious", "Serious"],
+  ["critical", "Critical"],
+];
+
 function closureBasisLabel(value) {
   return CLOSURE_BASIS_OPTIONS.find((option) => option.value === value)?.label || "";
 }
@@ -393,6 +430,418 @@ const INIT_CREATE = {
   rfi_no: "", rfi_date: "", tasking_no: "",
   rfi_document: null,
 };
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function localDateApi(date = new Date()) {
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function localTimeValue(date = new Date()) {
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function localDateDisplay(date = new Date()) {
+  return normalizeDateForDisplay(localDateApi(date));
+}
+
+function caseSourceLabel(value) {
+  return CASE_SOURCE_OPTIONS.find((option) => option.value === value)?.label || "Case";
+}
+
+function roadTrafficTypeLabel(value) {
+  return ROAD_TRAFFIC_TYPES.find(([type]) => type === value)?.[1] || "";
+}
+
+function detachmentOptionLabel(detachment) {
+  const name = String(detachment?.name || "").trim();
+  const company = detachment?.company ? `${detachment.company} Coy` : "Coy";
+  if (!name) return company;
+  if (name.toLowerCase().includes("coy")) return name;
+  return `${company} - ${name}`;
+}
+
+function injurySeverityLabel(value) {
+  return INJURY_SEVERITIES.find(([severity]) => severity === value)?.[1] || "";
+}
+
+function isInjuryRoadTrafficType(value) {
+  return value === "injury";
+}
+
+function isFatalRoadTrafficType(value) {
+  return value === "fatal";
+}
+
+function emptyRtaVehicle() {
+  return {
+    vehicle_type: "service",
+    vehicle_details: "",
+    driver_person_type: "service",
+    driver_unknown: false,
+    driver_identifier: "",
+    driver_rank: "",
+    driver_name: "",
+    driver_unit: "",
+  };
+}
+
+function emptyRtaCasualty(status = "injured") {
+  return {
+    casualty_status: status,
+    person_type: "service",
+    is_unknown: false,
+    identifier: "",
+    rank: "",
+    name: "",
+    unit: "",
+    injury_severity: "",
+  };
+}
+
+function emptyIncidentCaseForm(source = CASE_SOURCE_INCIDENT) {
+  return {
+    occurred_date: localDateDisplay(),
+    occurred_time: localTimeValue(),
+    incident_title: "",
+    road_traffic_type: "",
+    place: "",
+    unit_involved: "",
+    originating_unit: "",
+    service_vehicle: "",
+    service_member_number: "",
+    service_member_rank: "",
+    service_member_name: "",
+    civilian: "",
+    history: "",
+    injuries: "",
+    damages: "",
+    how_occurred: "",
+    action_taken: "",
+    police_ob_reference: "",
+    injured_count: "0",
+    dead_count: "0",
+    rta_vehicles: [emptyRtaVehicle()],
+    rta_casualties: [],
+    source,
+  };
+}
+
+function cleanRtaVehicle(vehicle) {
+  const driverPersonType = vehicle.driver_person_type || "service";
+  const driverUnknown = driverPersonType === "civilian" && Boolean(vehicle.driver_unknown);
+  return {
+    vehicle_type: vehicle.vehicle_type || "service",
+    vehicle_details: String(vehicle.vehicle_details || "").trim(),
+    driver_person_type: driverPersonType,
+    driver_unknown: driverUnknown,
+    driver_identifier: driverUnknown ? "Unknown" : String(vehicle.driver_identifier || "").trim(),
+    driver_rank: driverPersonType === "civilian" ? "" : String(vehicle.driver_rank || "").trim(),
+    driver_name: driverUnknown ? "Unknown" : String(vehicle.driver_name || "").trim(),
+    driver_unit: driverPersonType === "civilian" ? "" : String(vehicle.driver_unit || "").trim(),
+  };
+}
+
+function cleanRtaCasualty(casualty) {
+  const status = casualty.casualty_status || "injured";
+  const personType = casualty.person_type || "service";
+  const isUnknown = personType === "civilian" && Boolean(casualty.is_unknown);
+  return {
+    casualty_status: status,
+    person_type: personType,
+    is_unknown: isUnknown,
+    identifier: isUnknown ? "Unknown" : String(casualty.identifier || "").trim(),
+    rank: personType === "civilian" ? "" : String(casualty.rank || "").trim(),
+    name: isUnknown ? "Unknown" : String(casualty.name || "").trim(),
+    unit: personType === "civilian" ? "" : String(casualty.unit || "").trim(),
+    injury_severity: status === "injured" ? String(casualty.injury_severity || "").trim() : "",
+  };
+}
+
+function hasVehicleData(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_rank", "driver_name", "driver_unit"]
+    .some((field) => String(cleaned[field] || "").trim());
+}
+
+function safeRtaCount(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function casualtyCountsForType(roadTrafficType, injured, dead) {
+  const injuredCount = roadTrafficType === "non_injury" ? 0 : safeRtaCount(injured);
+  const deadCount = ["non_injury", "injury"].includes(roadTrafficType) ? 0 : safeRtaCount(dead);
+  return { injuredCount, deadCount };
+}
+
+function syncRtaCasualtiesForCounts(casualties, roadTrafficType, injured, dead) {
+  const { injuredCount, deadCount } = casualtyCountsForType(roadTrafficType, injured, dead);
+  const existing = toArray(casualties);
+  const existingInjured = existing
+    .filter((casualty) => casualty?.casualty_status !== "dead")
+    .map((casualty) => ({ ...casualty, casualty_status: "injured" }));
+  const existingDead = existing
+    .filter((casualty) => casualty?.casualty_status === "dead")
+    .map((casualty) => ({ ...casualty, casualty_status: "dead", injury_severity: "" }));
+  return [
+    ...Array.from({ length: injuredCount }, (_, index) => existingInjured[index] || emptyRtaCasualty("injured")),
+    ...Array.from({ length: deadCount }, (_, index) => existingDead[index] || emptyRtaCasualty("dead")),
+  ];
+}
+
+function rtaCasualtiesMatchCounts(casualties, roadTrafficType, injured, dead) {
+  const { injuredCount, deadCount } = casualtyCountsForType(roadTrafficType, injured, dead);
+  const existing = toArray(casualties);
+  if (existing.length !== injuredCount + deadCount) return false;
+  const actualDead = existing.filter((casualty) => casualty?.casualty_status === "dead").length;
+  const actualInjured = existing.length - actualDead;
+  return actualInjured === injuredCount && actualDead === deadCount;
+}
+
+function countLabel(value) {
+  const number = Number(value || 0);
+  return number > 0 ? String(number) : "Nil";
+}
+
+function personLabel(person, identifierLabel = "Svc/ID") {
+  if (person.is_unknown || person.driver_unknown) return "Unknown civilian";
+  const parts = [
+    person.identifier ? `${identifierLabel}: ${person.identifier}` : "",
+    person.rank,
+    person.name,
+    person.unit ? `Unit: ${person.unit}` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+function sourceServiceMemberSummary(form) {
+  return [
+    form.service_member_number ? `Service No: ${String(form.service_member_number).trim()}` : "",
+    form.service_member_rank,
+    form.service_member_name,
+  ]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function vehicleSummary(vehicle, index) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  const typeLabel = cleaned.vehicle_type === "civilian" ? "Civilian vehicle" : "Service vehicle";
+  const driverLabel = personLabel({
+    identifier: cleaned.driver_identifier,
+    rank: cleaned.driver_rank,
+    name: cleaned.driver_name,
+    unit: cleaned.driver_unit,
+    driver_unknown: cleaned.driver_unknown,
+  }, cleaned.driver_person_type === "civilian" ? "ID No" : "Svc No");
+  return `${index + 1}. ${typeLabel}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver: ${driverLabel}` : ""}`;
+}
+
+function casualtySummary(casualty, index) {
+  const cleaned = cleanRtaCasualty(casualty);
+  const statusLabel = cleaned.casualty_status === "dead" ? "Dead" : "Injured";
+  const person = personLabel(cleaned, cleaned.person_type === "civilian" ? "ID No" : "Svc No");
+  const severity = cleaned.casualty_status === "injured" && cleaned.injury_severity
+    ? `; Severity: ${injurySeverityLabel(cleaned.injury_severity)}`
+    : "";
+  return `${index + 1}. ${statusLabel}: ${person || "Details not specified"}${severity}`;
+}
+
+function buildIncidentCaseDescription(form) {
+  const sections = [
+    `Incident: ${form.incident_title || "Incident"}.`,
+    `Place: ${form.place || "Not specified"}.`,
+  ];
+  const serviceMember = sourceServiceMemberSummary(form);
+  if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
+  if (form.originating_unit) sections.push(`Originating sub-unit: ${form.originating_unit}.`);
+  if (serviceMember) sections.push(`Service member: ${serviceMember}.`);
+  if (form.history) sections.push(`History of the incident:\n${form.history}`);
+  if (form.police_ob_reference) sections.push(`Police / External OB Ref: ${form.police_ob_reference}`);
+  return sections.filter(Boolean).join("\n\n");
+}
+
+function buildRtaCaseDescription(form) {
+  const vehicles = toArray(form.rta_vehicles).filter(hasVehicleData).map(cleanRtaVehicle);
+  const casualties = toArray(form.rta_casualties).map(cleanRtaCasualty);
+  const sections = [
+    `${roadTrafficTypeLabel(form.road_traffic_type) || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
+    `Personnel injured: ${countLabel(form.injured_count)}. Personnel dead: ${countLabel(form.dead_count)}.`,
+  ];
+  if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
+  if (form.originating_unit) sections.push(`Originating sub-unit: ${form.originating_unit}.`);
+  if (vehicles.length) sections.push(`Vehicles / drivers:\n${vehicles.map(vehicleSummary).join("\n")}`);
+  if (casualties.length) sections.push(`Onboard personnel / casualties:\n${casualties.map(casualtySummary).join("\n")}`);
+  if (form.history) sections.push(`History of the accident:\n${form.history}`);
+  if (form.damages) sections.push(`Damages:\n${form.damages}`);
+  if (form.how_occurred) sections.push(`How the accident occurred:\n${form.how_occurred}`);
+  if (form.action_taken) sections.push(`Initial action taken:\n${form.action_taken}`);
+  if (form.police_ob_reference) sections.push(`Police / External OB Ref: ${form.police_ob_reference}`);
+  return sections.filter(Boolean).join("\n\n");
+}
+
+function validateCaseClassification(form) {
+  if (!form.offence_type) return "Offence type is required.";
+  if (form.offence_type === "service_offence" && !form.service_offence_severity) {
+    return "Severity is required for service offences.";
+  }
+  if (form.offence_type === "criminal_offence" && !form.criminal_offence_type) {
+    return "Criminal offence type is required.";
+  }
+  if (!form.submitting_unit) return "Submitting unit is required.";
+  return "";
+}
+
+function validateIncidentSourceCase(form, sourceForm, source) {
+  const classificationError = validateCaseClassification(form);
+  if (classificationError) return classificationError;
+  if (
+    form.offence_type === "criminal_offence"
+    && form.criminal_offence_type === "dci_civ_police"
+    && isBlank(sourceForm.police_ob_reference)
+  ) {
+    return "Police / External OB Ref is required for DCI / Civ Police cases.";
+  }
+  const occurredDateApi = parseDisplayDateForApi(sourceForm.occurred_date);
+  if (!sourceForm.occurred_date) return "Date of occurrence is required.";
+  if (!isApiDate(occurredDateApi)) return "Use date format dd/mm/yyyy for Date of Occurrence.";
+  if (!sourceForm.occurred_time) return "Time of occurrence is required.";
+  if (isBlank(sourceForm.place)) return "Place is required.";
+  if (isBlank(sourceForm.unit_involved)) return "Unit involved is required.";
+
+  if (source === CASE_SOURCE_INCIDENT) {
+    if (isBlank(sourceForm.incident_title)) return "Incident is required.";
+    if (isBlank(sourceForm.history)) return "History of the incident is required.";
+    return "";
+  }
+
+  if (!sourceForm.road_traffic_type) return "Select the road traffic accident type.";
+  const { injuredCount, deadCount } = casualtyCountsForType(
+    sourceForm.road_traffic_type,
+    sourceForm.injured_count,
+    sourceForm.dead_count
+  );
+  const vehicles = toArray(sourceForm.rta_vehicles).filter(hasVehicleData);
+  if (!vehicles.length) return "Add at least one vehicle and driver entry.";
+  if (
+    sourceForm.road_traffic_type === "non_injury"
+    && !vehicles.some((vehicle) => {
+      const cleaned = cleanRtaVehicle(vehicle);
+      return cleaned.driver_unknown || cleaned.driver_identifier || cleaned.driver_name;
+    })
+  ) {
+    return "Capture driver details for a Non-Injury Road Traffic Accident.";
+  }
+  if (isInjuryRoadTrafficType(sourceForm.road_traffic_type) && injuredCount < 1) {
+    return "Enter the number of injured personnel for an Injury Road Traffic Accident.";
+  }
+  if (isFatalRoadTrafficType(sourceForm.road_traffic_type) && deadCount < 1) {
+    return "Enter the number of dead personnel for a Fatal Road Traffic Accident.";
+  }
+  if (isBlank(sourceForm.history)) return "History of the accident is required.";
+  if (isBlank(sourceForm.how_occurred)) return "How the accident occurred is required.";
+  const casualtyMissingSeverity = toArray(sourceForm.rta_casualties)
+    .map(cleanRtaCasualty)
+    .some((casualty) => casualty.casualty_status === "injured" && !casualty.injury_severity);
+  if (casualtyMissingSeverity) return "Select injury severity for every injured onboard person.";
+  return "";
+}
+
+function buildSourceCasePayload(form, sourceForm, source) {
+  const occurredDateApi = parseDisplayDateForApi(sourceForm.occurred_date);
+  const sourceOffence = source === CASE_SOURCE_RTA
+    ? roadTrafficTypeLabel(sourceForm.road_traffic_type) || "Road Traffic Accident"
+    : sourceForm.incident_title || "Incident";
+  const description = source === CASE_SOURCE_RTA
+    ? buildRtaCaseDescription(sourceForm)
+    : sourceForm.history;
+  const firstServiceDriver = toArray(sourceForm.rta_vehicles)
+    .map(cleanRtaVehicle)
+    .find((vehicle) =>
+      vehicle.driver_person_type === "service"
+      && (vehicle.driver_identifier || vehicle.driver_rank || vehicle.driver_name)
+    );
+  const accusedServiceNumber = source === CASE_SOURCE_RTA
+    ? firstServiceDriver?.driver_identifier || ""
+    : sourceForm.service_member_number || "";
+  const accusedRank = source === CASE_SOURCE_RTA
+    ? firstServiceDriver?.driver_rank || ""
+    : sourceForm.service_member_rank || "";
+  const accusedName = source === CASE_SOURCE_RTA
+    ? firstServiceDriver?.driver_name || ""
+    : sourceForm.service_member_name || "";
+
+  return {
+    title: sourceOffence,
+    offence: form.offence || sourceOffence,
+    offence_type: form.offence_type,
+    service_offence_severity: form.service_offence_severity,
+    criminal_offence_type: form.criminal_offence_type,
+    submitting_unit: form.submitting_unit,
+    date_of_offence: occurredDateApi,
+    place_of_offence: sourceForm.place,
+    description,
+    accused_service_number: accusedServiceNumber,
+    accused_rank: accusedRank,
+    accused_name: accusedName,
+    police_station: sourceForm.police_ob_reference || "",
+  };
+}
+
+function sourceIncidentType(sourceForm, source) {
+  if (source === CASE_SOURCE_RTA) {
+    return roadTrafficTypeLabel(sourceForm.road_traffic_type) || "Road Traffic Accident";
+  }
+  return sourceForm.incident_title || "Incident";
+}
+
+function sourceIncidentDescription(sourceForm, source) {
+  return source === CASE_SOURCE_RTA
+    ? buildRtaCaseDescription(sourceForm)
+    : buildIncidentCaseDescription(sourceForm);
+}
+
+function sourceIncidentSeverity(form, sourceForm, source) {
+  if (source === CASE_SOURCE_RTA) {
+    if (isFatalRoadTrafficType(sourceForm.road_traffic_type)) return "critical";
+    if (sourceForm.road_traffic_type === "injury" || sourceForm.road_traffic_type === "hit_and_run") return "high";
+    return "medium";
+  }
+  if (form.offence_type === "criminal_offence") return "high";
+  if (form.service_offence_severity === "serious") return "high";
+  return "medium";
+}
+
+function buildIncidentRecordPayload(form, sourceForm, source) {
+  const occurredDateApi = parseDisplayDateForApi(sourceForm.occurred_date);
+  const occurredTime = sourceForm.occurred_time || "00:00";
+  const incidentType = sourceIncidentType(sourceForm, source);
+  const description = sourceIncidentDescription(sourceForm, source);
+  const serviceMember = sourceServiceMemberSummary(sourceForm);
+
+  return {
+    incident_type: incidentType,
+    description: description || incidentType,
+    location: sourceForm.place || "",
+    service_vehicle: source === CASE_SOURCE_RTA ? sourceForm.service_vehicle || "" : "",
+    unit_involved: sourceForm.unit_involved || "",
+    originating_unit: sourceForm.originating_unit || "",
+    civilian: source === CASE_SOURCE_RTA ? sourceForm.civilian || "" : "",
+    service_member: serviceMember,
+    history: sourceForm.history || description || incidentType,
+    injuries: source === CASE_SOURCE_RTA ? sourceForm.injuries || "" : "",
+    damages: source === CASE_SOURCE_RTA ? sourceForm.damages || "" : "",
+    how_occurred: source === CASE_SOURCE_RTA ? sourceForm.how_occurred || "" : "",
+    action_taken: source === CASE_SOURCE_RTA ? sourceForm.action_taken || "" : "",
+    police_ob_reference: sourceForm.police_ob_reference || "",
+    date_occurred: `${occurredDateApi}T${occurredTime}:00`,
+    severity: sourceIncidentSeverity(form, sourceForm, source),
+  };
+}
 
 function isBlank(value) {
   return !String(value ?? "").trim();
@@ -689,6 +1138,104 @@ function UnitAutocomplete({ label, units, value, onChange, serviceFilter, placeh
               <span className="text-xs text-slate-500">
                 {[unit.code, unit.service, unit.formation_name || "Service-level", unit.location_county].filter(Boolean).join(" | ")}
               </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TextAutocompleteInput({ value, onChange, options = [], placeholder = "Type to search...", required = false, disabled = false }) {
+  const listboxId = useId();
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const query = String(value || "").trim().toLowerCase();
+  const suggestions = useMemo(() => {
+    const startsWith = [];
+    const contains = [];
+    const seen = new Set();
+    options.forEach((option) => {
+      const name = String(option || "").trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      if (!query || key.startsWith(query)) {
+        startsWith.push(name);
+      } else if (key.includes(query)) {
+        contains.push(name);
+      }
+    });
+    return [...startsWith, ...contains].slice(0, 12);
+  }, [options, query]);
+  const showSuggestions = open && !disabled && suggestions.length > 0;
+
+  function chooseOption(name) {
+    onChange(name);
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  return (
+    <div className="relative">
+      <input
+        type="search"
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setOpen(true);
+          setActiveIndex(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && suggestions.length) {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.min(index + 1, suggestions.length - 1));
+          } else if (event.key === "ArrowUp" && suggestions.length) {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((index) => Math.max(index - 1, 0));
+          } else if (event.key === "Enter" && showSuggestions) {
+            event.preventDefault();
+            chooseOption(suggestions[activeIndex] || suggestions[0]);
+          } else if (event.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={showSuggestions}
+        aria-controls={listboxId}
+        className={CASE_FORM_CONTROL}
+        disabled={disabled}
+        placeholder={placeholder}
+        autoComplete="off"
+        required={required}
+      />
+      {showSuggestions && (
+        <div
+          id={listboxId}
+          role="listbox"
+          className="absolute left-0 right-0 z-50 mt-1 max-h-56 overflow-y-auto rounded-lg border border-slate-300 bg-white py-1 text-sm shadow-xl"
+        >
+          {suggestions.map((name, index) => (
+            <button
+              type="button"
+              key={name}
+              role="option"
+              aria-selected={index === activeIndex}
+              onMouseEnter={() => setActiveIndex(index)}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                chooseOption(name);
+              }}
+              className={`block w-full px-3 py-2 text-left ${
+                index === activeIndex ? "bg-blue-50 text-blue-900" : "text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              {name}
             </button>
           ))}
         </div>
@@ -1224,11 +1771,14 @@ export default function Cases({ user, criminalTypeFilter }) {
   const accusedServiceFilter = searchParams.get("accused_service") || "";
   const offenceFilter = searchParams.get("offence") || "";
   const criminalTypeQueryFilter = searchParams.get("criminal_offence_type") || "";
+  const caseTypeQueryFilter = searchParams.get("case_type") || "";
   const createdFromFilter = searchParams.get("created_from") || "";
   const createdToFilter = searchParams.get("created_to") || "";
   const taskedBattalionFilter = searchParams.get("tasked_battalion") || "";
   const taskedDetachmentFilter = searchParams.get("tasked_detachment") || "";
   const activeCriminalTypeFilter = criminalTypeFilter || criminalTypeQueryFilter;
+  const activeCaseTypeFilter = String(caseTypeQueryFilter || "").toLowerCase();
+  const isRtaCaseFilter = activeCaseTypeFilter === RTA_CASE_TYPE;
   const [cases, setCases]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [filter, setFilter]     = useState(initialFilter);
@@ -1243,11 +1793,13 @@ export default function Cases({ user, criminalTypeFilter }) {
   // Create form
   const [showCreate, setShowCreate]   = useState(false);
   const [createForm, setCreateForm]   = useState(INIT_CREATE);
+  const [caseSource, setCaseSource] = useState("");
+  const [sourceCaseForm, setSourceCaseForm] = useState(emptyIncidentCaseForm());
   const [caseFormMode, setCaseFormMode] = useState("create");
   const [caseDeleteTarget, setCaseDeleteTarget] = useState(null);
   const [createSaving, setCreateSaving] = useState(false);
   const [createErr, setCreateErr]     = useState("");
-  const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
+  const [postCreateTaskPrompt, setPostCreateTaskPrompt] = useState(null);
 
   // Task form
   const [showTask, setShowTask]       = useState(false);
@@ -1339,6 +1891,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [workload, setWorkload]       = useState([]);
   const [offences, setOffences]       = useState([]);
   const [units, setUnits]             = useState([]);
+  const [detachments, setDetachments] = useState([]);
 
   // ── Permissions ──────────────────────────────────────────────────
   const isHqsAdmin  = user?.role === "admin" && user?.battalion_type === "hqs";
@@ -1353,6 +1906,22 @@ export default function Cases({ user, criminalTypeFilter }) {
   const briefForwardOptions = getBriefForwardOptions(user, selected);
   const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
   const sortedInvestigators = [...investigators].sort(sortUsersByWorkload(workloadMap));
+  const unitNames = [...new Set(units.map((unit) => unit.name).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+  const originatingSubUnitOptions = [...new Set(detachments.map(detachmentOptionLabel).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+  const offenceNames = [...new Set(offences.map((offence) => offence.name).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
+  const activeCaseSource = caseFormMode === "edit" ? CASE_SOURCE_RFI : caseSource;
+  const creatingFromRfi = activeCaseSource === CASE_SOURCE_RFI;
+  const creatingFromIncident = activeCaseSource === CASE_SOURCE_INCIDENT;
+  const creatingFromRta = activeCaseSource === CASE_SOURCE_RTA;
+  const showRtaInjuredCount = creatingFromRta
+    && sourceCaseForm.road_traffic_type
+    && sourceCaseForm.road_traffic_type !== "non_injury";
+  const showRtaDeadCount = creatingFromRta
+    && sourceCaseForm.road_traffic_type
+    && !["non_injury", "injury"].includes(sourceCaseForm.road_traffic_type);
   useAutoDismiss(createErr, setCreateErr);
   useAutoDismiss(taskErr, setTaskErr);
   useAutoDismiss(toastMessage, setToastMessage, 4000);
@@ -1366,6 +1935,35 @@ export default function Cases({ user, criminalTypeFilter }) {
   useAutoDismiss(courtMilestoneSuccess, setCourtMilestoneSuccess);
   useAutoDismiss(courtCloseErr, setCourtCloseErr);
 
+  useEffect(() => {
+    if (!creatingFromRta || !sourceCaseForm.road_traffic_type) return;
+    if (
+      rtaCasualtiesMatchCounts(
+        sourceCaseForm.rta_casualties,
+        sourceCaseForm.road_traffic_type,
+        sourceCaseForm.injured_count,
+        sourceCaseForm.dead_count
+      )
+    ) {
+      return;
+    }
+    setSourceCaseForm((prev) => ({
+      ...prev,
+      rta_casualties: syncRtaCasualtiesForCounts(
+        prev.rta_casualties,
+        prev.road_traffic_type,
+        prev.injured_count,
+        prev.dead_count
+      ),
+    }));
+  }, [
+    creatingFromRta,
+    sourceCaseForm.dead_count,
+    sourceCaseForm.injured_count,
+    sourceCaseForm.road_traffic_type,
+    sourceCaseForm.rta_casualties,
+  ]);
+
   // ── Load cases ────────────────────────────────────────────────────
   function loadCases() {
     setLoading(true);
@@ -1375,6 +1973,9 @@ export default function Cases({ user, criminalTypeFilter }) {
     } else if (taskedBattalionFilter) {
       params.tasked_battalion = taskedBattalionFilter;
     }
+    if (isRtaCaseFilter) {
+      params.case_type = RTA_CASE_TYPE;
+    }
     caseService
       .list(params)
       .then((res) => setCases(toArray(res.data)))
@@ -1382,7 +1983,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       .finally(() => setLoading(false));
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadCases(); }, [taskedBattalionFilter, taskedDetachmentFilter]);
+  useEffect(() => { loadCases(); }, [taskedBattalionFilter, taskedDetachmentFilter, isRtaCaseFilter]);
 
   // Load offences for dropdown
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1416,6 +2017,16 @@ export default function Cases({ user, criminalTypeFilter }) {
       .then((res) => setUnits(toArray(res.data)))
       .catch(() => {});
   }, []);
+
+  // Load battalion companies/coys for Originating Sub-Unit autocomplete
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!canCreate) return;
+    formationService
+      .detachments({ page_size: 1000 })
+      .then((res) => setDetachments(toArray(res.data)))
+      .catch(() => setDetachments([]));
+  }, [canCreate]);
 
   // Load assignment targets when a case is selected
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1470,7 +2081,119 @@ export default function Cases({ user, criminalTypeFilter }) {
     setShowCreate(false);
     setCreateErr("");
     setCreateForm(INIT_CREATE);
+    setCaseSource("");
+    setSourceCaseForm(emptyIncidentCaseForm());
     setCaseFormMode("create");
+    setPostCreateTaskPrompt(null);
+  }
+
+  function chooseCaseSource(source) {
+    setCaseSource(source);
+    setSourceCaseForm(emptyIncidentCaseForm(source));
+    setCreateForm((f) => ({ ...f, offence: "", offence_ref: "" }));
+    setCreateErr("");
+  }
+
+  function changeCaseSource() {
+    setCaseSource("");
+    setSourceCaseForm(emptyIncidentCaseForm());
+    setCreateErr("");
+  }
+
+  function updateSourceCaseField(field, value) {
+    setSourceCaseForm((prev) => ({ ...prev, [field]: value }));
+    if (createErr) setCreateErr("");
+  }
+
+  function updateRoadTrafficType(roadTrafficType) {
+    const offenceName = roadTrafficTypeLabel(roadTrafficType);
+    setSourceCaseForm((prev) => {
+      const injured = !roadTrafficType || roadTrafficType === "non_injury" ? "0" : prev.injured_count;
+      const dead = !roadTrafficType || ["non_injury", "injury"].includes(roadTrafficType) ? "0" : prev.dead_count;
+      return {
+        ...prev,
+        road_traffic_type: roadTrafficType,
+        incident_title: offenceName,
+        injured_count: injured,
+        dead_count: dead,
+        rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, roadTrafficType, injured, dead),
+      };
+    });
+    setCreateForm((f) => ({
+      ...f,
+      offence_ref: "",
+      offence: offenceName || "",
+    }));
+    if (createErr) setCreateErr("");
+  }
+
+  function updateSourceRtaVehicle(index, field, value) {
+    setSourceCaseForm((prev) => ({
+      ...prev,
+      rta_vehicles: prev.rta_vehicles.map((vehicle, vehicleIndex) => {
+        if (vehicleIndex !== index) return vehicle;
+        const next = { ...vehicle, [field]: value };
+        if (field === "driver_person_type" && value === "civilian") {
+          next.driver_rank = "";
+          next.driver_unit = "";
+        }
+        if (field === "driver_person_type" && value === "service") {
+          next.driver_unknown = false;
+          if (next.driver_identifier === "Unknown") next.driver_identifier = "";
+          if (next.driver_name === "Unknown") next.driver_name = "";
+        }
+        if (field === "driver_unknown") {
+          next.driver_unknown = Boolean(value);
+          next.driver_rank = "";
+          next.driver_unit = "";
+          if (value) {
+            next.driver_identifier = "Unknown";
+            next.driver_name = "Unknown";
+          } else {
+            next.driver_identifier = "";
+            next.driver_name = "";
+          }
+        }
+        return next;
+      }),
+    }));
+    if (createErr) setCreateErr("");
+  }
+
+  function updateSourceRtaCasualty(index, field, value) {
+    setSourceCaseForm((prev) => ({
+      ...prev,
+      rta_casualties: prev.rta_casualties.map((casualty, casualtyIndex) => {
+        if (casualtyIndex !== index) return casualty;
+        const next = { ...casualty, [field]: value };
+        if (field === "casualty_status" && value === "dead") {
+          next.injury_severity = "";
+        }
+        if (field === "person_type" && value === "civilian") {
+          next.rank = "";
+          next.unit = "";
+        }
+        if (field === "person_type" && value === "service") {
+          next.is_unknown = false;
+          if (next.identifier === "Unknown") next.identifier = "";
+          if (next.name === "Unknown") next.name = "";
+        }
+        if (field === "is_unknown") {
+          next.is_unknown = Boolean(value);
+          next.rank = "";
+          next.unit = "";
+          if (value) {
+            next.identifier = "Unknown";
+            next.name = "Unknown";
+          } else {
+            next.identifier = "";
+            next.name = "";
+          }
+        }
+        return next;
+      }),
+    }));
+    if (createErr) setCreateErr("");
   }
 
   function selectCase(c) {
@@ -1888,8 +2611,15 @@ export default function Cases({ user, criminalTypeFilter }) {
   async function handleCreate(e) {
     e.preventDefault();
     const editing = caseFormMode === "edit" && selected?.id;
+    const source = editing ? CASE_SOURCE_RFI : caseSource;
     if (!editing) {
-      const validationError = validateRequiredCreateCase(createForm, offences.length > 0);
+      if (!source) {
+        setCreateErr("Choose whether this is an RFI Case, Incident, or Road Traffic Accident.");
+        return;
+      }
+      const validationError = source === CASE_SOURCE_RFI
+        ? validateRequiredCreateCase(createForm, offences.length > 0)
+        : validateIncidentSourceCase(createForm, sourceCaseForm, source);
       if (validationError) {
         setCreateErr(validationError);
         return;
@@ -1897,49 +2627,108 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
     setCreateSaving(true);
     setCreateErr("");
-    const fd = new FormData();
-    Object.entries(createForm).forEach(([k, v]) => {
-      if (k === "offence_ref") return; // handled separately below
-      if (k === "accused_entries") return; // handled separately below
-      if (k === "submitting_unit") return; // handled separately
-      if (k === "rfi_document") {
-        if (v) fd.append(k, v);
-        return;
-      }
-      if (k === "date_of_offence" || k === "rfi_date") {
-        const normalizedDate = parseDisplayDateForApi(v);
-        if (editing || normalizedDate) fd.append(k, normalizedDate || "");
-        return;
-      }
-      if (editing || v) fd.append(k, v || "");
-    });
-    if (editing || createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref || "");
-    if (editing || createForm.submitting_unit) fd.append("submitting_unit", createForm.submitting_unit || "");
     const validAccusedEntries = (createForm.accused_entries || []).filter((entry) =>
       Object.values(entry).some((value) => String(value || "").trim())
     );
-    if (editing || validAccusedEntries.length) {
-      fd.append("accused_entries", JSON.stringify(validAccusedEntries));
-    }
     try {
       if (editing) {
+        const fd = new FormData();
+        Object.entries(createForm).forEach(([k, v]) => {
+          if (k === "offence_ref") return;
+          if (k === "accused_entries") return;
+          if (k === "submitting_unit") return;
+          if (k === "rfi_document") {
+            if (v) fd.append(k, v);
+            return;
+          }
+          if (k === "date_of_offence" || k === "rfi_date") {
+            const normalizedDate = parseDisplayDateForApi(v);
+            fd.append(k, normalizedDate || "");
+            return;
+          }
+          fd.append(k, v || "");
+        });
+        fd.append("offence_ref", createForm.offence_ref || "");
+        fd.append("submitting_unit", createForm.submitting_unit || "");
+        fd.append("accused_entries", JSON.stringify(validAccusedEntries));
         const res = await caseService.update(selected.id, fd);
         refreshSelected(res.data);
         showToast("Case updated successfully.", "success");
         setShowCreate(false);
         setCreateForm(INIT_CREATE);
+        setCaseSource("");
+        setSourceCaseForm(emptyIncidentCaseForm());
         setCaseFormMode("create");
-      } else {
-        await caseService.create(fd);
-        showToast("Case created successfully.", "success");
+      } else if (source === CASE_SOURCE_RFI) {
+        const fd = new FormData();
+        Object.entries(createForm).forEach(([k, v]) => {
+          if (k === "offence_ref") return;
+          if (k === "accused_entries") return;
+          if (k === "submitting_unit") return;
+          if (k === "rfi_document") {
+            if (v) fd.append(k, v);
+            return;
+          }
+          if (k === "date_of_offence" || k === "rfi_date") {
+            const normalizedDate = parseDisplayDateForApi(v);
+            if (normalizedDate) fd.append(k, normalizedDate);
+            return;
+          }
+          if (v) fd.append(k, v);
+        });
+        if (createForm.offence_ref) fd.append("offence_ref", createForm.offence_ref);
+        if (createForm.submitting_unit) fd.append("submitting_unit", createForm.submitting_unit);
+        if (validAccusedEntries.length) {
+          fd.append("accused_entries", JSON.stringify(validAccusedEntries));
+        }
+        const res = await caseService.create(fd);
+        showToast("RFI case created successfully.", "success");
         setCreateForm(INIT_CREATE);
+        setCaseSource("");
+        setSourceCaseForm(emptyIncidentCaseForm());
         setCaseFormMode("create");
         setShowCreate(false);
-        setAddAnotherPrompt({
-          itemLabel: "case",
-          message: "The case has been created and added to the case register.",
-          addLabel: "Add Another Case",
+        setPostCreateTaskPrompt({
+          caseObj: res.data,
+          sourceLabel: "RFI Case",
         });
+      } else {
+        const sourcePayload = buildSourceCasePayload(createForm, sourceCaseForm, source);
+        const incidentRes = await incidentService.create(buildIncidentRecordPayload(createForm, sourceCaseForm, source));
+        const conversionPayload = { ...sourcePayload };
+        if (source !== CASE_SOURCE_RTA && createForm.offence_ref) {
+          conversionPayload.offence_ref = createForm.offence_ref;
+        }
+        if (validAccusedEntries.length) {
+          conversionPayload.accused_entries = validAccusedEntries;
+        }
+        const conversionRes = await incidentService.convertToCase(incidentRes.data.id, conversionPayload);
+        const convertedCaseId = conversionRes.data?.converted_case;
+        let createdCase = convertedCaseId
+          ? {
+              id: convertedCaseId,
+              case_number: conversionRes.data?.converted_case_number,
+            }
+          : null;
+        if (convertedCaseId) {
+          try {
+            const caseRes = await caseService.get(convertedCaseId);
+            createdCase = caseRes.data;
+          } catch (_) {}
+        }
+        showToast(`${caseSourceLabel(source)} saved as an incident and linked case successfully.`, "success");
+        setCreateForm(INIT_CREATE);
+        setCaseSource("");
+        setSourceCaseForm(emptyIncidentCaseForm());
+        setCaseFormMode("create");
+        setShowCreate(false);
+        if (createdCase?.id) {
+          setPostCreateTaskPrompt({
+            caseObj: createdCase,
+            sourceLabel: caseSourceLabel(source),
+            incidentNumber: conversionRes.data?.incident_number,
+          });
+        }
       }
       loadCases();
     } catch (err) {
@@ -2313,6 +3102,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const caseMatchesFilters = (c, { includeStatus = true } = {}) => {
     const matchStatus = !includeStatus || filter === "all" || c.status === filter;
     const matchCriminalType = !activeCriminalTypeFilter || c.criminal_offence_type === activeCriminalTypeFilter;
+    const matchCaseType = !isRtaCaseFilter || isRoadTrafficAccidentCase(c);
     const matchPlace =
       !placeOfOffenceFilter ||
       String(c.place_of_offence || "").toLowerCase() === placeOfOffenceFilter.toLowerCase();
@@ -2338,6 +3128,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       matchStatus &&
       matchSearch &&
       matchCriminalType &&
+      matchCaseType &&
       matchPlace &&
       matchOffence &&
       matchAccusedUnit &&
@@ -2420,6 +3211,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const caseExportColumns = isDciFilter ? dciCaseExportColumns : defaultCaseExportColumns;
 
   function caseViewTitle() {
+    if (isRtaCaseFilter) return "RTA Cases";
     if (activeCriminalTypeFilter === "court_martial") return "Court Martial Cases";
     if (activeCriminalTypeFilter === "dci_civ_police") return "DCI / Civ Police Cases";
     return "Cases";
@@ -2433,7 +3225,12 @@ export default function Cases({ user, criminalTypeFilter }) {
       ? `Date range: ${dateFrom || "Start"} to ${dateTo || "End"}`
       : "Date range: All";
     const searchLabel = search.trim() ? `Search: ${search.trim()}` : "Search: All";
-    return `${statusLabel} | ${rangeLabel} | ${searchLabel} | ${filtered.length} case${filtered.length !== 1 ? "s" : ""}`;
+    const typeLabel = isRtaCaseFilter
+      ? "Type: RTA"
+      : activeCriminalTypeFilter
+        ? `Type: ${activeCriminalTypeFilter.replace(/_/g, " ")}`
+        : "Type: All";
+    return `${typeLabel} | ${statusLabel} | ${rangeLabel} | ${searchLabel} | ${filtered.length} case${filtered.length !== 1 ? "s" : ""}`;
   }
 
   function caseExportRow(caseObj) {
@@ -2562,29 +3359,29 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   function openCreateModal() {
+    setPostCreateTaskPrompt(null);
     setTaskModalMode(false);
     setShowTask(false);
     setTaskErr("");
     setShowTeam(false);
     setTeamErr("");
     setCreateForm(INIT_CREATE);
+    setCaseSource("");
+    setSourceCaseForm(emptyIncidentCaseForm());
     setCaseFormMode("create");
     setShowCreate(true);
   }
 
-  function confirmAddAnotherCase() {
-    setAddAnotherPrompt(null);
-    setCreateErr("");
-    setCreateForm(INIT_CREATE);
-    setCaseFormMode("create");
-    setShowCreate(true);
+  function assignCreatedCaseNow() {
+    const caseObj = postCreateTaskPrompt?.caseObj;
+    setPostCreateTaskPrompt(null);
+    if (caseObj?.id) {
+      openTaskForCase(caseObj);
+    }
   }
 
-  function finishAddAnotherCase() {
-    setAddAnotherPrompt(null);
-    setCreateForm(INIT_CREATE);
-    setCaseFormMode("create");
-    setShowCreate(false);
+  function assignCreatedCaseLater() {
+    setPostCreateTaskPrompt(null);
   }
 
   function openEditCaseModal(caseObj) {
@@ -2595,12 +3392,14 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTeamErr("");
     setCreateErr("");
     setCreateForm(caseToForm(caseObj));
+    setCaseSource(CASE_SOURCE_RFI);
+    setSourceCaseForm(emptyIncidentCaseForm());
     setCaseFormMode("edit");
     setShowCreate(true);
   }
 
   function openTaskForCase(c, e) {
-    e.stopPropagation();
+    e?.stopPropagation?.();
     setSelected(c);
     setShowCreate(false);
     setShowTeam(false);
@@ -2665,16 +3464,20 @@ export default function Cases({ user, criminalTypeFilter }) {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-2xl font-bold text-white">
-            {criminalTypeFilter === "court_martial" ? "Court Martial Cases" : criminalTypeFilter === "dci_civ_police" ? "DCI / Civ Police Cases" : "Cases"}
+            {caseViewTitle()}
           </h2>
-          {criminalTypeFilter && (
+          {(criminalTypeFilter || isRtaCaseFilter) && (
             <span className={`inline-flex items-center gap-1.5 mt-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-              criminalTypeFilter === "court_martial" ? "bg-purple-900/60 text-purple-300 border border-purple-700" : "bg-blue-900/60 text-blue-300 border border-blue-700"
+              isRtaCaseFilter
+                ? "bg-amber-900/50 text-amber-200 border border-amber-700/70"
+                : criminalTypeFilter === "court_martial"
+                  ? "bg-purple-900/60 text-purple-300 border border-purple-700"
+                  : "bg-blue-900/60 text-blue-300 border border-blue-700"
             }`}>
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z" />
               </svg>
-              Filtered: {criminalTypeFilter === "court_martial" ? "Court Martial" : "DCI / Civ Police"}
+              Filtered: {isRtaCaseFilter ? "RTA Cases" : criminalTypeFilter === "court_martial" ? "Court Martial" : "DCI / Civ Police"}
             </span>
           )}
           <p className="text-sm text-gray-500 mt-0.5">{filtered.length} of {statusCountCases.length} case{statusCountCases.length !== 1 ? "s" : ""}</p>
@@ -4248,7 +5051,7 @@ export default function Cases({ user, criminalTypeFilter }) {
           onClick={closeCaseForm}
         >
           <div
-            className="w-full max-w-xl bg-white rounded-2xl p-6 space-y-4 relative text-slate-900 shadow-2xl"
+            className="w-full max-w-4xl bg-white rounded-2xl p-6 space-y-4 relative text-slate-900 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -4264,6 +5067,158 @@ export default function Cases({ user, criminalTypeFilter }) {
             </h3>
 
             <form onSubmit={handleCreate} className="space-y-4">
+              {caseFormMode === "create" && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <CaseFormSectionLabel>Create case from</CaseFormSectionLabel>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    {CASE_SOURCE_OPTIONS.map((option) => {
+                      const selectedSource = caseSource === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => chooseCaseSource(option.value)}
+                          className={`rounded-xl border p-3 text-left transition-colors ${
+                            selectedSource
+                              ? "border-blue-500 bg-blue-50 shadow-sm"
+                              : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40"
+                          }`}
+                        >
+                          <span className="block text-sm font-bold text-slate-950">{option.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-600">{option.summary}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {caseSource && (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-slate-600">
+                      <span>
+                        Selected: <span className="font-semibold text-blue-700">{caseSourceLabel(caseSource)}</span>
+                      </span>
+                      <button type="button" onClick={changeCaseSource} className="font-semibold text-blue-700 hover:text-blue-900">
+                        Change
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {caseFormMode === "create" && !activeCaseSource && (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                  Choose RFI Case, Incident, or Road Traffic Accident to continue.
+                </div>
+              )}
+
+              {activeCaseSource && !creatingFromRfi && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <CaseFormSectionLabel>Case classification</CaseFormSectionLabel>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="md:col-span-2">
+                      <CaseFormLabel>Offence{creatingFromRta ? " *" : ""}</CaseFormLabel>
+                      {creatingFromRta ? (
+                        <select
+                          value={sourceCaseForm.road_traffic_type}
+                          onChange={(e) => updateRoadTrafficType(e.target.value)}
+                          required
+                          className={CASE_FORM_CONTROL}
+                        >
+                          <option value="">Select road traffic accident type...</option>
+                          {ROAD_TRAFFIC_TYPES.map(([value, label]) => (
+                            <option key={value} value={value}>{label}</option>
+                          ))}
+                        </select>
+                      ) : offences.length > 0 ? (
+                        <select
+                          value={createForm.offence_ref}
+                          onChange={(e) => {
+                            const selected = offences.find((o) => String(o.id) === e.target.value);
+                            setCreateForm((f) => ({
+                              ...f,
+                              offence_ref: e.target.value,
+                              offence: selected ? selected.name : "",
+                            }));
+                          }}
+                          className={CASE_FORM_CONTROL}
+                        >
+                          <option value="">Use incident/RTA heading if not selected</option>
+                          {offences
+                            .slice()
+                            .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+                            .map((o) => (
+                              <option key={o.id} value={o.id}>{o.name}</option>
+                            ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={createForm.offence}
+                          onChange={(e) => setCreateForm((f) => ({ ...f, offence: e.target.value }))}
+                          placeholder="Optional: type offence or use incident/RTA heading"
+                          className={CASE_FORM_CONTROL}
+                        />
+                      )}
+                    </div>
+
+                    <div>
+                      <CaseFormLabel>Offence Type *</CaseFormLabel>
+                      <select
+                        value={createForm.offence_type}
+                        onChange={(e) => setCreateForm((f) => ({ ...f, offence_type: e.target.value }))}
+                        required={caseFormMode === "create"}
+                        className={CASE_FORM_CONTROL}
+                      >
+                        <option value="">Select...</option>
+                        <option value="service_offence">Service Offence</option>
+                        <option value="criminal_offence">Criminal Offence</option>
+                      </select>
+                    </div>
+
+                    {createForm.offence_type === "service_offence" && (
+                      <div>
+                        <CaseFormLabel>Severity *</CaseFormLabel>
+                        <select
+                          value={createForm.service_offence_severity}
+                          onChange={(e) => setCreateForm((f) => ({ ...f, service_offence_severity: e.target.value }))}
+                          required={caseFormMode === "create"}
+                          className={CASE_FORM_CONTROL}
+                        >
+                          <option value="">Select...</option>
+                          <option value="serious">Serious</option>
+                          <option value="minor">Minor</option>
+                        </select>
+                      </div>
+                    )}
+
+                    {createForm.offence_type === "criminal_offence" && (
+                      <div>
+                        <CaseFormLabel>Criminal Offence Type *</CaseFormLabel>
+                        <select
+                          value={createForm.criminal_offence_type}
+                          onChange={(e) => setCreateForm((f) => ({ ...f, criminal_offence_type: e.target.value }))}
+                          required={caseFormMode === "create"}
+                          className={CASE_FORM_CONTROL}
+                        >
+                          <option value="">Select...</option>
+                          <option value="dci_civ_police">DCI / Civ Police</option>
+                          <option value="court_martial">Court Martial</option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="md:col-span-2">
+                      <UnitAutocomplete
+                        label="Submitting Unit *"
+                        units={units}
+                        value={createForm.submitting_unit}
+                        onChange={(value) => setCreateForm((f) => ({ ...f, submitting_unit: value }))}
+                        placeholder="Type submitting unit..."
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {creatingFromRfi && (
               <div className="grid grid-cols-2 gap-3">
 
                 <div className="col-span-2">
@@ -4562,6 +5517,518 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </div>
 
               </div>
+              )}
+
+              {creatingFromIncident && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+                  <div className="mb-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wide text-blue-900">Incident Details</h4>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <div className="md:col-span-3">
+                      <CaseFormLabel>Incident *</CaseFormLabel>
+                      <TextAutocompleteInput
+                        value={sourceCaseForm.incident_title}
+                        onChange={(value) => updateSourceCaseField("incident_title", value)}
+                        options={offenceNames}
+                        placeholder="Type incident..."
+                        required
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Date *</CaseFormLabel>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={sourceCaseForm.occurred_date}
+                        onChange={(e) => updateSourceCaseField("occurred_date", e.target.value)}
+                        placeholder="dd/mm/yyyy"
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Time *</CaseFormLabel>
+                      <input
+                        type="time"
+                        value={sourceCaseForm.occurred_time}
+                        onChange={(e) => updateSourceCaseField("occurred_time", e.target.value)}
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Place *</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.place}
+                        onChange={(e) => updateSourceCaseField("place", e.target.value)}
+                        placeholder="e.g. Along Juja Farm Road"
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Service No</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.service_member_number}
+                        onChange={(e) => updateSourceCaseField("service_member_number", e.target.value)}
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Rank</CaseFormLabel>
+                      <select
+                        value={sourceCaseForm.service_member_rank}
+                        onChange={(e) => updateSourceCaseField("service_member_rank", e.target.value)}
+                        className={CASE_FORM_CONTROL}
+                      >
+                        <option value="">Select rank...</option>
+                        {ALL_RANKS.map((rank) => (
+                          <option key={rank} value={rank}>{rank}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <CaseFormLabel>Name</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.service_member_name}
+                        onChange={(e) => updateSourceCaseField("service_member_name", e.target.value)}
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Unit *</CaseFormLabel>
+                      <TextAutocompleteInput
+                        value={sourceCaseForm.unit_involved}
+                        onChange={(value) => updateSourceCaseField("unit_involved", value)}
+                        options={unitNames}
+                        placeholder="Type to select unit..."
+                        required
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Originating Sub-Unit</CaseFormLabel>
+                      <TextAutocompleteInput
+                        value={sourceCaseForm.originating_unit}
+                        onChange={(value) => updateSourceCaseField("originating_unit", value)}
+                        options={originatingSubUnitOptions}
+                        placeholder="Search Coy or detachment..."
+                      />
+                    </div>
+                    <div className="md:col-span-3">
+                      <CaseFormLabel>History of the Incident *</CaseFormLabel>
+                      <textarea
+                        value={sourceCaseForm.history}
+                        onChange={(e) => updateSourceCaseField("history", e.target.value)}
+                        className={`${CASE_FORM_CONTROL} min-h-28 resize-none`}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Police / External OB Ref</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.police_ob_reference}
+                        onChange={(e) => updateSourceCaseField("police_ob_reference", e.target.value)}
+                        placeholder="e.g. OB No. 57/13/07/2026"
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {creatingFromRta && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+                  <div className="mb-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wide text-blue-900">Road Traffic Accident Details</h4>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <div className="md:col-span-3">
+                      <CaseFormLabel>Road Traffic Accident Type *</CaseFormLabel>
+                      <select
+                        value={sourceCaseForm.road_traffic_type}
+                        onChange={(e) => updateRoadTrafficType(e.target.value)}
+                        required
+                        className={CASE_FORM_CONTROL}
+                      >
+                        <option value="">Select accident type...</option>
+                        {ROAD_TRAFFIC_TYPES.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {showRtaInjuredCount && (
+                      <div>
+                        <CaseFormLabel>Number Injured *</CaseFormLabel>
+                        <input
+                          type="number"
+                          min={isInjuryRoadTrafficType(sourceCaseForm.road_traffic_type) ? "1" : "0"}
+                          value={sourceCaseForm.injured_count}
+                          onChange={(e) => {
+                            const injured = e.target.value;
+                            setSourceCaseForm((prev) => ({
+                              ...prev,
+                              injured_count: injured,
+                              rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, injured, prev.dead_count),
+                            }));
+                          }}
+                          placeholder="0 means Nil"
+                          required={isInjuryRoadTrafficType(sourceCaseForm.road_traffic_type)}
+                          className={CASE_FORM_CONTROL}
+                        />
+                      </div>
+                    )}
+                    {showRtaDeadCount && (
+                      <div>
+                        <CaseFormLabel>Number Dead *</CaseFormLabel>
+                        <input
+                          type="number"
+                          min={isFatalRoadTrafficType(sourceCaseForm.road_traffic_type) ? "1" : "0"}
+                          value={sourceCaseForm.dead_count}
+                          onChange={(e) => {
+                            const dead = e.target.value;
+                            setSourceCaseForm((prev) => ({
+                              ...prev,
+                              dead_count: dead,
+                              rta_casualties: syncRtaCasualtiesForCounts(prev.rta_casualties, prev.road_traffic_type, prev.injured_count, dead),
+                            }));
+                          }}
+                          placeholder="0 means Nil"
+                          required={isFatalRoadTrafficType(sourceCaseForm.road_traffic_type)}
+                          className={CASE_FORM_CONTROL}
+                        />
+                      </div>
+                    )}
+                    <div>
+                      <CaseFormLabel>Date *</CaseFormLabel>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={sourceCaseForm.occurred_date}
+                        onChange={(e) => updateSourceCaseField("occurred_date", e.target.value)}
+                        placeholder="dd/mm/yyyy"
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Time *</CaseFormLabel>
+                      <input
+                        type="time"
+                        value={sourceCaseForm.occurred_time}
+                        onChange={(e) => updateSourceCaseField("occurred_time", e.target.value)}
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Place *</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.place}
+                        onChange={(e) => updateSourceCaseField("place", e.target.value)}
+                        placeholder="e.g. Along Juja Farm Road"
+                        required
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Unit *</CaseFormLabel>
+                      <TextAutocompleteInput
+                        value={sourceCaseForm.unit_involved}
+                        onChange={(value) => updateSourceCaseField("unit_involved", value)}
+                        options={unitNames}
+                        placeholder="Type to select unit..."
+                        required
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Originating Sub-Unit</CaseFormLabel>
+                      <TextAutocompleteInput
+                        value={sourceCaseForm.originating_unit}
+                        onChange={(value) => updateSourceCaseField("originating_unit", value)}
+                        options={unitNames}
+                        placeholder="Type originating sub-unit..."
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Police / External OB Ref</CaseFormLabel>
+                      <input
+                        value={sourceCaseForm.police_ob_reference}
+                        onChange={(e) => updateSourceCaseField("police_ob_reference", e.target.value)}
+                        placeholder="e.g. OB No. 57/13/07/2026"
+                        className={CASE_FORM_CONTROL}
+                      />
+                    </div>
+                    <div className="md:col-span-3">
+                      <CaseFormLabel>History of the Accident *</CaseFormLabel>
+                      <textarea
+                        value={sourceCaseForm.history}
+                        onChange={(e) => updateSourceCaseField("history", e.target.value)}
+                        className={`${CASE_FORM_CONTROL} min-h-28 resize-none`}
+                        required
+                      />
+                    </div>
+                    <div className="md:col-span-3">
+                      <CaseFormLabel>How the Accident Occurred *</CaseFormLabel>
+                      <textarea
+                        value={sourceCaseForm.how_occurred}
+                        onChange={(e) => updateSourceCaseField("how_occurred", e.target.value)}
+                        className={`${CASE_FORM_CONTROL} min-h-28 resize-none`}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Damages</CaseFormLabel>
+                      <textarea
+                        value={sourceCaseForm.damages}
+                        onChange={(e) => updateSourceCaseField("damages", e.target.value)}
+                        className={`${CASE_FORM_CONTROL} min-h-20 resize-none`}
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <CaseFormLabel>Initial Action Taken</CaseFormLabel>
+                      <textarea
+                        value={sourceCaseForm.action_taken}
+                        onChange={(e) => updateSourceCaseField("action_taken", e.target.value)}
+                        className={`${CASE_FORM_CONTROL} min-h-20 resize-none`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Vehicles and Drivers</h4>
+                      <button
+                        type="button"
+                        onClick={() => setSourceCaseForm((prev) => ({ ...prev, rta_vehicles: [...prev.rta_vehicles, emptyRtaVehicle()] }))}
+                        className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                      >
+                        Add Vehicle
+                      </button>
+                    </div>
+                    {sourceCaseForm.rta_vehicles.map((vehicle, index) => (
+                      <div key={index} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Vehicle / Driver #{index + 1}</p>
+                          {sourceCaseForm.rta_vehicles.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setSourceCaseForm((prev) => ({
+                                ...prev,
+                                rta_vehicles: prev.rta_vehicles.filter((_, vehicleIndex) => vehicleIndex !== index),
+                              }))}
+                              className="text-xs font-semibold text-red-600 hover:text-red-700"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                          <div>
+                            <CaseFormLabel>Vehicle Type</CaseFormLabel>
+                            <select
+                              value={vehicle.vehicle_type}
+                              onChange={(e) => updateSourceRtaVehicle(index, "vehicle_type", e.target.value)}
+                              className={CASE_FORM_CONTROL}
+                            >
+                              <option value="service">Service Vehicle</option>
+                              <option value="civilian">Civilian Vehicle</option>
+                            </select>
+                          </div>
+                          <div>
+                            <CaseFormLabel>Vehicle Details</CaseFormLabel>
+                            <input
+                              value={vehicle.vehicle_details}
+                              onChange={(e) => updateSourceRtaVehicle(index, "vehicle_details", e.target.value)}
+                              placeholder="Reg no, make, call sign"
+                              className={CASE_FORM_CONTROL}
+                            />
+                          </div>
+                          <div>
+                            <CaseFormLabel>Driver Type</CaseFormLabel>
+                            <select
+                              value={vehicle.driver_person_type}
+                              onChange={(e) => updateSourceRtaVehicle(index, "driver_person_type", e.target.value)}
+                              className={CASE_FORM_CONTROL}
+                            >
+                              <option value="service">Service Member</option>
+                              <option value="civilian">Civilian</option>
+                            </select>
+                          </div>
+                          {vehicle.driver_person_type === "civilian" && (
+                            <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(vehicle.driver_unknown)}
+                                onChange={(e) => updateSourceRtaVehicle(index, "driver_unknown", e.target.checked)}
+                                className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                              />
+                              Civilian driver unknown
+                            </label>
+                          )}
+                          <div>
+                            <CaseFormLabel>{vehicle.driver_person_type === "civilian" ? "Driver ID No" : "Driver Service No"}</CaseFormLabel>
+                            <input
+                              value={vehicle.driver_identifier}
+                              onChange={(e) => updateSourceRtaVehicle(index, "driver_identifier", e.target.value)}
+                              disabled={Boolean(vehicle.driver_unknown)}
+                              className={CASE_FORM_CONTROL}
+                            />
+                          </div>
+                          <div>
+                            <CaseFormLabel>Driver Rank</CaseFormLabel>
+                            <select
+                              value={vehicle.driver_rank}
+                              onChange={(e) => updateSourceRtaVehicle(index, "driver_rank", e.target.value)}
+                              disabled={vehicle.driver_person_type === "civilian"}
+                              className={CASE_FORM_CONTROL}
+                            >
+                              <option value="">{vehicle.driver_person_type === "civilian" ? "NIL" : "Select rank..."}</option>
+                              {ALL_RANKS.map((rank) => (
+                                <option key={rank} value={rank}>{rank}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <CaseFormLabel>Driver Name</CaseFormLabel>
+                            <input
+                              value={vehicle.driver_name}
+                              onChange={(e) => updateSourceRtaVehicle(index, "driver_name", e.target.value)}
+                              disabled={Boolean(vehicle.driver_unknown)}
+                              className={CASE_FORM_CONTROL}
+                            />
+                          </div>
+                          <div className="md:col-span-2">
+                            <CaseFormLabel>Driver Unit</CaseFormLabel>
+                            <TextAutocompleteInput
+                              value={vehicle.driver_unit}
+                              onChange={(value) => updateSourceRtaVehicle(index, "driver_unit", value)}
+                              options={unitNames}
+                              disabled={vehicle.driver_person_type === "civilian"}
+                              placeholder={vehicle.driver_person_type === "civilian" ? "Civilian / N/A" : "Type to select unit..."}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {sourceCaseForm.road_traffic_type && sourceCaseForm.road_traffic_type !== "non_injury" && (
+                    <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Onboard Personnel / Casualties</h4>
+                        <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above.</p>
+                      </div>
+                      {sourceCaseForm.rta_casualties.length === 0 ? (
+                        <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                          No onboard personnel rows because injured and dead counts are Nil.
+                        </p>
+                      ) : sourceCaseForm.rta_casualties.map((casualty, index) => {
+                        const status = casualty.casualty_status === "dead" ? "dead" : "injured";
+                        return (
+                          <div key={index} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <div className="mb-2">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                {status === "dead" ? "Dead person" : "Injured person"} #{index + 1}
+                              </p>
+                            </div>
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                              <div>
+                                <CaseFormLabel>Status</CaseFormLabel>
+                                <input
+                                  value={status === "dead" ? "Dead" : "Injured"}
+                                  readOnly
+                                  className={`${CASE_FORM_CONTROL} bg-slate-100`}
+                                />
+                              </div>
+                              <div>
+                                <CaseFormLabel>Person Type</CaseFormLabel>
+                                <select
+                                  value={casualty.person_type}
+                                  onChange={(e) => updateSourceRtaCasualty(index, "person_type", e.target.value)}
+                                  className={CASE_FORM_CONTROL}
+                                >
+                                  <option value="service">Service Member</option>
+                                  <option value="civilian">Civilian</option>
+                                </select>
+                              </div>
+                              {casualty.person_type === "civilian" && (
+                                <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(casualty.is_unknown)}
+                                    onChange={(e) => updateSourceRtaCasualty(index, "is_unknown", e.target.checked)}
+                                    className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                                  />
+                                  Civilian details unknown
+                                </label>
+                              )}
+                              <div>
+                                <CaseFormLabel>{casualty.person_type === "civilian" ? "ID No" : "Service No"}</CaseFormLabel>
+                                <input
+                                  value={casualty.identifier}
+                                  onChange={(e) => updateSourceRtaCasualty(index, "identifier", e.target.value)}
+                                  disabled={Boolean(casualty.is_unknown)}
+                                  className={CASE_FORM_CONTROL}
+                                />
+                              </div>
+                              <div>
+                                <CaseFormLabel>Rank</CaseFormLabel>
+                                <select
+                                  value={casualty.rank}
+                                  onChange={(e) => updateSourceRtaCasualty(index, "rank", e.target.value)}
+                                  disabled={casualty.person_type === "civilian"}
+                                  className={CASE_FORM_CONTROL}
+                                >
+                                  <option value="">{casualty.person_type === "civilian" ? "NIL" : "Select rank..."}</option>
+                                  {ALL_RANKS.map((rank) => (
+                                    <option key={rank} value={rank}>{rank}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <CaseFormLabel>Name</CaseFormLabel>
+                                <input
+                                  value={casualty.name}
+                                  onChange={(e) => updateSourceRtaCasualty(index, "name", e.target.value)}
+                                  disabled={Boolean(casualty.is_unknown)}
+                                  className={CASE_FORM_CONTROL}
+                                />
+                              </div>
+                              <div>
+                                <CaseFormLabel>Unit</CaseFormLabel>
+                                <TextAutocompleteInput
+                                  value={casualty.unit}
+                                  onChange={(value) => updateSourceRtaCasualty(index, "unit", value)}
+                                  options={unitNames}
+                                  disabled={casualty.person_type === "civilian"}
+                                  placeholder={casualty.person_type === "civilian" ? "Civilian / N/A" : "Type to select unit..."}
+                                />
+                              </div>
+                              {status === "injured" && (
+                                <div>
+                                  <CaseFormLabel>Injury Severity *</CaseFormLabel>
+                                  <select
+                                    value={casualty.injury_severity}
+                                    onChange={(e) => updateSourceRtaCasualty(index, "injury_severity", e.target.value)}
+                                    required
+                                    className={CASE_FORM_CONTROL}
+                                  >
+                                    <option value="">Select severity...</option>
+                                    {INJURY_SEVERITIES.map(([value, label]) => (
+                                      <option key={value} value={value}>{label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <ErrMsg msg={createErr} />
 
@@ -4575,12 +6042,12 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </button>
                 <button
                   type="submit"
-                  disabled={createSaving}
+                  disabled={createSaving || (caseFormMode === "create" && !activeCaseSource)}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
                 >
                   {createSaving
                     ? (caseFormMode === "edit" ? "Saving..." : "Creating...")
-                    : (caseFormMode === "edit" ? "Save Changes" : "Create Case")}
+                    : (caseFormMode === "edit" ? "Save Changes" : `Create ${caseSourceLabel(activeCaseSource)}`)}
                 </button>
               </div>
             </form>
@@ -4597,12 +6064,27 @@ export default function Cases({ user, criminalTypeFilter }) {
         />
       )}
 
-      {addAnotherPrompt && (
-        <AddAnotherModal
-          {...addAnotherPrompt}
-          onAddAnother={confirmAddAnotherCase}
-          onDone={finishAddAnotherCase}
-        />
+      {postCreateTaskPrompt && (
+        <ActionModal
+          eyebrow="Created"
+          title={`${postCreateTaskPrompt.sourceLabel || "Case"} created successfully`}
+          message="Do you want to assign this case to a battalion now, or leave it for later?"
+          tone="blue"
+          confirmLabel="Assign to Battalion Now"
+          cancelLabel="Later"
+          onConfirm={assignCreatedCaseNow}
+          onCancel={assignCreatedCaseLater}
+          disabled={!postCreateTaskPrompt.caseObj?.id}
+        >
+          <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+            <p className="font-semibold">{postCreateTaskPrompt.caseObj?.case_number || "New case"}</p>
+            {postCreateTaskPrompt.incidentNumber && (
+              <p className="mt-1 text-xs text-blue-700">
+                Linked incident: <span className="font-mono">{postCreateTaskPrompt.incidentNumber}</span>
+              </p>
+            )}
+          </div>
+        </ActionModal>
       )}
 
       {updateFlowCase && (

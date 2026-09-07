@@ -849,6 +849,17 @@ class CaseViewSet(viewsets.ModelViewSet):
     }
     search_fields = ["case_number", "title", "accused_name", "accused_service_number"]
 
+    def _apply_case_type_filter(self, queryset):
+        case_type = str(self.request.query_params.get("case_type") or "").strip().lower()
+        if case_type != "rta":
+            return queryset
+        return queryset.filter(
+            Q(offence__icontains="road traffic accident")
+            | Q(offence_ref__name__icontains="road traffic accident")
+            | Q(title__icontains="road traffic accident")
+            | Q(source_incident__incident_type__icontains="road traffic accident")
+        ).distinct()
+
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         command_write_allowed = (
@@ -914,18 +925,18 @@ class CaseViewSet(viewsets.ModelViewSet):
             return base_qs.none()
 
         if has_global_read_access(user):
-            return base_qs.all()
+            return self._apply_case_type_filter(base_qs.all())
 
         if user.role == User.Role.INVESTIGATOR:
-            return base_qs.filter(
+            return self._apply_case_type_filter(base_qs.filter(
                 Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
-            ).distinct()
+            ).distinct())
 
         # Battalion command users see cases tasked to their battalion or its companies.
         if is_battalion_command(user):
-            return base_qs.filter(
+            return self._apply_case_type_filter(base_qs.filter(
                 battalion_scope_q(
                     user,
                     battalion_field="tasked_battalion_id",
@@ -935,26 +946,26 @@ class CaseViewSet(viewsets.ModelViewSet):
                 | Q(assigned_to__detachment__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__battalion_id=user.battalion_id)
-            ).distinct()
+            ).distinct())
 
         # IC COY (role=detachment) sees cases tasked to their company record
         if user.role == "detachment" and user.detachment_id:
-            return base_qs.filter(
+            return self._apply_case_type_filter(base_qs.filter(
                 Q(tasked_detachment_id=user.detachment_id)
                 | Q(assigned_to__detachment_id=user.detachment_id)
                 | Q(assigned_team__detachment_id=user.detachment_id)
-            ).distinct()
+            ).distinct())
 
         if user.battalion_id:
-            return base_qs.filter(
+            return self._apply_case_type_filter(base_qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
                 | Q(tasked_detachment__battalion_id=user.battalion_id)
                 | Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
-            ).distinct()
+            ).distinct())
 
-        return base_qs.filter(assigned_to=user)
+        return self._apply_case_type_filter(base_qs.filter(assigned_to=user))
 
     def _log_action(self, case, actor, action, detail=""):
         CaseActivityLog.objects.create(case=case, actor=actor, action=action, detail=detail)

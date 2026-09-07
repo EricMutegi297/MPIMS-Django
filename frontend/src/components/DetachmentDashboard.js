@@ -4,6 +4,7 @@ import { caseService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
+import { RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -110,6 +111,7 @@ export default function DetachmentDashboard({ user }) {
   const [statusCounts, setStatusCounts] = useState({
     total: 0, new: 0, tasked: 0, under_investigation: 0, pending: 0, served: 0, closed: 0,
   });
+  const [rtaCaseCount, setRtaCaseCount] = useState(0);
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [expandedDesc, setExpandedDesc] = useState({});
   const [documentError, setDocumentError] = useState("");
@@ -161,7 +163,7 @@ export default function DetachmentDashboard({ user }) {
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
     try {
-      const [allRes, newRes, taskedRes, uiRes, peRes, seRes, clRes] = (await Promise.allSettled([
+      const [allRes, newRes, taskedRes, uiRes, peRes, seRes, clRes, rtaCaseRes] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
         caseService.list({ page_size: 1, status: "tasked" }),
@@ -169,6 +171,7 @@ export default function DetachmentDashboard({ user }) {
         caseService.list({ page_size: 1, status: "pending" }),
         caseService.list({ page_size: 1, status: "served" }),
         caseService.list({ page_size: 1, status: "closed" }),
+        caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }),
       ])).map(settledResponse);
       setStatusCounts({
         total:               responseCount(allRes),
@@ -179,6 +182,7 @@ export default function DetachmentDashboard({ user }) {
         served:              responseCount(seRes),
         closed:              responseCount(clRes),
       });
+      setRtaCaseCount(responseCount(rtaCaseRes));
     } catch {
       // keep zeros
     } finally {
@@ -338,11 +342,16 @@ export default function DetachmentDashboard({ user }) {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         <StatCard loading={loadingCounts} label="Total Cases" value={statusCounts.total}
           accent="bg-blue-500/10"
           onClick={() => navigate("/dashboard/cases")}
           icon={<svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/></svg>}
+        />
+        <StatCard loading={loadingCounts} label="RTA Cases" value={rtaCaseCount}
+          accent="bg-amber-500/10"
+          onClick={() => navigate(`/dashboard/cases?case_type=${RTA_CASE_TYPE}`)}
+          icon={<svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 17h12M7 17a2 2 0 11-4 0 2 2 0 014 0zm14 0a2 2 0 11-4 0 2 2 0 014 0zM5 17l1.3-4.5A2 2 0 018.22 11h7.56a2 2 0 011.92 1.5L19 17M8 11l1.5-3h5L16 11"/></svg>}
         />
         <StatCard loading={loadingCounts} label="Tasked" value={statusCounts.tasked}
           accent="bg-yellow-500/10"
