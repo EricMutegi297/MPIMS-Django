@@ -593,6 +593,8 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             originating_unit=entry.originating_unit,
             civilian=entry.civilian,
             service_member=entry.service_member or driver_summary,
+            rta_vehicles=entry.rta_vehicles,
+            rta_casualties=entry.rta_casualties,
             history=entry.history,
             injuries=injuries,
             damages=entry.damages,
@@ -615,19 +617,20 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         if entry.entry_type != OccurrenceEntry.EntryType.ROAD_TRAFFIC_ACCIDENT:
             return ""
         lines = [
-            f"Personnel injured: {entry.injured_count or 'Nil'}. Personnel dead: {entry.dead_count or 'Nil'}."
+            f"Yankee (injured): {entry.injured_count or 'Nil'}. Zulu (dead): {entry.dead_count or 'Nil'}."
         ]
         casualties = entry.rta_casualties or []
         if casualties:
             detail_lines = []
             for index, casualty in enumerate(casualties, start=1):
-                status = "Dead" if casualty.get("casualty_status") == "dead" else "Injured"
+                status = "Zulu (Dead)" if casualty.get("casualty_status") == "dead" else "Yankee (Injured)"
                 person = self._rta_person_label(casualty, "ID No" if casualty.get("person_type") == "civilian" else "Svc No")
+                person_type = "Civilian" if casualty.get("person_type") == "civilian" else "Service member"
                 severity = ""
-                if status == "Injured" and casualty.get("injury_severity"):
+                if casualty.get("casualty_status") != "dead" and casualty.get("injury_severity"):
                     severity = f"; Severity: {dict(OccurrenceEntry.InjurySeverity.choices).get(casualty.get('injury_severity'), casualty.get('injury_severity'))}"
-                detail_lines.append(f"{index}. {status}: {person or 'Details not specified'}{severity}")
-            lines.append("Onboard personnel / casualties:\n" + "\n".join(detail_lines))
+                detail_lines.append(f"{index}. {status} - {person_type}: {person or 'Details not specified'}{severity}")
+            lines.append("Yankee / Zulu details:\n" + "\n".join(detail_lines))
         return "\n".join(lines)
 
     def _road_traffic_vehicle_summary(self, entry):
@@ -635,7 +638,20 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             return ""
         lines = []
         for index, vehicle in enumerate(entry.rta_vehicles or [], start=1):
-            type_label = "Civilian vehicle" if vehicle.get("vehicle_type") == "civilian" else "Service vehicle"
+            owner = vehicle.get("vehicle_type")
+            body = {
+                "motor_vehicle": "motor vehicle",
+                "motorcycle": "motorcycle",
+                "truck": "truck",
+                "bus": "bus",
+                "other": "vehicle",
+            }.get(vehicle.get("vehicle_body_type"), "motor vehicle")
+            if owner == "service_member_personal":
+                type_label = f"Service member personal {body}"
+            elif owner == "civilian":
+                type_label = f"Civilian {body}"
+            else:
+                type_label = f"Official service {body}"
             details = vehicle.get("vehicle_details") or "Not specified"
             lines.append(f"{index}. {type_label}: {details}")
         return "\n".join(lines)
@@ -647,13 +663,14 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         for index, vehicle in enumerate(entry.rta_vehicles or [], start=1):
             driver = self._rta_person_label({
                 "identifier": vehicle.get("driver_identifier"),
+                "driver_license_no": vehicle.get("driver_license_no"),
                 "rank": vehicle.get("driver_rank"),
                 "name": vehicle.get("driver_name"),
                 "unit": vehicle.get("driver_unit"),
                 "is_unknown": vehicle.get("driver_unknown"),
             }, "ID No" if vehicle.get("driver_person_type") == "civilian" else "Svc No")
             if driver:
-                lines.append(f"{index}. Driver: {driver}")
+                lines.append(f"{index}. Driver/Rider: {driver}")
         return "\n".join(lines)
 
     def _road_traffic_description(self, entry):
@@ -672,6 +689,8 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         parts = []
         if person.get("identifier"):
             parts.append(f"{identifier_label}: {person.get('identifier')}")
+        if person.get("driver_license_no"):
+            parts.append(f"DL No: {person.get('driver_license_no')}")
         for field in ["rank", "name"]:
             if person.get(field):
                 parts.append(str(person.get(field)))

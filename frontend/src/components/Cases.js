@@ -381,6 +381,18 @@ const INJURY_SEVERITIES = [
   ["serious", "Serious"],
   ["critical", "Critical"],
 ];
+const RTA_VEHICLE_OWNERS = [
+  ["service", "Official Service Vehicle"],
+  ["service_member_personal", "Service Member Personal Vehicle"],
+  ["civilian", "Civilian Vehicle"],
+];
+const RTA_VEHICLE_BODY_TYPES = [
+  ["motor_vehicle", "Motor Vehicle"],
+  ["motorcycle", "Motorcycle"],
+  ["truck", "Truck"],
+  ["bus", "Bus"],
+  ["other", "Other"],
+];
 
 function closureBasisLabel(value) {
   return CLOSURE_BASIS_OPTIONS.find((option) => option.value === value)?.label || "";
@@ -478,10 +490,12 @@ function isFatalRoadTrafficType(value) {
 function emptyRtaVehicle() {
   return {
     vehicle_type: "service",
+    vehicle_body_type: "motor_vehicle",
     vehicle_details: "",
     driver_person_type: "service",
     driver_unknown: false,
     driver_identifier: "",
+    driver_license_no: "",
     driver_rank: "",
     driver_name: "",
     driver_unit: "",
@@ -530,14 +544,22 @@ function emptyIncidentCaseForm(source = CASE_SOURCE_INCIDENT) {
 }
 
 function cleanRtaVehicle(vehicle) {
-  const driverPersonType = vehicle.driver_person_type || "service";
+  const vehicleOwner = RTA_VEHICLE_OWNERS.some(([value]) => value === vehicle.vehicle_type)
+    ? vehicle.vehicle_type
+    : "service";
+  const vehicleBodyType = RTA_VEHICLE_BODY_TYPES.some(([value]) => value === vehicle.vehicle_body_type)
+    ? vehicle.vehicle_body_type
+    : "motor_vehicle";
+  const driverPersonType = vehicle.driver_person_type || (vehicleOwner === "civilian" ? "civilian" : "service");
   const driverUnknown = driverPersonType === "civilian" && Boolean(vehicle.driver_unknown);
   return {
-    vehicle_type: vehicle.vehicle_type || "service",
+    vehicle_type: vehicleOwner,
+    vehicle_body_type: vehicleBodyType,
     vehicle_details: String(vehicle.vehicle_details || "").trim(),
     driver_person_type: driverPersonType,
     driver_unknown: driverUnknown,
     driver_identifier: driverUnknown ? "Unknown" : String(vehicle.driver_identifier || "").trim(),
+    driver_license_no: driverUnknown || driverPersonType !== "civilian" ? "" : String(vehicle.driver_license_no || "").trim(),
     driver_rank: driverPersonType === "civilian" ? "" : String(vehicle.driver_rank || "").trim(),
     driver_name: driverUnknown ? "Unknown" : String(vehicle.driver_name || "").trim(),
     driver_unit: driverPersonType === "civilian" ? "" : String(vehicle.driver_unit || "").trim(),
@@ -562,8 +584,48 @@ function cleanRtaCasualty(casualty) {
 
 function hasVehicleData(vehicle) {
   const cleaned = cleanRtaVehicle(vehicle);
-  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_rank", "driver_name", "driver_unit"]
+  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_license_no", "driver_rank", "driver_name", "driver_unit"]
     .some((field) => String(cleaned[field] || "").trim());
+}
+
+function vehicleBodyLabel(value) {
+  return RTA_VEHICLE_BODY_TYPES.find(([type]) => type === value)?.[1] || "Motor Vehicle";
+}
+
+function vehicleTypeDescription(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  if (cleaned.vehicle_type === "service_member_personal") {
+    return `Service member personal ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+  }
+  if (cleaned.vehicle_type === "civilian") {
+    return `Civilian ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+  }
+  return `Official service ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+}
+
+function vehicleRegisterLabel(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  if (!cleaned.vehicle_details) return "";
+  if (cleaned.vehicle_type === "service_member_personal") {
+    return `Personal ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}: ${cleaned.vehicle_details}`;
+  }
+  if (cleaned.vehicle_type === "civilian") {
+    return `Civilian ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}: ${cleaned.vehicle_details}`;
+  }
+  return cleaned.vehicle_details;
+}
+
+function driverSummary(vehicle, index) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  const driverLabel = personLabel({
+    identifier: cleaned.driver_identifier,
+    driver_license_no: cleaned.driver_license_no,
+    rank: cleaned.driver_rank,
+    name: cleaned.driver_name,
+    unit: cleaned.driver_unit,
+    driver_unknown: cleaned.driver_unknown,
+  }, cleaned.driver_person_type === "civilian" ? "ID No" : "Svc No");
+  return driverLabel ? `${index + 1}. Driver/Rider: ${driverLabel}` : "";
 }
 
 function safeRtaCount(value) {
@@ -610,6 +672,7 @@ function personLabel(person, identifierLabel = "Svc/ID") {
   if (person.is_unknown || person.driver_unknown) return "Unknown civilian";
   const parts = [
     person.identifier ? `${identifierLabel}: ${person.identifier}` : "",
+    person.driver_license_no ? `DL No: ${person.driver_license_no}` : "",
     person.rank,
     person.name,
     person.unit ? `Unit: ${person.unit}` : "",
@@ -630,25 +693,26 @@ function sourceServiceMemberSummary(form) {
 
 function vehicleSummary(vehicle, index) {
   const cleaned = cleanRtaVehicle(vehicle);
-  const typeLabel = cleaned.vehicle_type === "civilian" ? "Civilian vehicle" : "Service vehicle";
   const driverLabel = personLabel({
     identifier: cleaned.driver_identifier,
+    driver_license_no: cleaned.driver_license_no,
     rank: cleaned.driver_rank,
     name: cleaned.driver_name,
     unit: cleaned.driver_unit,
     driver_unknown: cleaned.driver_unknown,
   }, cleaned.driver_person_type === "civilian" ? "ID No" : "Svc No");
-  return `${index + 1}. ${typeLabel}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver: ${driverLabel}` : ""}`;
+  return `${index + 1}. ${vehicleTypeDescription(cleaned)}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver/Rider: ${driverLabel}` : ""}`;
 }
 
 function casualtySummary(casualty, index) {
   const cleaned = cleanRtaCasualty(casualty);
-  const statusLabel = cleaned.casualty_status === "dead" ? "Dead" : "Injured";
+  const statusLabel = cleaned.casualty_status === "dead" ? "Zulu (Dead)" : "Yankee (Injured)";
+  const personType = cleaned.person_type === "civilian" ? "Civilian" : "Service member";
   const person = personLabel(cleaned, cleaned.person_type === "civilian" ? "ID No" : "Svc No");
   const severity = cleaned.casualty_status === "injured" && cleaned.injury_severity
     ? `; Severity: ${injurySeverityLabel(cleaned.injury_severity)}`
     : "";
-  return `${index + 1}. ${statusLabel}: ${person || "Details not specified"}${severity}`;
+  return `${index + 1}. ${statusLabel} - ${personType}: ${person || "Details not specified"}${severity}`;
 }
 
 function buildIncidentCaseDescription(form) {
@@ -670,12 +734,12 @@ function buildRtaCaseDescription(form) {
   const casualties = toArray(form.rta_casualties).map(cleanRtaCasualty);
   const sections = [
     `${roadTrafficTypeLabel(form.road_traffic_type) || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
-    `Personnel injured: ${countLabel(form.injured_count)}. Personnel dead: ${countLabel(form.dead_count)}.`,
+    `Yankee (injured): ${countLabel(form.injured_count)}. Zulu (dead): ${countLabel(form.dead_count)}.`,
   ];
   if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
   if (form.originating_unit) sections.push(`Originating sub-unit: ${form.originating_unit}.`);
   if (vehicles.length) sections.push(`Vehicles / drivers:\n${vehicles.map(vehicleSummary).join("\n")}`);
-  if (casualties.length) sections.push(`Onboard personnel / casualties:\n${casualties.map(casualtySummary).join("\n")}`);
+  if (casualties.length) sections.push(`Yankee / Zulu details:\n${casualties.map(casualtySummary).join("\n")}`);
   if (form.history) sections.push(`History of the accident:\n${form.history}`);
   if (form.damages) sections.push(`Damages:\n${form.damages}`);
   if (form.how_occurred) sections.push(`How the accident occurred:\n${form.how_occurred}`);
@@ -727,27 +791,31 @@ function validateIncidentSourceCase(form, sourceForm, source) {
   );
   const vehicles = toArray(sourceForm.rta_vehicles).filter(hasVehicleData);
   if (!vehicles.length) return "Add at least one vehicle and driver entry.";
+  const cleanedVehicles = vehicles.map(cleanRtaVehicle);
+  if (!cleanedVehicles.some((vehicle) => vehicle.vehicle_type !== "civilian")) {
+    return "Add at least one official service vehicle or service member personal vehicle.";
+  }
+  if (cleanedVehicles.some((vehicle) => !vehicle.vehicle_details)) {
+    return "Enter the vehicle registration or description for every RTA vehicle.";
+  }
   if (
     sourceForm.road_traffic_type === "non_injury"
-    && !vehicles.some((vehicle) => {
-      const cleaned = cleanRtaVehicle(vehicle);
-      return cleaned.driver_unknown || cleaned.driver_identifier || cleaned.driver_name;
-    })
+    && !cleanedVehicles.some((vehicle) => vehicle.driver_unknown || vehicle.driver_identifier || vehicle.driver_license_no || vehicle.driver_name)
   ) {
-    return "Capture driver details for a Non-Injury Road Traffic Accident.";
+    return "Capture driver/rider details or driving licence no for a Non-Injury Road Traffic Accident.";
   }
   if (isInjuryRoadTrafficType(sourceForm.road_traffic_type) && injuredCount < 1) {
-    return "Enter the number of injured personnel for an Injury Road Traffic Accident.";
+    return "Enter the Yankee count for an Injury Road Traffic Accident.";
   }
   if (isFatalRoadTrafficType(sourceForm.road_traffic_type) && deadCount < 1) {
-    return "Enter the number of dead personnel for a Fatal Road Traffic Accident.";
+    return "Enter the Zulu count for a Fatal Road Traffic Accident.";
   }
   if (isBlank(sourceForm.history)) return "History of the accident is required.";
   if (isBlank(sourceForm.how_occurred)) return "How the accident occurred is required.";
   const casualtyMissingSeverity = toArray(sourceForm.rta_casualties)
     .map(cleanRtaCasualty)
     .some((casualty) => casualty.casualty_status === "injured" && !casualty.injury_severity);
-  if (casualtyMissingSeverity) return "Select injury severity for every injured onboard person.";
+  if (casualtyMissingSeverity) return "Select injury severity for every Yankee entry.";
   return "";
 }
 
@@ -822,18 +890,34 @@ function buildIncidentRecordPayload(form, sourceForm, source) {
   const incidentType = sourceIncidentType(sourceForm, source);
   const description = sourceIncidentDescription(sourceForm, source);
   const serviceMember = sourceServiceMemberSummary(sourceForm);
+  const rtaVehicles = source === CASE_SOURCE_RTA
+    ? toArray(sourceForm.rta_vehicles).filter(hasVehicleData).map(cleanRtaVehicle)
+    : [];
+  const rtaCasualties = source === CASE_SOURCE_RTA
+    ? toArray(sourceForm.rta_casualties).map(cleanRtaCasualty)
+    : [];
 
   return {
     incident_type: incidentType,
     description: description || incidentType,
     location: sourceForm.place || "",
-    service_vehicle: source === CASE_SOURCE_RTA ? sourceForm.service_vehicle || "" : "",
+    service_vehicle: source === CASE_SOURCE_RTA
+      ? rtaVehicles.filter((vehicle) => vehicle.vehicle_type !== "civilian").map(vehicleRegisterLabel).filter(Boolean).join("\n")
+      : "",
     unit_involved: sourceForm.unit_involved || "",
     originating_unit: sourceForm.originating_unit || "",
-    civilian: source === CASE_SOURCE_RTA ? sourceForm.civilian || "" : "",
-    service_member: serviceMember,
+    civilian: source === CASE_SOURCE_RTA
+      ? rtaVehicles.filter((vehicle) => vehicle.vehicle_type === "civilian").map(vehicleSummary).join("\n")
+      : "",
+    service_member: source === CASE_SOURCE_RTA
+      ? rtaVehicles.map(driverSummary).filter(Boolean).join("\n")
+      : serviceMember,
+    rta_vehicles: rtaVehicles,
+    rta_casualties: rtaCasualties,
     history: sourceForm.history || description || incidentType,
-    injuries: source === CASE_SOURCE_RTA ? sourceForm.injuries || "" : "",
+    injuries: source === CASE_SOURCE_RTA
+      ? rtaCasualties.map(casualtySummary).join("\n") || `Yankee (injured): ${countLabel(sourceForm.injured_count)}. Zulu (dead): ${countLabel(sourceForm.dead_count)}.`
+      : "",
     damages: source === CASE_SOURCE_RTA ? sourceForm.damages || "" : "",
     how_occurred: source === CASE_SOURCE_RTA ? sourceForm.how_occurred || "" : "",
     action_taken: source === CASE_SOURCE_RTA ? sourceForm.action_taken || "" : "",
@@ -2133,12 +2217,26 @@ export default function Cases({ user, criminalTypeFilter }) {
       rta_vehicles: prev.rta_vehicles.map((vehicle, vehicleIndex) => {
         if (vehicleIndex !== index) return vehicle;
         const next = { ...vehicle, [field]: value };
+        if (field === "vehicle_type") {
+          if (value === "civilian") {
+            next.driver_person_type = "civilian";
+            next.driver_rank = "";
+            next.driver_unit = "";
+          } else if (next.driver_person_type === "civilian") {
+            next.driver_person_type = "service";
+            next.driver_unknown = false;
+            next.driver_license_no = "";
+            if (next.driver_identifier === "Unknown") next.driver_identifier = "";
+            if (next.driver_name === "Unknown") next.driver_name = "";
+          }
+        }
         if (field === "driver_person_type" && value === "civilian") {
           next.driver_rank = "";
           next.driver_unit = "";
         }
         if (field === "driver_person_type" && value === "service") {
           next.driver_unknown = false;
+          next.driver_license_no = "";
           if (next.driver_identifier === "Unknown") next.driver_identifier = "";
           if (next.driver_name === "Unknown") next.driver_name = "";
         }
@@ -2148,9 +2246,11 @@ export default function Cases({ user, criminalTypeFilter }) {
           next.driver_unit = "";
           if (value) {
             next.driver_identifier = "Unknown";
+            next.driver_license_no = "";
             next.driver_name = "Unknown";
           } else {
             next.driver_identifier = "";
+            next.driver_license_no = "";
             next.driver_name = "";
           }
         }
@@ -5659,7 +5759,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                     </div>
                     {showRtaInjuredCount && (
                       <div>
-                        <CaseFormLabel>Number Injured *</CaseFormLabel>
+                        <CaseFormLabel>Yankee (Injured) Count *</CaseFormLabel>
                         <input
                           type="number"
                           min={isInjuryRoadTrafficType(sourceCaseForm.road_traffic_type) ? "1" : "0"}
@@ -5680,7 +5780,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                     )}
                     {showRtaDeadCount && (
                       <div>
-                        <CaseFormLabel>Number Dead *</CaseFormLabel>
+                        <CaseFormLabel>Zulu (Dead) Count *</CaseFormLabel>
                         <input
                           type="number"
                           min={isFatalRoadTrafficType(sourceCaseForm.road_traffic_type) ? "1" : "0"}
@@ -5823,29 +5923,42 @@ export default function Cases({ user, criminalTypeFilter }) {
                             </button>
                           )}
                         </div>
-                        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                           <div>
-                            <CaseFormLabel>Vehicle Type</CaseFormLabel>
+                            <CaseFormLabel>Ownership</CaseFormLabel>
                             <select
                               value={vehicle.vehicle_type}
                               onChange={(e) => updateSourceRtaVehicle(index, "vehicle_type", e.target.value)}
                               className={CASE_FORM_CONTROL}
                             >
-                              <option value="service">Service Vehicle</option>
-                              <option value="civilian">Civilian Vehicle</option>
+                              {RTA_VEHICLE_OWNERS.map(([value, label]) => (
+                                <option key={value} value={value}>{label}</option>
+                              ))}
                             </select>
                           </div>
                           <div>
+                            <CaseFormLabel>Vehicle Category</CaseFormLabel>
+                            <select
+                              value={vehicle.vehicle_body_type || "motor_vehicle"}
+                              onChange={(e) => updateSourceRtaVehicle(index, "vehicle_body_type", e.target.value)}
+                              className={CASE_FORM_CONTROL}
+                            >
+                              {RTA_VEHICLE_BODY_TYPES.map(([value, label]) => (
+                                <option key={value} value={value}>{label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="md:col-span-2">
                             <CaseFormLabel>Vehicle Details</CaseFormLabel>
                             <input
                               value={vehicle.vehicle_details}
                               onChange={(e) => updateSourceRtaVehicle(index, "vehicle_details", e.target.value)}
-                              placeholder="Reg no, make, call sign"
+                              placeholder={vehicle.vehicle_body_type === "motorcycle" ? "Motorcycle reg, make, or description" : "Reg no, make, call sign"}
                               className={CASE_FORM_CONTROL}
                             />
                           </div>
                           <div>
-                            <CaseFormLabel>Driver Type</CaseFormLabel>
+                            <CaseFormLabel>Driver / Rider Type</CaseFormLabel>
                             <select
                               value={vehicle.driver_person_type}
                               onChange={(e) => updateSourceRtaVehicle(index, "driver_person_type", e.target.value)}
@@ -5863,11 +5976,11 @@ export default function Cases({ user, criminalTypeFilter }) {
                                 onChange={(e) => updateSourceRtaVehicle(index, "driver_unknown", e.target.checked)}
                                 className="h-4 w-4 rounded border-slate-300 text-blue-600"
                               />
-                              Civilian driver unknown
+                              Civilian driver / rider unknown
                             </label>
                           )}
                           <div>
-                            <CaseFormLabel>{vehicle.driver_person_type === "civilian" ? "Driver ID No" : "Driver Service No"}</CaseFormLabel>
+                            <CaseFormLabel>{vehicle.driver_person_type === "civilian" ? "Driver / Rider ID No" : "Driver / Rider Service No"}</CaseFormLabel>
                             <input
                               value={vehicle.driver_identifier}
                               onChange={(e) => updateSourceRtaVehicle(index, "driver_identifier", e.target.value)}
@@ -5875,8 +5988,19 @@ export default function Cases({ user, criminalTypeFilter }) {
                               className={CASE_FORM_CONTROL}
                             />
                           </div>
+                          {vehicle.driver_person_type === "civilian" && (
+                            <div>
+                              <CaseFormLabel>Driving Licence No</CaseFormLabel>
+                              <input
+                                value={vehicle.driver_license_no || ""}
+                                onChange={(e) => updateSourceRtaVehicle(index, "driver_license_no", e.target.value)}
+                                disabled={Boolean(vehicle.driver_unknown)}
+                                className={CASE_FORM_CONTROL}
+                              />
+                            </div>
+                          )}
                           <div>
-                            <CaseFormLabel>Driver Rank</CaseFormLabel>
+                            <CaseFormLabel>Driver / Rider Rank</CaseFormLabel>
                             <select
                               value={vehicle.driver_rank}
                               onChange={(e) => updateSourceRtaVehicle(index, "driver_rank", e.target.value)}
@@ -5890,7 +6014,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                             </select>
                           </div>
                           <div>
-                            <CaseFormLabel>Driver Name</CaseFormLabel>
+                            <CaseFormLabel>Driver / Rider Name</CaseFormLabel>
                             <input
                               value={vehicle.driver_name}
                               onChange={(e) => updateSourceRtaVehicle(index, "driver_name", e.target.value)}
@@ -5899,7 +6023,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                             />
                           </div>
                           <div className="md:col-span-2">
-                            <CaseFormLabel>Driver Unit</CaseFormLabel>
+                            <CaseFormLabel>Driver / Rider Unit</CaseFormLabel>
                             <TextAutocompleteInput
                               value={vehicle.driver_unit}
                               onChange={(value) => updateSourceRtaVehicle(index, "driver_unit", value)}
@@ -5916,8 +6040,8 @@ export default function Cases({ user, criminalTypeFilter }) {
                   {sourceCaseForm.road_traffic_type && sourceCaseForm.road_traffic_type !== "non_injury" && (
                     <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-white p-3">
                       <div>
-                        <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Onboard Personnel / Casualties</h4>
-                        <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above.</p>
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Yankee / Zulu Details</h4>
+                        <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above. Select service member or civilian for each person.</p>
                       </div>
                       {sourceCaseForm.rta_casualties.length === 0 ? (
                         <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
@@ -5929,7 +6053,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                           <div key={index} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                             <div className="mb-2">
                               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                {status === "dead" ? "Dead person" : "Injured person"} #{index + 1}
+                                {status === "dead" ? "Zulu (Dead)" : "Yankee (Injured)"} #{index + 1}
                               </p>
                             </div>
                             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">

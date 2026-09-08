@@ -501,7 +501,7 @@ class OccurrenceEntrySerializer(serializers.ModelSerializer):
                 errors["rta_vehicles"] = "Vehicles and drivers must be submitted as a list."
                 rta_vehicles = []
             if not isinstance(rta_casualties, list):
-                errors["rta_casualties"] = "Onboard personnel / casualties must be submitted as a list."
+                errors["rta_casualties"] = "Yankee / Zulu details must be submitted as a list."
                 rta_casualties = []
             cleaned_vehicles = [
                 self._clean_rta_vehicle(item)
@@ -516,15 +516,19 @@ class OccurrenceEntrySerializer(serializers.ModelSerializer):
                 attrs["incident_title"] = incident_title
             if not cleaned_vehicles:
                 errors["rta_vehicles"] = "Add at least one vehicle and driver entry."
+            elif not any(vehicle.get("vehicle_type") != "civilian" for vehicle in cleaned_vehicles):
+                errors["rta_vehicles"] = "Add at least one official service vehicle or service member personal vehicle."
+            elif any(not vehicle.get("vehicle_details") for vehicle in cleaned_vehicles):
+                errors["rta_vehicles"] = "Enter the vehicle registration or description for every RTA vehicle."
             if road_traffic_type == OccurrenceEntry.RoadTrafficType.INJURY:
                 if injured_count < 1:
-                    errors["injured_count"] = "Enter the number of injured persons."
+                    errors["injured_count"] = "Enter the Yankee count."
                 dead_count = 0
                 attrs["injured_count"] = injured_count
                 attrs["dead_count"] = 0
             elif road_traffic_type == OccurrenceEntry.RoadTrafficType.FATAL:
                 if dead_count < 1:
-                    errors["dead_count"] = "Enter the number of dead persons."
+                    errors["dead_count"] = "Enter the Zulu count."
                 attrs["injured_count"] = injured_count
                 attrs["dead_count"] = dead_count
             elif road_traffic_type == OccurrenceEntry.RoadTrafficType.NON_INJURY:
@@ -533,10 +537,11 @@ class OccurrenceEntrySerializer(serializers.ModelSerializer):
                 if not any(
                     item.get("driver_unknown")
                     or str(item.get("driver_identifier", "") or "").strip()
+                    or str(item.get("driver_license_no", "") or "").strip()
                     or str(item.get("driver_name", "") or "").strip()
                     for item in cleaned_vehicles
                 ):
-                    errors["rta_vehicles"] = "Capture driver details for a Non-Injury Road Traffic Accident."
+                    errors["rta_vehicles"] = "Capture driver/rider details or driving licence no for a Non-Injury Road Traffic Accident."
                 attrs["injured_count"] = 0
                 attrs["dead_count"] = 0
             else:
@@ -550,7 +555,7 @@ class OccurrenceEntrySerializer(serializers.ModelSerializer):
             )
             for index, casualty in enumerate(cleaned_casualties, start=1):
                 if casualty.get("casualty_status", "injured") == "injured" and not str(casualty.get("injury_severity") or "").strip():
-                    errors["rta_casualties"] = f"Select injury severity for injured onboard person #{index}."
+                    errors["rta_casualties"] = f"Select injury severity for Yankee #{index}."
                     break
             attrs["rta_vehicles"] = cleaned_vehicles
             attrs["rta_casualties"] = cleaned_casualties
@@ -579,20 +584,29 @@ class OccurrenceEntrySerializer(serializers.ModelSerializer):
         return bool(item.get("driver_unknown")) or any(str(item.get(field, "") or "").strip() for field in [
             "vehicle_details",
             "driver_identifier",
+            "driver_license_no",
             "driver_rank",
             "driver_name",
             "driver_unit",
         ])
 
     def _clean_rta_vehicle(self, item):
-        driver_person_type = item.get("driver_person_type") or "service"
+        vehicle_owner = item.get("vehicle_type") or "service"
+        if vehicle_owner not in {"service", "service_member_personal", "civilian"}:
+            vehicle_owner = "service"
+        vehicle_body_type = item.get("vehicle_body_type") or "motor_vehicle"
+        if vehicle_body_type not in {"motor_vehicle", "motorcycle", "truck", "bus", "other"}:
+            vehicle_body_type = "motor_vehicle"
+        driver_person_type = item.get("driver_person_type") or ("civilian" if vehicle_owner == "civilian" else "service")
         driver_unknown = driver_person_type == "civilian" and bool(item.get("driver_unknown"))
         return {
-            "vehicle_type": item.get("vehicle_type") or "service",
+            "vehicle_type": vehicle_owner,
+            "vehicle_body_type": vehicle_body_type,
             "vehicle_details": str(item.get("vehicle_details") or "").strip(),
             "driver_person_type": driver_person_type,
             "driver_unknown": driver_unknown,
             "driver_identifier": "Unknown" if driver_unknown else str(item.get("driver_identifier") or "").strip(),
+            "driver_license_no": "" if driver_unknown or driver_person_type != "civilian" else str(item.get("driver_license_no") or "").strip(),
             "driver_rank": "" if driver_person_type == "civilian" else str(item.get("driver_rank") or "").strip(),
             "driver_name": "Unknown" if driver_unknown else str(item.get("driver_name") or "").strip(),
             "driver_unit": "" if driver_person_type == "civilian" else str(item.get("driver_unit") or "").strip(),

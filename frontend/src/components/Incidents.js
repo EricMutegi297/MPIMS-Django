@@ -109,13 +109,38 @@ const INJURY_SEVERITIES = [
   ["serious", "Serious"],
   ["critical", "Critical"],
 ];
+const VEHICLE_TYPES = [
+  ["motor_vehicle", "Motor Vehicle"],
+  ["motorcycle", "Motorcycle"],
+  ["truck", "Truck"],
+  ["bus", "Bus"],
+  ["other", "Other"],
+];
+const VEHICLE_OWNERS = [
+  ["service", "Official Service Vehicle"],
+  ["service_member_personal", "Service Member Personal Vehicle"],
+];
 const VIEW_INCIDENT = "incident";
 const VIEW_RTA = "rta";
 
+function emptyServiceVehicle() {
+  return {
+    vehicle_owner: "service",
+    vehicle_type: "motor_vehicle",
+    vehicle_details: "",
+    driver_number: "",
+    driver_rank: "",
+    driver_name: "",
+    driver_unit: "",
+  };
+}
+
 function emptyCivilianVehicle() {
   return {
+    vehicle_type: "motor_vehicle",
     vehicle_details: "",
     driver_identifier: "",
+    driver_license_no: "",
     driver_name: "",
     driver_unknown: false,
   };
@@ -143,11 +168,7 @@ const INIT_FORM = {
   service_member_number: "",
   service_member_rank: "",
   service_member_name: "",
-  service_vehicle: "",
-  service_driver_number: "",
-  service_driver_rank: "",
-  service_driver_name: "",
-  service_driver_unit: "",
+  service_vehicles: [emptyServiceVehicle()],
   civilian_vehicle_involved: false,
   civilian_vehicles: [],
   yankee_count: "0",
@@ -180,17 +201,46 @@ function rtaServiceVehicleDisplay(value) {
   const raw = String(value || "").trim();
   if (!raw) return "--";
   const normalized = raw.replace(/\r/g, "").replace(/\s+/g, " ").trim();
-  const matches = [...normalized.matchAll(/(?:^|\s)\d*\.?\s*Service vehicle:\s*(.*?)(?=(?:\s*;\s*Driver:|\s+Driver:|\s+\d+\.?\s*(?:Service|Civilian) vehicle:|$))/gi)]
+  const ownerPattern = "(?:official\\s+service|service\\s+member\\s+personal|service|civilian|personal)";
+  const bodyPattern = "(?:motor\\s+vehicle|motorcycle|truck|bus|other|vehicle)";
+  const matches = [...normalized.matchAll(new RegExp(`(?:^|\\s)\\d*\\.?\\s*${ownerPattern}\\s+${bodyPattern}:\\s*(.*?)(?=(?:\\s*;\\s*Driver\\/?Rider:|\\s+Driver\\/?Rider:|\\s*;\\s*Driver:|\\s+Driver:|\\s+\\d+\\.?\\s*${ownerPattern}\\s+${bodyPattern}:|$))`, "gi"))]
     .map((match) => match[1].trim())
     .filter(Boolean);
   if (matches.length) return matches.join(", ");
   return textOrDash(
     normalized
       .replace(/^\d+\.?\s*/i, "")
-      .replace(/^Service vehicle:\s*/i, "")
+      .replace(new RegExp(`^${ownerPattern}\\s+${bodyPattern}:\\s*`, "i"), "")
+      .replace(/\s*;\s*Driver\/Rider:.*$/i, "")
+      .replace(/\s+Driver\/Rider:.*$/i, "")
       .replace(/\s*;\s*Driver:.*$/i, "")
       .replace(/\s+Driver:.*$/i, "")
   );
+}
+
+function rtaCasualtyDisplay(incident) {
+  const casualties = toArray(incident?.rta_casualties);
+  if (casualties.length) {
+    return casualties.map(rtaPersonSummary).join("\n");
+  }
+  return textOrDash(incident?.injuries);
+}
+
+function rtaVehicleRegisterDisplay(incident) {
+  const vehicles = toArray(incident?.rta_vehicles)
+    .filter((vehicle) => vehicle?.vehicle_type !== "civilian")
+    .map((vehicle) => {
+      const bodyType = vehicle?.vehicle_body_type || "motor_vehicle";
+      const details = String(vehicle?.vehicle_details || "").trim();
+      if (!details) return "";
+      if (vehicle?.vehicle_type === "service_member_personal") {
+        return `Personal ${vehicleTypeLabel(bodyType).toLowerCase()}: ${details}`;
+      }
+      return details;
+    })
+    .filter(Boolean);
+  if (vehicles.length) return vehicles.join("\n");
+  return rtaServiceVehicleDisplay(incident?.service_vehicle);
 }
 
 function escapeHtml(value) {
@@ -235,7 +285,8 @@ function exportColumns(mode) {
       ["Place", (incident) => textOrDash(incident.location)],
       ["Date", (incident) => formatDate(incident.date_occurred)],
       ["Time", (incident) => formatTime(incident.date_occurred)],
-      ["Service Vehicle", (incident) => rtaServiceVehicleDisplay(incident.service_vehicle)],
+      ["Service / Member Vehicle", (incident) => rtaVehicleRegisterDisplay(incident)],
+      ["Yankee / Zulu", (incident) => rtaCasualtyDisplay(incident)],
       ["Unit", (incident) => textOrDash(incident.unit_involved)],
       ["Originating Sub-Unit", (incident) => textOrDash(incident.originating_unit)],
       ["History Of the Accident", (incident) => textOrDash(incident.history || incident.description)],
@@ -279,11 +330,138 @@ function serviceMemberSummary(form) {
     .join(" ");
 }
 
+function vehicleTypeLabel(value) {
+  return VEHICLE_TYPES.find(([type]) => type === value)?.[1] || "Vehicle";
+}
+
+function serviceVehiclePrefix(vehicle) {
+  const owner = vehicle.vehicle_owner === "service_member_personal"
+    ? "Service member personal"
+    : "Official service";
+  return `${owner} ${vehicleTypeLabel(vehicle.vehicle_type).toLowerCase()}`;
+}
+
+function cleanServiceVehicle(vehicle) {
+  return {
+    vehicle_owner: vehicle?.vehicle_owner === "service_member_personal" ? "service_member_personal" : "service",
+    vehicle_type: vehicle?.vehicle_type || "motor_vehicle",
+    vehicle_details: String(vehicle?.vehicle_details || "").trim(),
+    driver_number: String(vehicle?.driver_number || "").trim(),
+    driver_rank: String(vehicle?.driver_rank || "").trim(),
+    driver_name: String(vehicle?.driver_name || "").trim(),
+    driver_unit: String(vehicle?.driver_unit || "").trim(),
+  };
+}
+
+function serviceVehicleHasData(vehicle) {
+  const cleaned = cleanServiceVehicle(vehicle);
+  return Boolean(cleaned.vehicle_details || cleaned.driver_number || cleaned.driver_rank || cleaned.driver_name || cleaned.driver_unit);
+}
+
+function serviceDriverLabel(vehicle) {
+  const cleaned = cleanServiceVehicle(vehicle);
+  return [
+    cleaned.driver_number ? `Svc No: ${cleaned.driver_number}` : "",
+    cleaned.driver_rank,
+    cleaned.driver_name,
+    cleaned.driver_unit ? `Unit: ${cleaned.driver_unit}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function serviceVehicleSummary(form) {
+  return toArray(form.service_vehicles)
+    .filter(serviceVehicleHasData)
+    .map(cleanServiceVehicle)
+    .map((vehicle, index) => {
+      const driver = serviceDriverLabel(vehicle);
+      return `${index + 1}. ${serviceVehiclePrefix(vehicle)}: ${vehicle.vehicle_details}${driver ? `; Driver/Rider: ${driver}` : ""}`;
+    })
+    .join("\n");
+}
+
+function serviceVehicleRegisterValue(form) {
+  return toArray(form.service_vehicles)
+    .filter(serviceVehicleHasData)
+    .map(cleanServiceVehicle)
+    .map((vehicle) => (
+      vehicle.vehicle_owner === "service"
+        ? vehicle.vehicle_details
+        : `Personal ${vehicleTypeLabel(vehicle.vehicle_type).toLowerCase()}: ${vehicle.vehicle_details}`
+    ))
+    .filter(Boolean)
+    .join("; ");
+}
+
+function incidentRtaVehicles(form) {
+  const serviceVehicles = toArray(form.service_vehicles)
+    .filter(serviceVehicleHasData)
+    .map(cleanServiceVehicle)
+    .map((vehicle) => ({
+      vehicle_type: vehicle.vehicle_owner,
+      vehicle_body_type: vehicle.vehicle_type,
+      vehicle_details: vehicle.vehicle_details,
+      driver_person_type: "service",
+      driver_unknown: false,
+      driver_identifier: vehicle.driver_number,
+      driver_rank: vehicle.driver_rank,
+      driver_name: vehicle.driver_name,
+      driver_unit: vehicle.driver_unit,
+    }));
+  const civilianVehicles = form.civilian_vehicle_involved
+    ? toArray(form.civilian_vehicles)
+      .filter(civilianVehicleHasData)
+      .map(cleanCivilianVehicle)
+      .map((vehicle) => ({
+        vehicle_type: "civilian",
+        vehicle_body_type: vehicle.vehicle_type,
+        vehicle_details: vehicle.vehicle_details,
+        driver_person_type: "civilian",
+        driver_unknown: vehicle.driver_unknown,
+        driver_identifier: vehicle.driver_identifier,
+        driver_license_no: vehicle.driver_license_no,
+        driver_rank: "",
+        driver_name: vehicle.driver_name,
+        driver_unit: "",
+      }))
+    : [];
+  return [...serviceVehicles, ...civilianVehicles];
+}
+
+function incidentRtaCasualties(form) {
+  return toArray(form.rta_persons).map((person) => {
+    const cleaned = cleanRtaPerson(person);
+    return {
+      casualty_status: cleaned.category === "zulu" ? "dead" : "injured",
+      person_type: cleaned.person_type,
+      is_unknown: cleaned.is_unknown,
+      identifier: cleaned.identifier,
+      rank: cleaned.rank,
+      name: cleaned.name,
+      unit: cleaned.unit,
+      injury_severity: cleaned.injury_severity,
+    };
+  });
+}
+
+function serviceDriversSummary(form) {
+  return toArray(form.service_vehicles)
+    .filter(serviceVehicleHasData)
+    .map(cleanServiceVehicle)
+    .map((vehicle, index) => {
+      const driver = serviceDriverLabel(vehicle);
+      return driver ? `${index + 1}. ${driver}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function cleanCivilianVehicle(vehicle) {
   const driverUnknown = Boolean(vehicle?.driver_unknown);
   return {
+    vehicle_type: vehicle?.vehicle_type || "motor_vehicle",
     vehicle_details: String(vehicle?.vehicle_details || "").trim(),
     driver_identifier: driverUnknown ? "Unknown" : String(vehicle?.driver_identifier || "").trim(),
+    driver_license_no: driverUnknown ? "" : String(vehicle?.driver_license_no || "").trim(),
     driver_name: driverUnknown ? "Unknown" : String(vehicle?.driver_name || "").trim(),
     driver_unknown: driverUnknown,
   };
@@ -291,7 +469,7 @@ function cleanCivilianVehicle(vehicle) {
 
 function civilianVehicleHasData(vehicle) {
   const cleaned = cleanCivilianVehicle(vehicle);
-  return cleaned.driver_unknown || Boolean(cleaned.vehicle_details || cleaned.driver_identifier || cleaned.driver_name);
+  return cleaned.driver_unknown || Boolean(cleaned.vehicle_details || cleaned.driver_identifier || cleaned.driver_license_no || cleaned.driver_name);
 }
 
 function civilianVehicleSummary(form) {
@@ -304,23 +482,12 @@ function civilianVehicleSummary(form) {
         ? "Driver: Unknown"
         : [
             vehicle.driver_identifier ? `Driver ID No: ${vehicle.driver_identifier}` : "",
+            vehicle.driver_license_no ? `DL No: ${vehicle.driver_license_no}` : "",
             vehicle.driver_name,
           ].filter(Boolean).join(" ");
-      return `${index + 1}. Civilian vehicle: ${vehicle.vehicle_details}${driver ? `; ${driver}` : ""}`;
+      return `${index + 1}. Civilian ${vehicleTypeLabel(vehicle.vehicle_type).toLowerCase()}: ${vehicle.vehicle_details}${driver ? `; ${driver}` : ""}`;
     })
     .join("\n");
-}
-
-function serviceDriverSummary(form) {
-  return [
-    form.service_driver_number ? `Svc No: ${String(form.service_driver_number).trim()}` : "",
-    form.service_driver_rank,
-    form.service_driver_name,
-    form.service_driver_unit ? `Unit: ${form.service_driver_unit}` : "",
-  ]
-    .map((part) => String(part || "").trim())
-    .filter(Boolean)
-    .join(" ");
 }
 
 function safeCount(value) {
@@ -346,7 +513,7 @@ function rtaCountsForType(roadTrafficType, yankee, zulu) {
 }
 
 function cleanRtaPerson(person) {
-  const category = person?.category === "zulu" ? "zulu" : "yankee";
+  const category = person?.category === "zulu" || person?.casualty_status === "dead" ? "zulu" : "yankee";
   const personType = person?.person_type === "civilian" ? "civilian" : "service";
   const isUnknown = personType === "civilian" && Boolean(person?.is_unknown);
   return {
@@ -378,7 +545,8 @@ function syncRtaPersons(persons, roadTrafficType, yankee, zulu) {
 
 function rtaPersonSummary(person, index) {
   const cleaned = cleanRtaPerson(person);
-  const label = cleaned.category === "zulu" ? "Zulu" : "Yankee";
+  const label = cleaned.category === "zulu" ? "Zulu (Dead)" : "Yankee (Injured)";
+  const personType = cleaned.person_type === "civilian" ? "Civilian" : "Service member";
   if (cleaned.is_unknown) return `${index + 1}. ${label}: Unknown civilian`;
   const identifierLabel = cleaned.person_type === "civilian" ? "ID No" : "Svc No";
   const parts = [
@@ -388,7 +556,7 @@ function rtaPersonSummary(person, index) {
     cleaned.unit ? `Unit: ${cleaned.unit}` : "",
     cleaned.injury_severity ? `Severity: ${injurySeverityLabel(cleaned.injury_severity)}` : "",
   ].filter(Boolean);
-  return `${index + 1}. ${label}: ${parts.join(" ") || "Details not specified"}`;
+  return `${index + 1}. ${label} - ${personType}: ${parts.join(" ") || "Details not specified"}`;
 }
 
 function rtaPersonnelSummary(form) {
@@ -403,12 +571,11 @@ function countLabel(value) {
 function buildRtaIncidentDescription(form, incidentType) {
   const sections = [
     `${incidentType || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
-    `Yankee: ${countLabel(form.yankee_count)}. Zulu: ${countLabel(form.zulu_count)}.`,
+    `Yankee (injured): ${countLabel(form.yankee_count)}. Zulu (dead): ${countLabel(form.zulu_count)}.`,
   ];
   if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
-  if (form.service_vehicle) sections.push(`Service vehicle: ${String(form.service_vehicle).trim()}.`);
-  const serviceDriver = serviceDriverSummary(form);
-  if (serviceDriver) sections.push(`Service vehicle driver: ${serviceDriver}.`);
+  const serviceVehicles = serviceVehicleSummary(form);
+  if (serviceVehicles) sections.push(`Service vehicle(s):\n${serviceVehicles}`);
   const civilianVehicles = civilianVehicleSummary(form);
   if (civilianVehicles) sections.push(`Civilian vehicle(s):\n${civilianVehicles}`);
   const personnel = rtaPersonnelSummary(form);
@@ -423,7 +590,14 @@ function buildDateTime(form) {
 }
 
 function resetForm() {
-  return { ...INIT_FORM, date: todayIso(), time: timeNow() };
+  return {
+    ...INIT_FORM,
+    date: todayIso(),
+    time: timeNow(),
+    service_vehicles: [emptyServiceVehicle()],
+    civilian_vehicles: [],
+    rta_persons: [],
+  };
 }
 
 function sourceLabel(mode) {
@@ -449,21 +623,26 @@ function makeIncidentPayload(form, mode, units) {
   const description = mode === VIEW_RTA
     ? buildRtaIncidentDescription(form, incidentType)
     : form.history || incidentType;
-  const serviceDriver = serviceDriverSummary(form);
+  const serviceVehicles = serviceVehicleRegisterValue(form);
+  const serviceDrivers = serviceDriversSummary(form);
   const civilianVehicles = civilianVehicleSummary(form);
   const personnel = rtaPersonnelSummary(form);
+  const structuredVehicles = mode === VIEW_RTA ? incidentRtaVehicles(form) : [];
+  const structuredCasualties = mode === VIEW_RTA ? incidentRtaCasualties(form) : [];
   const payload = {
     incident_type: incidentType,
     description,
     location: form.place,
-    service_vehicle: mode === VIEW_RTA ? String(form.service_vehicle || "").trim() : "",
+    service_vehicle: mode === VIEW_RTA ? serviceVehicles : "",
     unit_involved: form.unit_involved,
     originating_unit: form.originating_unit,
     civilian: mode === VIEW_RTA ? civilianVehicles : "",
-    service_member: mode === VIEW_RTA ? serviceDriver : serviceMemberSummary(form),
+    service_member: mode === VIEW_RTA ? serviceDrivers : serviceMemberSummary(form),
+    rta_vehicles: structuredVehicles,
+    rta_casualties: structuredCasualties,
     history: form.history,
     injuries: mode === VIEW_RTA
-      ? personnel || `Yankee: ${countLabel(form.yankee_count)}. Zulu: ${countLabel(form.zulu_count)}.`
+      ? personnel || `Yankee (injured): ${countLabel(form.yankee_count)}. Zulu (dead): ${countLabel(form.zulu_count)}.`
       : "",
     damages: "",
     how_occurred: mode === VIEW_RTA ? form.how_occurred : "",
@@ -488,10 +667,11 @@ function validateIncidentForm(form, mode) {
   if (!String(form.place || "").trim()) return "Enter the place.";
   if (!form.date) return "Select the date.";
   if (!form.time) return "Select the time.";
-  if (mode === VIEW_RTA && !String(form.service_vehicle || "").trim()) {
-    return "Enter the service vehicle.";
-  }
   if (mode === VIEW_RTA) {
+    const serviceVehicles = toArray(form.service_vehicles).filter(serviceVehicleHasData).map(cleanServiceVehicle);
+    if (!serviceVehicles.length) return "Add at least one official service vehicle or service member personal vehicle.";
+    const missingServiceVehicle = serviceVehicles.some((vehicle) => !vehicle.vehicle_details);
+    if (missingServiceVehicle) return "Enter the vehicle registration or description.";
     const { yankeeCount, zuluCount } = rtaCountsForType(form.road_traffic_type, form.yankee_count, form.zulu_count);
     const type = roadTrafficKind(form.road_traffic_type);
     if (type === "injury" && yankeeCount < 1) return "Enter the Yankee count for an injury RTA.";
@@ -502,9 +682,9 @@ function validateIncidentForm(form, mode) {
       const missingCivilianVehicle = civilianVehicles.some((vehicle) => !vehicle.vehicle_details);
       if (missingCivilianVehicle) return "Enter the civilian vehicle registration or description.";
       const missingCivilianDriver = civilianVehicles.some((vehicle) =>
-        !vehicle.driver_unknown && !vehicle.driver_identifier && !vehicle.driver_name
+        !vehicle.driver_unknown && !vehicle.driver_identifier && !vehicle.driver_license_no && !vehicle.driver_name
       );
-      if (missingCivilianDriver) return "Enter civilian driver details or mark the driver as unknown.";
+      if (missingCivilianDriver) return "Enter civilian driver/rider details, driving licence no, or mark the driver as unknown.";
     }
     const people = toArray(form.rta_persons).map(cleanRtaPerson);
     const missingPerson = people.some((person) =>
@@ -535,6 +715,7 @@ function incidentMatchesSearch(incident, search) {
     incident.description,
     incident.service_vehicle,
     incident.civilian,
+    incident.injuries,
     incident.unit_involved,
     incident.originating_unit,
     incident.service_member,
@@ -610,6 +791,9 @@ function CreateIncidentModal({
 }) {
   const isRta = mode === VIEW_RTA;
   const update = (field, value) => onChange({ ...form, [field]: value });
+  const serviceVehicles = toArray(form.service_vehicles).length
+    ? toArray(form.service_vehicles)
+    : [emptyServiceVehicle()];
   const civilianVehicles = toArray(form.civilian_vehicles);
   const rtaPersons = toArray(form.rta_persons);
   const rtaType = roadTrafficKind(form.road_traffic_type);
@@ -653,6 +837,27 @@ function CreateIncidentModal({
     });
   }
 
+  function updateServiceVehicle(index, field, value) {
+    onChange({
+      ...form,
+      service_vehicles: serviceVehicles.map((vehicle, vehicleIndex) => (
+        vehicleIndex === index ? { ...vehicle, [field]: value } : vehicle
+      )),
+    });
+  }
+
+  function addServiceVehicle() {
+    onChange({ ...form, service_vehicles: [...serviceVehicles, emptyServiceVehicle()] });
+  }
+
+  function removeServiceVehicle(index) {
+    const nextVehicles = serviceVehicles.filter((_, vehicleIndex) => vehicleIndex !== index);
+    onChange({
+      ...form,
+      service_vehicles: nextVehicles.length ? nextVehicles : [emptyServiceVehicle()],
+    });
+  }
+
   function updateCivilianVehicle(index, field, value) {
     onChange({
       ...form,
@@ -662,6 +867,7 @@ function CreateIncidentModal({
         if (field === "driver_unknown") {
           next.driver_unknown = Boolean(value);
           next.driver_identifier = value ? "Unknown" : "";
+          next.driver_license_no = "";
           next.driver_name = value ? "Unknown" : "";
         }
         return next;
@@ -811,60 +1017,114 @@ function CreateIncidentModal({
                   <div>
                     <h4 className="text-sm font-bold text-slate-950">Vehicles Involved</h4>
                     <p className="mt-1 text-xs text-slate-600">
-                      Every RTA must involve a service vehicle. Add civilian vehicle details only where a civilian vehicle was involved.
+                      Record official service vehicles or a service member's personal vehicle. Add civilian vehicle details only where a civilian vehicle was involved.
                     </p>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="md:col-span-2">
-                      <FieldLabel>Service Vehicle *</FieldLabel>
-                      <input
-                        value={form.service_vehicle}
-                        onChange={(event) => update("service_vehicle", event.target.value)}
-                        className={FORM_INPUT}
-                        placeholder="e.g. 59 KA 123A"
-                        required
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel>Driver Service No</FieldLabel>
-                      <input
-                        value={form.service_driver_number}
-                        onChange={(event) => update("service_driver_number", event.target.value)}
-                        className={FORM_INPUT}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel>Driver Rank</FieldLabel>
-                      <select
-                        value={form.service_driver_rank}
-                        onChange={(event) => update("service_driver_rank", event.target.value)}
-                        className={FORM_INPUT}
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h5 className="text-xs font-bold uppercase tracking-wide text-slate-700">Service / Member Vehicle Details</h5>
+                      <button
+                        type="button"
+                        onClick={addServiceVehicle}
+                        className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                       >
-                        <option value="">Select rank...</option>
-                        {RANK_OPTIONS.map((rank) => (
-                          <option key={rank} value={rank}>{rank}</option>
-                        ))}
-                      </select>
+                        Add Vehicle
+                      </button>
                     </div>
-                    <div>
-                      <FieldLabel>Driver Name</FieldLabel>
-                      <input
-                        value={form.service_driver_name}
-                        onChange={(event) => update("service_driver_name", event.target.value)}
-                        className={FORM_INPUT}
-                      />
-                    </div>
-                    <div>
-                      <FieldLabel>Driver Unit</FieldLabel>
-                      <input
-                        list="incident-unit-options"
-                        value={form.service_driver_unit}
-                        onChange={(event) => update("service_driver_unit", event.target.value)}
-                        className={FORM_INPUT}
-                        placeholder="Type unit name"
-                      />
-                    </div>
+                    {serviceVehicles.map((vehicle, index) => (
+                      <div key={index} className="rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Service / Member Vehicle #{index + 1}
+                          </p>
+                          {serviceVehicles.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeServiceVehicle(index)}
+                              className="text-xs font-semibold text-red-600 hover:text-red-700"
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div>
+                            <FieldLabel>Ownership</FieldLabel>
+                            <select
+                              value={vehicle.vehicle_owner || "service"}
+                              onChange={(event) => updateServiceVehicle(index, "vehicle_owner", event.target.value)}
+                              className={FORM_INPUT}
+                            >
+                              {VEHICLE_OWNERS.map(([value, label]) => (
+                                <option key={value} value={value}>{label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <FieldLabel>Vehicle Category</FieldLabel>
+                            <select
+                              value={vehicle.vehicle_type}
+                              onChange={(event) => updateServiceVehicle(index, "vehicle_type", event.target.value)}
+                              className={FORM_INPUT}
+                            >
+                              {VEHICLE_TYPES.map(([value, label]) => (
+                                <option key={value} value={value}>{label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <FieldLabel>Vehicle Details *</FieldLabel>
+                            <input
+                              value={vehicle.vehicle_details}
+                              onChange={(event) => updateServiceVehicle(index, "vehicle_details", event.target.value)}
+                              className={FORM_INPUT}
+                              placeholder={vehicle.vehicle_type === "motorcycle" ? "e.g. KMxx motorcycle reg" : "e.g. 59 KA 123A"}
+                              required
+                            />
+                          </div>
+                          <div>
+                            <FieldLabel>Driver / Rider Service No</FieldLabel>
+                            <input
+                              value={vehicle.driver_number}
+                              onChange={(event) => updateServiceVehicle(index, "driver_number", event.target.value)}
+                              className={FORM_INPUT}
+                            />
+                          </div>
+                          <div>
+                            <FieldLabel>Driver / Rider Rank</FieldLabel>
+                            <select
+                              value={vehicle.driver_rank}
+                              onChange={(event) => updateServiceVehicle(index, "driver_rank", event.target.value)}
+                              className={FORM_INPUT}
+                            >
+                              <option value="">Select rank...</option>
+                              {RANK_OPTIONS.map((rank) => (
+                                <option key={rank} value={rank}>{rank}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <FieldLabel>Driver / Rider Name</FieldLabel>
+                            <input
+                              value={vehicle.driver_name}
+                              onChange={(event) => updateServiceVehicle(index, "driver_name", event.target.value)}
+                              className={FORM_INPUT}
+                            />
+                          </div>
+                          <div className="md:col-span-3">
+                            <FieldLabel>Driver / Rider Unit</FieldLabel>
+                            <input
+                              list="incident-unit-options"
+                              value={vehicle.driver_unit}
+                              onChange={(event) => updateServiceVehicle(index, "driver_unit", event.target.value)}
+                              className={FORM_INPUT}
+                              placeholder={vehicle.vehicle_owner === "service_member_personal" ? "Owner / rider unit" : "Type unit name"}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   <label className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
@@ -906,7 +1166,19 @@ function CreateIncidentModal({
                             )}
                           </div>
                           <div className="grid gap-3 md:grid-cols-2">
-                            <div className="md:col-span-2">
+                            <div>
+                              <FieldLabel>Vehicle Category</FieldLabel>
+                              <select
+                                value={vehicle.vehicle_type}
+                                onChange={(event) => updateCivilianVehicle(index, "vehicle_type", event.target.value)}
+                                className={FORM_INPUT}
+                              >
+                                {VEHICLE_TYPES.map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
                               <FieldLabel>Vehicle Details *</FieldLabel>
                               <input
                                 value={vehicle.vehicle_details}
@@ -923,10 +1195,10 @@ function CreateIncidentModal({
                                 onChange={(event) => updateCivilianVehicle(index, "driver_unknown", event.target.checked)}
                                 className="h-4 w-4 rounded border-slate-300 text-blue-600"
                               />
-                              Civilian driver unknown
+                              Civilian driver / rider unknown
                             </label>
                             <div>
-                              <FieldLabel>Driver ID No</FieldLabel>
+                              <FieldLabel>Driver / Rider ID No</FieldLabel>
                               <input
                                 value={vehicle.driver_identifier}
                                 onChange={(event) => updateCivilianVehicle(index, "driver_identifier", event.target.value)}
@@ -934,8 +1206,17 @@ function CreateIncidentModal({
                                 disabled={Boolean(vehicle.driver_unknown)}
                               />
                             </div>
+                            <div>
+                              <FieldLabel>Driving Licence No</FieldLabel>
+                              <input
+                                value={vehicle.driver_license_no}
+                                onChange={(event) => updateCivilianVehicle(index, "driver_license_no", event.target.value)}
+                                className={FORM_INPUT}
+                                disabled={Boolean(vehicle.driver_unknown)}
+                              />
+                            </div>
                             <div className="md:col-span-2">
-                              <FieldLabel>Driver Name</FieldLabel>
+                              <FieldLabel>Driver / Rider Name</FieldLabel>
                               <input
                                 value={vehicle.driver_name}
                                 onChange={(event) => updateCivilianVehicle(index, "driver_name", event.target.value)}
@@ -951,7 +1232,7 @@ function CreateIncidentModal({
                 </div>
 
                 <div>
-                  <FieldLabel>Yankee Count</FieldLabel>
+                  <FieldLabel>Yankee (Injured) Count</FieldLabel>
                   <input
                     type="number"
                     min="0"
@@ -963,7 +1244,7 @@ function CreateIncidentModal({
                   />
                 </div>
                 <div>
-                  <FieldLabel>Zulu Count</FieldLabel>
+                  <FieldLabel>Zulu (Dead) Count</FieldLabel>
                   <input
                     type="number"
                     min="0"
@@ -989,7 +1270,7 @@ function CreateIncidentModal({
                       return (
                         <div key={index} className="rounded-lg border border-slate-200 bg-white p-3">
                           <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                            {isZulu ? "Zulu" : "Yankee"} #{index + 1}
+                            {isZulu ? "Zulu (Dead)" : "Yankee (Injured)"} #{index + 1}
                           </p>
                           <div className="grid gap-3 md:grid-cols-3">
                             <div>
@@ -1740,7 +2021,7 @@ export default function Incidents({ user }) {
         ) : (
           <div className="overflow-x-auto">
             {viewMode === VIEW_RTA ? (
-              <table className="w-full min-w-[1440px] text-sm">
+              <table className="w-full min-w-[1580px] text-sm">
                 <thead>
                   <tr className="border-b border-gray-700 text-xs uppercase tracking-wider text-gray-500">
                     {canCompileMorningBrief && (
@@ -1759,7 +2040,8 @@ export default function Incidents({ user }) {
                     <th className="px-4 py-3 text-left font-medium">Place</th>
                     <th className="px-4 py-3 text-left font-medium">Date</th>
                     <th className="px-4 py-3 text-left font-medium">Time</th>
-                    <th className="px-4 py-3 text-left font-medium">Service Vehicle</th>
+                    <th className="px-4 py-3 text-left font-medium">Service / Member Vehicle</th>
+                    <th className="px-4 py-3 text-left font-medium">Yankee / Zulu</th>
                     <th className="px-4 py-3 text-left font-medium">Unit</th>
                     <th className="px-4 py-3 text-left font-medium">Originating Sub-Unit</th>
                     <th className="px-4 py-3 text-left font-medium">History Of the Accident</th>
@@ -1788,7 +2070,8 @@ export default function Incidents({ user }) {
                       <td className="max-w-[160px] px-4 py-3 text-gray-300">{textOrDash(incident.location)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-gray-300">{formatDate(incident.date_occurred)}</td>
                       <td className="whitespace-nowrap px-4 py-3 text-gray-300">{formatTime(incident.date_occurred)}</td>
-                      <td className="max-w-[180px] px-4 py-3 text-gray-300">{rtaServiceVehicleDisplay(incident.service_vehicle)}</td>
+                      <td className="max-w-[180px] whitespace-pre-wrap px-4 py-3 text-gray-300">{rtaVehicleRegisterDisplay(incident)}</td>
+                      <td className="max-w-[260px] whitespace-pre-wrap px-4 py-3 text-gray-300">{rtaCasualtyDisplay(incident)}</td>
                       <td className="max-w-[180px] px-4 py-3 text-gray-300">{textOrDash(incident.unit_involved)}</td>
                       <td className="max-w-[180px] px-4 py-3 text-gray-300">{textOrDash(incident.originating_unit)}</td>
                       <td className="max-w-[300px] whitespace-pre-wrap px-4 py-3 text-gray-300">{textOrDash(incident.history || incident.description)}</td>

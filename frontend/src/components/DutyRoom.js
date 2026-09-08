@@ -293,6 +293,18 @@ const INJURY_SEVERITIES = [
   ["serious", "Serious"],
   ["critical", "Critical"],
 ];
+const RTA_VEHICLE_OWNERS = [
+  ["service", "Official Service Vehicle"],
+  ["service_member_personal", "Service Member Personal Vehicle"],
+  ["civilian", "Civilian Vehicle"],
+];
+const RTA_VEHICLE_BODY_TYPES = [
+  ["motor_vehicle", "Motor Vehicle"],
+  ["motorcycle", "Motorcycle"],
+  ["truck", "Truck"],
+  ["bus", "Bus"],
+  ["other", "Other"],
+];
 
 const RANK_OPTIONS = [
   "General",
@@ -338,10 +350,12 @@ function injurySeverityLabel(value) {
 function emptyRtaVehicle() {
   return {
     vehicle_type: "service",
+    vehicle_body_type: "motor_vehicle",
     vehicle_details: "",
     driver_person_type: "service",
     driver_unknown: false,
     driver_identifier: "",
+    driver_license_no: "",
     driver_rank: "",
     driver_name: "",
     driver_unit: "",
@@ -362,14 +376,22 @@ function emptyRtaCasualty(status = "injured") {
 }
 
 function cleanRtaVehicle(vehicle) {
-  const driverPersonType = vehicle.driver_person_type || "service";
+  const vehicleOwner = RTA_VEHICLE_OWNERS.some(([value]) => value === vehicle.vehicle_type)
+    ? vehicle.vehicle_type
+    : "service";
+  const vehicleBodyType = RTA_VEHICLE_BODY_TYPES.some(([value]) => value === vehicle.vehicle_body_type)
+    ? vehicle.vehicle_body_type
+    : "motor_vehicle";
+  const driverPersonType = vehicle.driver_person_type || (vehicleOwner === "civilian" ? "civilian" : "service");
   const driverUnknown = driverPersonType === "civilian" && Boolean(vehicle.driver_unknown);
   return {
-    vehicle_type: vehicle.vehicle_type || "service",
+    vehicle_type: vehicleOwner,
+    vehicle_body_type: vehicleBodyType,
     vehicle_details: String(vehicle.vehicle_details || "").trim(),
     driver_person_type: driverPersonType,
     driver_unknown: driverUnknown,
     driver_identifier: driverUnknown ? "Unknown" : String(vehicle.driver_identifier || "").trim(),
+    driver_license_no: driverUnknown || driverPersonType !== "civilian" ? "" : String(vehicle.driver_license_no || "").trim(),
     driver_rank: driverPersonType === "civilian" ? "" : String(vehicle.driver_rank || "").trim(),
     driver_name: driverUnknown ? "Unknown" : String(vehicle.driver_name || "").trim(),
     driver_unit: driverPersonType === "civilian" ? "" : String(vehicle.driver_unit || "").trim(),
@@ -394,8 +416,35 @@ function cleanRtaCasualty(casualty) {
 
 function hasVehicleData(vehicle) {
   const cleaned = cleanRtaVehicle(vehicle);
-  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_rank", "driver_name", "driver_unit"]
+  return cleaned.driver_unknown || ["vehicle_details", "driver_identifier", "driver_license_no", "driver_rank", "driver_name", "driver_unit"]
     .some((field) => String(cleaned[field] || "").trim());
+}
+
+function vehicleBodyLabel(value) {
+  return RTA_VEHICLE_BODY_TYPES.find(([type]) => type === value)?.[1] || "Motor Vehicle";
+}
+
+function vehicleTypeDescription(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  if (cleaned.vehicle_type === "service_member_personal") {
+    return `Service member personal ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+  }
+  if (cleaned.vehicle_type === "civilian") {
+    return `Civilian ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+  }
+  return `Official service ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}`;
+}
+
+function vehicleRegisterLabel(vehicle) {
+  const cleaned = cleanRtaVehicle(vehicle);
+  if (!cleaned.vehicle_details) return "";
+  if (cleaned.vehicle_type === "service_member_personal") {
+    return `Personal ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}: ${cleaned.vehicle_details}`;
+  }
+  if (cleaned.vehicle_type === "civilian") {
+    return `Civilian ${vehicleBodyLabel(cleaned.vehicle_body_type).toLowerCase()}: ${cleaned.vehicle_details}`;
+  }
+  return cleaned.vehicle_details;
 }
 
 function safeRtaCount(value) {
@@ -442,6 +491,7 @@ function personLabel(person, identifierLabel = "Svc/ID") {
   if (person.is_unknown || person.driver_unknown) return "Unknown civilian";
   const parts = [
     person.identifier ? `${identifierLabel}: ${person.identifier}` : "",
+    person.driver_license_no ? `DL No: ${person.driver_license_no}` : "",
     person.rank,
     person.name,
     person.unit ? `Unit: ${person.unit}` : "",
@@ -462,25 +512,26 @@ function serviceMemberSummary(form) {
 
 function vehicleSummary(vehicle, index) {
   const cleaned = cleanRtaVehicle(vehicle);
-  const typeLabel = cleaned.vehicle_type === "civilian" ? "Civilian vehicle" : "Service vehicle";
   const driverLabel = personLabel({
     identifier: cleaned.driver_identifier,
+    driver_license_no: cleaned.driver_license_no,
     rank: cleaned.driver_rank,
     name: cleaned.driver_name,
     unit: cleaned.driver_unit,
     driver_unknown: cleaned.driver_unknown,
   }, cleaned.driver_person_type === "civilian" ? "ID No" : "Svc No");
-  return `${index + 1}. ${typeLabel}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver: ${driverLabel}` : ""}`;
+  return `${index + 1}. ${vehicleTypeDescription(cleaned)}: ${cleaned.vehicle_details || "Not specified"}${driverLabel ? `; Driver/Rider: ${driverLabel}` : ""}`;
 }
 
 function casualtySummary(casualty, index) {
   const cleaned = cleanRtaCasualty(casualty);
-  const statusLabel = cleaned.casualty_status === "dead" ? "Dead" : "Injured";
+  const statusLabel = cleaned.casualty_status === "dead" ? "Zulu (Dead)" : "Yankee (Injured)";
+  const personType = cleaned.person_type === "civilian" ? "Civilian" : "Service member";
   const person = personLabel(cleaned, cleaned.person_type === "civilian" ? "ID No" : "Svc No");
   const severity = cleaned.casualty_status === "injured" && cleaned.injury_severity
     ? `; Severity: ${injurySeverityLabel(cleaned.injury_severity)}`
     : "";
-  return `${index + 1}. ${statusLabel}: ${person || "Details not specified"}${severity}`;
+  return `${index + 1}. ${statusLabel} - ${personType}: ${person || "Details not specified"}${severity}`;
 }
 
 function buildRtaDescription(form) {
@@ -488,11 +539,11 @@ function buildRtaDescription(form) {
   const casualties = toArray(form.rta_casualties).map(cleanRtaCasualty);
   const sections = [
     `${roadTrafficTypeLabel(form.road_traffic_type) || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
-    `Personnel injured: ${countLabel(form.injured_count)}. Personnel dead: ${countLabel(form.dead_count)}.`,
+    `Yankee (injured): ${countLabel(form.injured_count)}. Zulu (dead): ${countLabel(form.dead_count)}.`,
   ];
   if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
   if (vehicles.length) sections.push(`Vehicles / drivers:\n${vehicles.map(vehicleSummary).join("\n")}`);
-  if (casualties.length) sections.push(`Onboard personnel / casualties:\n${casualties.map(casualtySummary).join("\n")}`);
+  if (casualties.length) sections.push(`Yankee / Zulu details:\n${casualties.map(casualtySummary).join("\n")}`);
   if (form.history) sections.push(`History: ${form.history}`);
   if (form.damages) sections.push(`Damages: ${form.damages}`);
   if (form.how_occurred) sections.push(`How the accident occurred: ${form.how_occurred}`);
@@ -976,12 +1027,26 @@ export default function DutyRoom({ user }) {
       rta_vehicles: prev.rta_vehicles.map((vehicle, vehicleIndex) => {
         if (vehicleIndex !== index) return vehicle;
         const next = { ...vehicle, [field]: value };
+        if (field === "vehicle_type") {
+          if (value === "civilian") {
+            next.driver_person_type = "civilian";
+            next.driver_rank = "";
+            next.driver_unit = "";
+          } else if (next.driver_person_type === "civilian") {
+            next.driver_person_type = "service";
+            next.driver_unknown = false;
+            next.driver_license_no = "";
+            if (next.driver_identifier === "Unknown") next.driver_identifier = "";
+            if (next.driver_name === "Unknown") next.driver_name = "";
+          }
+        }
         if (field === "driver_person_type" && value === "civilian") {
           next.driver_rank = "";
           next.driver_unit = "";
         }
         if (field === "driver_person_type" && value === "service") {
           next.driver_unknown = false;
+          next.driver_license_no = "";
           if (next.driver_identifier === "Unknown") next.driver_identifier = "";
           if (next.driver_name === "Unknown") next.driver_name = "";
         }
@@ -991,9 +1056,11 @@ export default function DutyRoom({ user }) {
           next.driver_unit = "";
           if (value) {
             next.driver_identifier = "Unknown";
+            next.driver_license_no = "";
             next.driver_name = "Unknown";
           } else {
             next.driver_identifier = "";
+            next.driver_license_no = "";
             next.driver_name = "";
           }
         }
@@ -1509,19 +1576,27 @@ export default function DutyRoom({ user }) {
         setError("Add at least one vehicle and driver entry for the road traffic accident.");
         return;
       }
+      if (!cleanedVehicles.some((vehicle) => vehicle.vehicle_type !== "civilian")) {
+        setError("Add at least one official service vehicle or service member personal vehicle.");
+        return;
+      }
+      if (cleanedVehicles.some((vehicle) => !vehicle.vehicle_details)) {
+        setError("Enter the vehicle registration or description for every RTA vehicle.");
+        return;
+      }
       if (
         payload.road_traffic_type === "non_injury" &&
-        !cleanedVehicles.some((vehicle) => vehicle.driver_unknown || vehicle.driver_identifier || vehicle.driver_name)
+        !cleanedVehicles.some((vehicle) => vehicle.driver_unknown || vehicle.driver_identifier || vehicle.driver_license_no || vehicle.driver_name)
       ) {
-        setError("Capture driver details for a Non-Injury Road Traffic Accident.");
+        setError("Capture driver/rider details or driving licence no for a Non-Injury Road Traffic Accident.");
         return;
       }
       if (isInjuryRoadTrafficType(payload.road_traffic_type) && injuredCount < 1) {
-        setError("Enter the number of injured personnel for an Injury Road Traffic Accident.");
+        setError("Enter the Yankee count for an Injury Road Traffic Accident.");
         return;
       }
       if (isFatalRoadTrafficType(payload.road_traffic_type) && deadCount < 1) {
-        setError("Enter the number of dead personnel for a Fatal Road Traffic Accident.");
+        setError("Enter the Zulu count for a Fatal Road Traffic Accident.");
         return;
       }
       if (!String(payload.history || "").trim()) {
@@ -1533,7 +1608,7 @@ export default function DutyRoom({ user }) {
         return;
       }
       if (casualtyMissingSeverity) {
-        setError("Select injury severity for every injured onboard person.");
+        setError("Select injury severity for every Yankee entry.");
         return;
       }
       payload.injured_count = injuredCount;
@@ -1542,8 +1617,9 @@ export default function DutyRoom({ user }) {
       payload.rta_casualties = cleanedCasualties;
       payload.injury_severity = cleanedCasualties.find((casualty) => casualty.casualty_status === "injured")?.injury_severity || "";
       payload.service_vehicle = cleanedVehicles
-        .filter((vehicle) => vehicle.vehicle_type === "service")
-        .map((vehicle, index) => vehicleSummary(vehicle, index))
+        .filter((vehicle) => vehicle.vehicle_type !== "civilian")
+        .map(vehicleRegisterLabel)
+        .filter(Boolean)
         .join("\n");
       payload.civilian = cleanedVehicles
         .filter((vehicle) => vehicle.vehicle_type === "civilian")
@@ -1558,13 +1634,13 @@ export default function DutyRoom({ user }) {
             unit: vehicle.driver_unit,
             driver_unknown: vehicle.driver_unknown,
           }, vehicle.driver_person_type === "civilian" ? "ID No" : "Svc No");
-          return driver ? `Driver: ${driver}` : "";
+          return driver ? `Driver/Rider: ${driver}` : "";
         })
         .filter(Boolean)
         .join("\n");
       payload.injuries = cleanedCasualties.length
         ? cleanedCasualties.map(casualtySummary).join("\n")
-        : `Personnel injured: ${countLabel(payload.injured_count)}. Personnel dead: ${countLabel(payload.dead_count)}.`;
+        : `Yankee (injured): ${countLabel(payload.injured_count)}. Zulu (dead): ${countLabel(payload.dead_count)}.`;
       payload.description = buildRtaDescription(payload);
       payload.requires_investigation = true;
       payload.incident_title = roadTrafficTypeLabel(payload.road_traffic_type);
@@ -2234,7 +2310,7 @@ export default function DutyRoom({ user }) {
                     </select>
                   </Field>
                   {showRtaInjuredCount && (
-                    <Field label="Number Injured">
+                    <Field label="Yankee (Injured) Count">
                       <input
                         type="number"
                         min={isInjuryRoadTrafficType(entryForm.road_traffic_type) ? "1" : "0"}
@@ -2255,7 +2331,7 @@ export default function DutyRoom({ user }) {
                     </Field>
                   )}
                   {showRtaDeadCount && (
-                    <Field label="Number Dead">
+                    <Field label="Zulu (Dead) Count">
                       <input
                         type="number"
                         min={isFatalRoadTrafficType(entryForm.road_traffic_type) ? "1" : "0"}
@@ -2385,16 +2461,29 @@ export default function DutyRoom({ user }) {
                               </button>
                             )}
                           </div>
-                          <div className="grid gap-3 md:grid-cols-3">
-                            <Field label="Vehicle Type">
+                          <div className="grid gap-3 md:grid-cols-4">
+                            <Field label="Ownership">
                               <select
                                 value={vehicle.vehicle_type}
                                 onChange={(event) => updateRtaVehicle(index, "vehicle_type", event.target.value)}
                                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                                 disabled={!activeDuty?.can_record_ob}
                               >
-                                <option value="service">Service Vehicle</option>
-                                <option value="civilian">Civilian Vehicle</option>
+                                {RTA_VEHICLE_OWNERS.map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="Vehicle Category">
+                              <select
+                                value={vehicle.vehicle_body_type || "motor_vehicle"}
+                                onChange={(event) => updateRtaVehicle(index, "vehicle_body_type", event.target.value)}
+                                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                disabled={!activeDuty?.can_record_ob}
+                              >
+                                {RTA_VEHICLE_BODY_TYPES.map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
                               </select>
                             </Field>
                             <Field label="Vehicle Details">
@@ -2403,10 +2492,10 @@ export default function DutyRoom({ user }) {
                                 onChange={(event) => updateRtaVehicle(index, "vehicle_details", event.target.value)}
                                 className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                                 disabled={!activeDuty?.can_record_ob}
-                                placeholder="Reg no, make, call sign"
+                                placeholder={vehicle.vehicle_body_type === "motorcycle" ? "Motorcycle reg, make, or description" : "Reg no, make, call sign"}
                               />
                             </Field>
-                            <Field label="Driver Type">
+                            <Field label="Driver / Rider Type">
                               <select
                                 value={vehicle.driver_person_type}
                                 onChange={(event) => updateRtaVehicle(index, "driver_person_type", event.target.value)}
@@ -2426,10 +2515,10 @@ export default function DutyRoom({ user }) {
                                   disabled={!activeDuty?.can_record_ob}
                                   className="h-4 w-4 rounded border-slate-300 text-blue-600"
                                 />
-                                Civilian driver unknown
+                                Civilian driver / rider unknown
                               </label>
                             )}
-                            <Field label={vehicle.driver_person_type === "civilian" ? "Driver ID No" : "Driver Service No"}>
+                            <Field label={vehicle.driver_person_type === "civilian" ? "Driver / Rider ID No" : "Driver / Rider Service No"}>
                               <input
                                 value={vehicle.driver_identifier}
                                 onChange={(event) => updateRtaVehicle(index, "driver_identifier", event.target.value)}
@@ -2437,7 +2526,17 @@ export default function DutyRoom({ user }) {
                                 disabled={!activeDuty?.can_record_ob || Boolean(vehicle.driver_unknown)}
                               />
                             </Field>
-                            <Field label="Driver Rank">
+                            {vehicle.driver_person_type === "civilian" && (
+                              <Field label="Driving Licence No">
+                                <input
+                                  value={vehicle.driver_license_no || ""}
+                                  onChange={(event) => updateRtaVehicle(index, "driver_license_no", event.target.value)}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                  disabled={!activeDuty?.can_record_ob || Boolean(vehicle.driver_unknown)}
+                                />
+                              </Field>
+                            )}
+                            <Field label="Driver / Rider Rank">
                               <select
                                 value={vehicle.driver_rank}
                                 onChange={(event) => updateRtaVehicle(index, "driver_rank", event.target.value)}
@@ -2450,7 +2549,7 @@ export default function DutyRoom({ user }) {
                                 ))}
                               </select>
                             </Field>
-                            <Field label="Driver Name">
+                            <Field label="Driver / Rider Name">
                               <input
                                 value={vehicle.driver_name}
                                 onChange={(event) => updateRtaVehicle(index, "driver_name", event.target.value)}
@@ -2458,7 +2557,7 @@ export default function DutyRoom({ user }) {
                                 disabled={!activeDuty?.can_record_ob || Boolean(vehicle.driver_unknown)}
                               />
                             </Field>
-                            <Field label="Driver Unit">
+                            <Field label="Driver / Rider Unit">
                               <UnitAutocompleteInput
                                 value={vehicle.driver_unit}
                                 onChange={(value) => updateRtaVehicle(index, "driver_unit", value)}
@@ -2476,8 +2575,8 @@ export default function DutyRoom({ user }) {
                     <div className="space-y-3 rounded-lg border border-slate-200 bg-white p-3 md:col-span-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Onboard Personnel / Casualties</h4>
-                          <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above. Mark unknown civilians where details are not available.</p>
+                          <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">Yankee / Zulu Details</h4>
+                          <p className="mt-1 text-xs text-slate-500">Rows are generated from the injured and dead counts above. Select service member or civilian for each person.</p>
                         </div>
                       </div>
                       {entryForm.rta_casualties.length === 0 ? (
@@ -2490,7 +2589,7 @@ export default function DutyRoom({ user }) {
                           <div key={index} className="rounded-md border border-slate-200 bg-slate-50 p-3">
                             <div className="mb-2 flex items-center justify-between">
                               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                {status === "dead" ? "Dead person" : "Injured person"} #{index + 1}
+                                {status === "dead" ? "Zulu (Dead)" : "Yankee (Injured)"} #{index + 1}
                               </p>
                             </div>
                             <div className="grid gap-3 md:grid-cols-3">
