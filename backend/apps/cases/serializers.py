@@ -739,17 +739,24 @@ class CaseSerializer(serializers.ModelSerializer):
 
     def _validate_required_create_fields(self, attrs):
         errors = {}
+        is_rta_case = self._is_rta_case(
+            attrs,
+            None,
+            attrs.get("offence_ref"),
+            attrs.get("offence", ""),
+        )
 
         if not attrs.get("offence_ref") and self._blank(attrs.get("offence")):
             errors["offence"] = "Offence is required."
-        if not attrs.get("offence_type"):
-            errors["offence_type"] = "Offence type is required."
-        if attrs.get("offence_type") == Case.OffenceType.SERVICE and not attrs.get("service_offence_severity"):
-            errors["service_offence_severity"] = "Severity is required for service offences."
-        if attrs.get("offence_type") == Case.OffenceType.CRIMINAL and not attrs.get("criminal_offence_type"):
-            errors["criminal_offence_type"] = "Criminal offence type is required."
-        if not attrs.get("submitting_unit"):
-            errors["submitting_unit"] = "Submitting unit is required."
+        if not is_rta_case:
+            if not attrs.get("offence_type"):
+                errors["offence_type"] = "Offence type is required."
+            if attrs.get("offence_type") == Case.OffenceType.SERVICE and not attrs.get("service_offence_severity"):
+                errors["service_offence_severity"] = "Severity is required for service offences."
+            if attrs.get("offence_type") == Case.OffenceType.CRIMINAL and not attrs.get("criminal_offence_type"):
+                errors["criminal_offence_type"] = "Criminal offence type is required."
+            if not attrs.get("submitting_unit"):
+                errors["submitting_unit"] = "Submitting unit is required."
         if not attrs.get("date_of_offence"):
             errors["date_of_offence"] = "Date of offence is required."
         if self._blank(attrs.get("place_of_offence")):

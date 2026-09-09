@@ -184,20 +184,26 @@ class IncidentViewSet(viewsets.ModelViewSet):
         if not str(payload.get("offence") or "").strip() and not payload.get("offence_ref"):
             errors["offence"] = "Offence is required."
 
-        offence_type = payload.get("offence_type")
-        if offence_type not in {Case.OffenceType.SERVICE, Case.OffenceType.CRIMINAL}:
-            errors["offence_type"] = "Select whether this is a service offence or criminal offence."
-        elif offence_type == Case.OffenceType.SERVICE and not payload.get("service_offence_severity"):
-            errors["service_offence_severity"] = "Select service offence severity."
-        elif offence_type == Case.OffenceType.CRIMINAL:
-            criminal_offence_type = payload.get("criminal_offence_type")
-            if not criminal_offence_type:
-                errors["criminal_offence_type"] = "Select criminal offence type."
-            elif (
-                criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
-                and not str(payload.get("police_station") or "").strip()
-            ):
-                errors["police_station"] = "Police Station / OB Ref is required for DCI / Civ Police cases."
+        is_rta_case = (
+            payload.get("case_type") == Case.CaseType.RTA
+            or "road traffic accident" in str(payload.get("offence") or "").lower()
+            or "road traffic accident" in str(payload.get("title") or "").lower()
+        )
+        if not is_rta_case:
+            offence_type = payload.get("offence_type")
+            if offence_type not in {Case.OffenceType.SERVICE, Case.OffenceType.CRIMINAL}:
+                errors["offence_type"] = "Select whether this is a service offence or criminal offence."
+            elif offence_type == Case.OffenceType.SERVICE and not payload.get("service_offence_severity"):
+                errors["service_offence_severity"] = "Select service offence severity."
+            elif offence_type == Case.OffenceType.CRIMINAL:
+                criminal_offence_type = payload.get("criminal_offence_type")
+                if not criminal_offence_type:
+                    errors["criminal_offence_type"] = "Select criminal offence type."
+                elif (
+                    criminal_offence_type == Case.CriminalOffenceType.DCI_CIV
+                    and not str(payload.get("police_station") or "").strip()
+                ):
+                    errors["police_station"] = "Police Station / OB Ref is required for DCI / Civ Police cases."
 
         return errors
 

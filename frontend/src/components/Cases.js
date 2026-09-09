@@ -776,9 +776,11 @@ function validateCaseClassification(form) {
 }
 
 function validateIncidentSourceCase(form, sourceForm, source) {
-  const classificationError = validateCaseClassification(form);
+  const classificationError = source === CASE_SOURCE_RTA ? "" : validateCaseClassification(form);
   if (classificationError) return classificationError;
   if (
+    source !== CASE_SOURCE_RTA
+    &&
     form.offence_type === "criminal_offence"
     && form.criminal_offence_type === "dci_civ_police"
     && isBlank(sourceForm.police_ob_reference)
@@ -861,16 +863,12 @@ function buildSourceCasePayload(form, sourceForm, source) {
     ? firstServiceDriver?.driver_name || ""
     : sourceForm.service_member_name || "";
 
-  return {
+  const payload = {
     case_type: source === CASE_SOURCE_RTA
       ? RTA_CASE_TYPE
       : (source === CASE_SOURCE_INCIDENT ? "incident" : CASE_SOURCE_RFI),
     title: sourceOffence,
     offence: form.offence || sourceOffence,
-    offence_type: form.offence_type,
-    service_offence_severity: form.service_offence_severity,
-    criminal_offence_type: form.criminal_offence_type,
-    submitting_unit: form.submitting_unit,
     date_of_offence: occurredDateApi,
     place_of_offence: sourceForm.place,
     description,
@@ -880,6 +878,15 @@ function buildSourceCasePayload(form, sourceForm, source) {
     police_station: sourceForm.police_ob_reference || "",
     rta_service_vehicle_damaged: source === CASE_SOURCE_RTA && isRtaServiceVehicleDamaged(sourceForm),
   };
+
+  if (source !== CASE_SOURCE_RTA) {
+    payload.offence_type = form.offence_type;
+    payload.service_offence_severity = form.service_offence_severity;
+    payload.criminal_offence_type = form.criminal_offence_type;
+    payload.submitting_unit = form.submitting_unit;
+  }
+
+  return payload;
 }
 
 function sourceIncidentType(sourceForm, source) {
@@ -1937,6 +1944,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [createSaving, setCreateSaving] = useState(false);
   const [createErr, setCreateErr]     = useState("");
   const [postCreateTaskPrompt, setPostCreateTaskPrompt] = useState(null);
+  const [discardCreateConfirmOpen, setDiscardCreateConfirmOpen] = useState(false);
 
   // Task form
   const [showTask, setShowTask]       = useState(false);
@@ -2222,6 +2230,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   function closeCaseForm() {
+    setDiscardCreateConfirmOpen(false);
     setShowCreate(false);
     setCreateErr("");
     setCreateForm(INIT_CREATE);
@@ -2229,6 +2238,32 @@ export default function Cases({ user, criminalTypeFilter }) {
     setSourceCaseForm(emptyIncidentCaseForm());
     setCaseFormMode("create");
     setPostCreateTaskPrompt(null);
+  }
+
+  function createFormHasDraft() {
+    if (caseFormMode === "edit") return true;
+    if (caseSource) return true;
+    const accusedHasDraft = toArray(createForm.accused_entries).some((entry) =>
+      Object.values(entry || {}).some((value) => !isBlank(value))
+    );
+    return Object.entries(createForm).some(([field, value]) => {
+      if (field === "accused_entries") return accusedHasDraft;
+      if (field === "rfi_document") return Boolean(value);
+      return !isBlank(value);
+    });
+  }
+
+  function requestCloseCaseForm() {
+    if (createSaving) return;
+    if (createFormHasDraft()) {
+      setDiscardCreateConfirmOpen(true);
+      return;
+    }
+    closeCaseForm();
+  }
+
+  function confirmDiscardCaseForm() {
+    closeCaseForm();
   }
 
   function chooseCaseSource(source) {
@@ -5540,14 +5575,14 @@ export default function Cases({ user, criminalTypeFilter }) {
       {showCreate && (
         <div
           className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4"
-          onClick={closeCaseForm}
         >
           <div
             className="w-full max-w-4xl bg-white rounded-2xl p-6 space-y-4 relative text-slate-900 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              onClick={closeCaseForm}
+              type="button"
+              onClick={requestCloseCaseForm}
               className="absolute top-4 right-4 text-slate-500 hover:text-slate-900 transition-colors"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -5601,25 +5636,13 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </div>
               )}
 
-              {activeCaseSource && !creatingFromRfi && (
+              {activeCaseSource && !creatingFromRfi && !creatingFromRta && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <CaseFormSectionLabel>Case classification</CaseFormSectionLabel>
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                     <div className="md:col-span-2">
-                      <CaseFormLabel>Offence{creatingFromRta ? " *" : ""}</CaseFormLabel>
-                      {creatingFromRta ? (
-                        <select
-                          value={sourceCaseForm.road_traffic_type}
-                          onChange={(e) => updateRoadTrafficType(e.target.value)}
-                          required
-                          className={CASE_FORM_CONTROL}
-                        >
-                          <option value="">Select road traffic accident type...</option>
-                          {ROAD_TRAFFIC_TYPES.map(([value, label]) => (
-                            <option key={value} value={value}>{label}</option>
-                          ))}
-                        </select>
-                      ) : offences.length > 0 ? (
+                      <CaseFormLabel>Offence</CaseFormLabel>
+                      {offences.length > 0 ? (
                         <select
                           value={createForm.offence_ref}
                           onChange={(e) => {
@@ -6565,7 +6588,7 @@ export default function Cases({ user, criminalTypeFilter }) {
               <div className="flex gap-3 justify-end pt-1">
                 <button
                   type="button"
-                  onClick={closeCaseForm}
+                  onClick={requestCloseCaseForm}
                   className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-sm transition-colors"
                 >
                   Cancel
@@ -6583,6 +6606,19 @@ export default function Cases({ user, criminalTypeFilter }) {
             </form>
           </div>
         </div>
+      )}
+
+      {discardCreateConfirmOpen && (
+        <ActionModal
+          eyebrow="Unsaved case"
+          title="Discard this case form?"
+          message="You have entered details that have not been saved. Keep editing to return to the form."
+          confirmLabel="Discard form"
+          cancelLabel="Keep editing"
+          tone="amber"
+          onCancel={() => setDiscardCreateConfirmOpen(false)}
+          onConfirm={confirmDiscardCaseForm}
+        />
       )}
 
       {caseDeleteTarget && (
