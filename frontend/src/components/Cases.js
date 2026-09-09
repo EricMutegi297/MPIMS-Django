@@ -108,6 +108,7 @@ function caseDateValues(caseObj) {
     caseObj?.mentioning_date,
     caseObj?.rfi_date,
     caseObj?.investigation_deadline,
+    caseObj?.source_incident_date,
   ].map(normalizeDateForApi).filter(Boolean);
 }
 
@@ -133,6 +134,84 @@ function caseUnitLabel(caseObj) {
   ].filter(Boolean).join("; ");
 }
 
+function rtaSourceVehicles(caseObj) {
+  return toArray(caseObj?.source_incident_rta_vehicles).map(cleanRtaVehicle);
+}
+
+function rtaFirstServiceDriver(caseObj) {
+  return rtaSourceVehicles(caseObj).find((vehicle) =>
+    vehicle.driver_person_type === "service"
+    && (vehicle.driver_identifier || vehicle.driver_rank || vehicle.driver_name || vehicle.driver_unit)
+  );
+}
+
+function descriptionSection(text, label) {
+  const raw = String(text || "");
+  if (!raw) return "";
+  const marker = raw.toLowerCase().indexOf(label.toLowerCase());
+  if (marker < 0) return "";
+  const afterMarker = raw.slice(marker + label.length).replace(/^[:\s]+/, "");
+  const nextSection = afterMarker.search(/\n{2,}[A-Z][^:\n]{2,80}:\s*/);
+  return (nextSection >= 0 ? afterMarker.slice(0, nextSection) : afterMarker).trim();
+}
+
+function rtaCaseServiceNumber(caseObj) {
+  return rtaFirstServiceDriver(caseObj)?.driver_identifier || caseObj?.accused_service_number || "";
+}
+
+function rtaCaseRank(caseObj) {
+  return rtaFirstServiceDriver(caseObj)?.driver_rank || caseObj?.accused_rank || "";
+}
+
+function rtaCaseAccused(caseObj) {
+  return rtaFirstServiceDriver(caseObj)?.driver_name || caseObj?.accused_name || "";
+}
+
+function rtaCaseUnit(caseObj) {
+  return (
+    caseObj?.source_incident_unit
+    || rtaFirstServiceDriver(caseObj)?.driver_unit
+    || accusedUnitLabel(caseObj)
+    || caseObj?.submitting_unit_name
+    || ""
+  );
+}
+
+function rtaCaseOffence(caseObj) {
+  return roadTrafficLabelFromText(
+    caseObj?.source_incident_type
+    || caseObj?.offence_name
+    || caseObj?.offence
+    || caseObj?.title
+    || ""
+  );
+}
+
+function rtaCasePlace(caseObj) {
+  return caseObj?.source_incident_place || caseObj?.place_of_offence || "";
+}
+
+function rtaCaseTime(caseObj) {
+  return caseObj?.source_incident_time || "";
+}
+
+function rtaCaseHistory(caseObj) {
+  return (
+    caseObj?.source_incident_history
+    || descriptionSection(caseObj?.description, "History of the accident")
+    || caseObj?.description
+    || ""
+  );
+}
+
+function rtaCaseHowOccurred(caseObj) {
+  return caseObj?.source_incident_how_occurred || descriptionSection(caseObj?.description, "How the accident occurred") || "";
+}
+
+function rtaCaseOriginatingUnit(caseObj) {
+  return caseObj?.source_incident_originating_unit || caseObj?.tasked_detachment_name || "";
+}
+
 function caseSearchText(caseObj) {
   const accusedEntries = toArray(caseObj?.accused_entries).flatMap((entry) => [
     entry?.name,
@@ -150,6 +229,18 @@ function caseSearchText(caseObj) {
     caseObj?.offence,
     caseObj?.offence_name,
     caseObj?.description,
+    caseObj?.source_incident_number,
+    caseObj?.source_incident_type,
+    caseObj?.source_incident_place,
+    caseObj?.source_incident_unit,
+    caseObj?.source_incident_originating_unit,
+    caseObj?.source_incident_history,
+    caseObj?.source_incident_how_occurred,
+    rtaCaseOffence(caseObj),
+    rtaCasePlace(caseObj),
+    rtaCaseHistory(caseObj),
+    rtaCaseHowOccurred(caseObj),
+    rtaCaseOriginatingUnit(caseObj),
     caseObj?.place_of_offence,
     caseObj?.police_station,
     caseObj?.accused_name,
@@ -386,6 +477,11 @@ const INJURY_SEVERITIES = [
   ["serious", "Serious"],
   ["critical", "Critical"],
 ];
+const DRIVER_SERVICES = [
+  ["KA", "Kenya Army (KA)"],
+  ["KAF", "Kenya Air Force (KAF)"],
+  ["KN", "Kenya Navy (KN)"],
+];
 const RTA_VEHICLE_OWNERS = [
   ["service", "Official Service Vehicle"],
   ["service_member_personal", "Service Member Personal Vehicle"],
@@ -476,6 +572,21 @@ function roadTrafficTypeLabel(value) {
   return ROAD_TRAFFIC_TYPES.find(([type]) => type === value)?.[1] || "";
 }
 
+function driverServiceLabel(value) {
+  return DRIVER_SERVICES.find(([service]) => service === value)?.[1] || value || "";
+}
+
+function roadTrafficLabelFromText(value) {
+  const text = String(value || "").toLowerCase().replace(/[-_]+/g, " ");
+  if (!text) return "";
+  if (text.includes("non injury") || text.includes("noninjury")) return roadTrafficTypeLabel("non_injury");
+  if (text.includes("self involved")) return roadTrafficTypeLabel("self_involved");
+  if (text.includes("hit and run") || text.includes("hit run")) return roadTrafficTypeLabel("hit_and_run");
+  if (text.includes("fatal")) return roadTrafficTypeLabel("fatal");
+  if (text.includes("injury")) return roadTrafficTypeLabel("injury");
+  return value;
+}
+
 function detachmentOptionLabel(detachment) {
   const name = String(detachment?.name || "").trim();
   const company = detachment?.company ? `${detachment.company} Coy` : "Coy";
@@ -502,6 +613,7 @@ function emptyRtaVehicle() {
     vehicle_body_type: "motor_vehicle",
     vehicle_details: "",
     driver_person_type: "service",
+    driver_service: "",
     driver_unknown: false,
     driver_identifier: "",
     driver_license_no: "",
@@ -567,6 +679,7 @@ function cleanRtaVehicle(vehicle) {
     vehicle_body_type: vehicleBodyType,
     vehicle_details: String(vehicle.vehicle_details || "").trim(),
     driver_person_type: driverPersonType,
+    driver_service: driverPersonType === "civilian" ? "" : String(vehicle.driver_service || "").trim(),
     driver_unknown: driverUnknown,
     driver_identifier: driverUnknown ? "Unknown" : String(vehicle.driver_identifier || "").trim(),
     driver_license_no: driverUnknown || driverPersonType !== "civilian" ? "" : String(vehicle.driver_license_no || "").trim(),
@@ -628,6 +741,7 @@ function vehicleRegisterLabel(vehicle) {
 function driverSummary(vehicle, index) {
   const cleaned = cleanRtaVehicle(vehicle);
   const driverLabel = personLabel({
+    service: cleaned.driver_service,
     identifier: cleaned.driver_identifier,
     driver_license_no: cleaned.driver_license_no,
     rank: cleaned.driver_rank,
@@ -681,6 +795,7 @@ function countLabel(value) {
 function personLabel(person, identifierLabel = "Svc/ID") {
   if (person.is_unknown || person.driver_unknown) return "Unknown civilian";
   const parts = [
+    person.service ? `Service: ${driverServiceLabel(person.service)}` : "",
     person.identifier ? `${identifierLabel}: ${person.identifier}` : "",
     person.driver_license_no ? `DL No: ${person.driver_license_no}` : "",
     person.rank,
@@ -704,6 +819,7 @@ function sourceServiceMemberSummary(form) {
 function vehicleSummary(vehicle, index) {
   const cleaned = cleanRtaVehicle(vehicle);
   const driverLabel = personLabel({
+    service: cleaned.driver_service,
     identifier: cleaned.driver_identifier,
     driver_license_no: cleaned.driver_license_no,
     rank: cleaned.driver_rank,
@@ -815,6 +931,9 @@ function validateIncidentSourceCase(form, sourceForm, source) {
   if (cleanedVehicles.some((vehicle) => !vehicle.vehicle_details)) {
     return "Enter the vehicle registration or description for every RTA vehicle.";
   }
+  if (cleanedVehicles.some((vehicle) => vehicle.driver_person_type === "service" && !vehicle.driver_service)) {
+    return "Select driver/rider service for every service member driver or rider.";
+  }
   if (
     sourceForm.road_traffic_type === "non_injury"
     && !cleanedVehicles.some((vehicle) => vehicle.driver_unknown || vehicle.driver_identifier || vehicle.driver_license_no || vehicle.driver_name)
@@ -862,6 +981,9 @@ function buildSourceCasePayload(form, sourceForm, source) {
   const accusedName = source === CASE_SOURCE_RTA
     ? firstServiceDriver?.driver_name || ""
     : sourceForm.service_member_name || "";
+  const accusedService = source === CASE_SOURCE_RTA
+    ? firstServiceDriver?.driver_service || ""
+    : "";
 
   const payload = {
     case_type: source === CASE_SOURCE_RTA
@@ -875,6 +997,7 @@ function buildSourceCasePayload(form, sourceForm, source) {
     accused_service_number: accusedServiceNumber,
     accused_rank: accusedRank,
     accused_name: accusedName,
+    accused_service: accusedService,
     police_station: sourceForm.police_ob_reference || "",
     rta_service_vehicle_damaged: source === CASE_SOURCE_RTA && isRtaServiceVehicleDamaged(sourceForm),
   };
@@ -2315,10 +2438,12 @@ export default function Cases({ user, criminalTypeFilter }) {
         if (field === "vehicle_type") {
           if (value === "civilian") {
             next.driver_person_type = "civilian";
+            next.driver_service = "";
             next.driver_rank = "";
             next.driver_unit = "";
           } else if (next.driver_person_type === "civilian") {
             next.driver_person_type = "service";
+            next.driver_service = "";
             next.driver_unknown = false;
             next.driver_license_no = "";
             if (next.driver_identifier === "Unknown") next.driver_identifier = "";
@@ -2326,10 +2451,12 @@ export default function Cases({ user, criminalTypeFilter }) {
           }
         }
         if (field === "driver_person_type" && value === "civilian") {
+          next.driver_service = "";
           next.driver_rank = "";
           next.driver_unit = "";
         }
         if (field === "driver_person_type" && value === "service") {
+          next.driver_service = "";
           next.driver_unknown = false;
           next.driver_license_no = "";
           if (next.driver_identifier === "Unknown") next.driver_identifier = "";
@@ -2337,6 +2464,7 @@ export default function Cases({ user, criminalTypeFilter }) {
         }
         if (field === "driver_unknown") {
           next.driver_unknown = Boolean(value);
+          next.driver_service = "";
           next.driver_rank = "";
           next.driver_unit = "";
           if (value) {
@@ -3505,6 +3633,21 @@ export default function Cases({ user, criminalTypeFilter }) {
     "Closed Date",
     "Description",
   ];
+  const rtaCaseExportColumns = [
+    "Case #",
+    "Service No",
+    "Rank",
+    "Unit",
+    "Accused",
+    "Offence",
+    "Place",
+    "Time",
+    "History of the Accident",
+    "How the Accident Occurred",
+    "Originating Unit",
+    "Traffic Accident Report",
+    "Status",
+  ];
   const dciCaseExportColumns = [
     "Case #",
     "Service No",
@@ -3518,7 +3661,11 @@ export default function Cases({ user, criminalTypeFilter }) {
     "Update",
     "Status",
   ];
-  const caseExportColumns = isDciFilter ? dciCaseExportColumns : defaultCaseExportColumns;
+  const caseExportColumns = isRtaCaseFilter
+    ? rtaCaseExportColumns
+    : isDciFilter
+      ? dciCaseExportColumns
+      : defaultCaseExportColumns;
 
   function caseViewTitle() {
     if (isRtaCaseFilter) return "RTA Cases";
@@ -3544,7 +3691,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   function caseExportRow(caseObj) {
-    return {
+    const row = {
       "Case #": caseObj.case_number || "",
       Status: STATUS_CHIP_META[caseObj.status]?.label || caseObj.status || "",
       "Service No": caseObj.accused_service_number || "",
@@ -3553,6 +3700,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       Offence: caseObj.offence_name || caseObj.offence || "",
       Unit: isDciFilter ? accusedUnitLabel(caseObj) : caseUnitLabel(caseObj),
       Place: caseObj.place_of_offence || "",
+      Time: "",
       Assignment: caseAssignmentLabel(caseObj),
       "Police Station": caseObj.police_station || "",
       "Battalion/Coy": taskedBattalionCompanyLabel(caseObj),
@@ -3563,7 +3711,21 @@ export default function Cases({ user, criminalTypeFilter }) {
       "Served Date": formatDateTimeForReport(caseObj.served_at),
       "Closed Date": formatDateTimeForReport(caseObj.closed_at),
       Description: caseObj.description || "",
+      "History of the Accident": rtaCaseHistory(caseObj),
+      "How the Accident Occurred": rtaCaseHowOccurred(caseObj),
+      "Originating Unit": rtaCaseOriginatingUnit(caseObj),
+      "Traffic Accident Report": caseObj.traffic_accident_report ? "Attached" : "Not attached",
     };
+    if (isRtaCaseFilter) {
+      row["Service No"] = rtaCaseServiceNumber(caseObj);
+      row.Rank = rtaCaseRank(caseObj);
+      row.Unit = rtaCaseUnit(caseObj);
+      row.Accused = rtaCaseAccused(caseObj);
+      row.Offence = rtaCaseOffence(caseObj);
+      row.Place = rtaCasePlace(caseObj);
+      row.Time = rtaCaseTime(caseObj);
+    }
+    return row;
   }
 
   function exportFilteredCases() {
@@ -3975,6 +4137,114 @@ export default function Cases({ user, criminalTypeFilter }) {
             <p className="p-6 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
+            {isRtaCaseFilter ? (
+              <table className="sticky-head w-full min-w-[2300px] text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
+                    <th className="text-left px-4 py-3 font-medium">Case #</th>
+                    <th className="text-left px-4 py-3 font-medium">Service No</th>
+                    <th className="text-left px-4 py-3 font-medium">Rank</th>
+                    <th className="text-left px-4 py-3 font-medium">Unit</th>
+                    <th className="text-left px-4 py-3 font-medium">Accused</th>
+                    <th className="text-left px-4 py-3 font-medium">Offence</th>
+                    <th className="text-left px-4 py-3 font-medium">Place</th>
+                    <th className="text-left px-4 py-3 font-medium">Time</th>
+                    <th className="text-left px-4 py-3 font-medium">History of the Accident</th>
+                    <th className="text-left px-4 py-3 font-medium">How the Accident Occurred</th>
+                    <th className="text-left px-4 py-3 font-medium">Originating Unit</th>
+                    <th className="text-left px-4 py-3 font-medium">Traffic Accident Report</th>
+                    <th className="text-left px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((c) => {
+                    const history = rtaCaseHistory(c) || "--";
+                    const howOccurred = rtaCaseHowOccurred(c) || "--";
+                    const historyKey = `rta-history-${c.id}`;
+                    const howKey = `rta-how-${c.id}`;
+                    const historyExpanded = !!expandedDesc[historyKey];
+                    const howExpanded = !!expandedDesc[howKey];
+                    const longHistory = history.length > descLimit;
+                    const longHow = howOccurred.length > descLimit;
+                    const shownHistory = historyExpanded || !longHistory ? history : `${history.slice(0, descLimit)}...`;
+                    const shownHow = howExpanded || !longHow ? howOccurred : `${howOccurred.slice(0, descLimit)}...`;
+                    return (
+                      <tr
+                        key={c.id}
+                        onClick={() => selectCase(c)}
+                        className={`border-b border-gray-700/40 cursor-pointer transition-colors ${
+                          selected?.id === c.id
+                            ? "bg-blue-900/30"
+                            : "hover:bg-gray-700/30"
+                        }`}
+                      >
+                        <td className="px-4 py-2.5 font-mono text-xs text-gray-400 whitespace-nowrap">{c.case_number || "--"}</td>
+                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{rtaCaseServiceNumber(c) || "--"}</td>
+                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{rtaCaseRank(c) || "--"}</td>
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
+                          <p className="line-clamp-2 break-words">{rtaCaseUnit(c) || "--"}</p>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{rtaCaseAccused(c) || "--"}</td>
+                        <td className="px-4 py-2.5 text-gray-200 min-w-[180px] max-w-[260px]">
+                          <p className="line-clamp-2 break-words">{rtaCaseOffence(c) || "--"}</p>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[180px] max-w-[260px]">
+                          <p className="line-clamp-2 break-words">{rtaCasePlace(c) || "--"}</p>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{rtaCaseTime(c) || "--"}</td>
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[280px] max-w-[420px]">
+                          <p className="whitespace-pre-wrap break-words">{shownHistory}</p>
+                          {longHistory && (
+                            <button
+                              type="button"
+                              onClick={(e) => toggleDescription(historyKey, e)}
+                              className="mt-1 text-xs text-blue-400 hover:underline"
+                            >
+                              {historyExpanded ? "Show less" : "Show more"}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[280px] max-w-[420px]">
+                          <p className="whitespace-pre-wrap break-words">{shownHow}</p>
+                          {longHow && (
+                            <button
+                              type="button"
+                              onClick={(e) => toggleDescription(howKey, e)}
+                              className="mt-1 text-xs text-blue-400 hover:underline"
+                            >
+                              {howExpanded ? "Show less" : "Show more"}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
+                          <p className="line-clamp-2 break-words">{rtaCaseOriginatingUnit(c) || "--"}</p>
+                        </td>
+                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
+                          {c.traffic_accident_report ? (
+                            <ProtectedDocumentButton
+                              url={c.traffic_accident_report}
+                              label="traffic accident report"
+                              onError={(message) => showToast(message, "error")}
+                              className="text-xs text-blue-400 hover:underline"
+                            >
+                              View
+                            </ProtectedDocumentButton>
+                          ) : (
+                            <span className="text-gray-500">--</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <Badge
+                            label={c.status}
+                            style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
             <table className={`sticky-head w-full ${isDciFilter ? "min-w-[1760px]" : "min-w-[1380px]"} text-sm`}>
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
@@ -4296,6 +4566,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                 ))}
               </tbody>
             </table>
+            )}
             </div>
           )}
         </div>
@@ -6397,6 +6668,22 @@ export default function Cases({ user, criminalTypeFilter }) {
                               <option value="civilian">Civilian</option>
                             </select>
                           </div>
+                          {vehicle.driver_person_type === "service" && (
+                            <div>
+                              <CaseFormLabel>Driver / Rider Service *</CaseFormLabel>
+                              <select
+                                value={vehicle.driver_service || ""}
+                                onChange={(e) => updateSourceRtaVehicle(index, "driver_service", e.target.value)}
+                                required
+                                className={CASE_FORM_CONTROL}
+                              >
+                                <option value="">Select service...</option>
+                                {DRIVER_SERVICES.map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
                           {vehicle.driver_person_type === "civilian" && (
                             <label className="flex items-center gap-2 self-end rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
                               <input

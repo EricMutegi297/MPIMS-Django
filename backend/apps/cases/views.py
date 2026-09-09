@@ -1,4 +1,5 @@
 import mimetypes
+import re
 from pathlib import PurePosixPath
 from urllib.parse import quote, unquote, urlparse
 
@@ -57,6 +58,15 @@ from apps.users.models import User
 def ensure_case_accepts_file_changes(case):
     if case and case.status == Case.Status.CLOSED:
         raise ValidationError({"case": CLOSED_CASE_FILE_ERROR})
+
+
+RTA_STAT_TYPES = [
+    ("injury", "Injury Road Traffic Accident"),
+    ("non_injury", "Non-Injury Road Traffic Accident"),
+    ("self_involved", "Self Involved Road Traffic Accident"),
+    ("fatal", "Fatal Road Traffic Accident"),
+    ("hit_and_run", "Hit and Run Road Traffic Accident"),
+]
 
 
 class InvestigationTeamViewSet(viewsets.ModelViewSet):
@@ -832,7 +842,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
 
 
 class CaseViewSet(viewsets.ModelViewSet):
-    queryset = Case.objects.select_related("assigned_to", "created_by", "accused_unit").prefetch_related(
+    queryset = Case.objects.select_related("assigned_to", "created_by", "accused_unit", "source_incident").prefetch_related(
         "extra_attachments", "court_martial_hearings", "court_martial_milestones", "accused_entries"
     ).all()
     serializer_class = CaseSerializer
@@ -853,6 +863,10 @@ class CaseViewSet(viewsets.ModelViewSet):
         case_type = str(self.request.query_params.get("case_type") or "").strip().lower()
         if case_type != "rta":
             return queryset
+        return self._rta_case_queryset(queryset)
+
+    @staticmethod
+    def _rta_case_queryset(queryset):
         return queryset.filter(
             Q(case_type=Case.CaseType.RTA)
             | Q(offence__icontains="road traffic accident")
@@ -860,6 +874,94 @@ class CaseViewSet(viewsets.ModelViewSet):
             | Q(title__icontains="road traffic accident")
             | Q(source_incident__incident_type__icontains="road traffic accident")
         ).distinct()
+
+    @staticmethod
+    def _case_source_incident(case):
+        try:
+            return case.source_incident
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_statistics_date(value, fallback, field_name):
+        if not value:
+            return fallback
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValidationError({field_name: "Use YYYY-MM-DD format."}) from exc
+
+    def _rta_case_report_date(self, case):
+        if case.date_of_offence:
+            return case.date_of_offence
+        incident = self._case_source_incident(case)
+        if incident and incident.date_occurred:
+            return timezone.localtime(incident.date_occurred).date()
+        if case.created_at:
+            return timezone.localtime(case.created_at).date()
+        return None
+
+    def _rta_case_type_key(self, case):
+        incident = self._case_source_incident(case)
+        text = " ".join(
+            str(value or "")
+            for value in [
+                getattr(incident, "incident_type", ""),
+                case.offence,
+                getattr(case.offence_ref, "name", ""),
+                case.title,
+            ]
+        ).lower()
+        normalized = text.replace("-", " ")
+        if "non injury" in normalized or "noninjury" in normalized:
+            return "non_injury"
+        if "self involved" in normalized:
+            return "self_involved"
+        if "hit and run" in normalized or "hit run" in normalized:
+            return "hit_and_run"
+        if "fatal" in normalized:
+            return "fatal"
+        if "injury" in normalized:
+            return "injury"
+        return "not_recorded"
+
+    @staticmethod
+    def _rta_count_from_text(text, label):
+        pattern = rf"{label}\s*(?:\([^)]*\))?\s*:\s*(nil|none|[0-9]+)"
+        match = re.search(pattern, str(text or ""), flags=re.IGNORECASE)
+        if not match:
+            return None
+        value = match.group(1).lower()
+        if value in {"nil", "none"}:
+            return 0
+        return int(value)
+
+    def _rta_case_casualty_counts(self, case, type_key):
+        incident = self._case_source_incident(case)
+        casualties = getattr(incident, "rta_casualties", None) if incident else None
+        if isinstance(casualties, list) and casualties:
+            xray = sum(1 for casualty in casualties if casualty.get("casualty_status") == "dead")
+            return {
+                "yankee": max(0, len(casualties) - xray),
+                "xray": xray,
+            }
+
+        text_parts = [
+            getattr(incident, "injuries", "") if incident else "",
+            getattr(incident, "description", "") if incident else "",
+            case.description,
+        ]
+        text = "\n".join(str(part or "") for part in text_parts)
+        yankee = self._rta_count_from_text(text, "yankee")
+        xray = self._rta_count_from_text(text, "zulu")
+        if xray is None:
+            xray = self._rta_count_from_text(text, "x-ray")
+
+        if yankee is None:
+            yankee = 1 if type_key == "injury" else 0
+        if xray is None:
+            xray = 1 if type_key == "fatal" else 0
+        return {"yankee": yankee, "xray": xray}
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
@@ -909,6 +1011,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             "accused_unit",
             "tasked_battalion",
             "tasked_detachment",
+            "source_incident",
         ).prefetch_related(
             "extra_attachments",
             "court_martial_hearings",
@@ -2317,6 +2420,83 @@ class CaseViewSet(viewsets.ModelViewSet):
             "top_offences": top_text_field("offence"),
             "criminal_offence_types": criminal_offence_types[:10],
             "service_report": self._service_statistics_report(qs, request),
+        })
+
+    @action(detail=False, methods=["get"], url_path="rta-statistics")
+    def rta_statistics(self, request):
+        today = timezone.localdate()
+        period = request.query_params.get("period") or "range"
+        cases = self._rta_case_queryset(self.get_queryset()).select_related("source_incident", "offence_ref")
+
+        if period == "as_at":
+            as_at = self._parse_statistics_date(request.query_params.get("as_at"), today, "as_at")
+            period_payload = {"period": "as_at", "as_at": as_at.isoformat()}
+            date_from = None
+            date_to = as_at
+        else:
+            if period != "range":
+                period = "range"
+            month_start = today.replace(day=1)
+            date_from = self._parse_statistics_date(request.query_params.get("date_from"), month_start, "date_from")
+            date_to = self._parse_statistics_date(request.query_params.get("date_to"), today, "date_to")
+            if date_from > date_to:
+                raise ValidationError({"date_from": "Date from cannot be later than date to."})
+            period_payload = {
+                "period": period,
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+            }
+
+        grouped = {
+            key: {"key": key, "label": label, "reported": 0, "yankee": 0, "xray": 0}
+            for key, label in RTA_STAT_TYPES
+        }
+        grouped["not_recorded"] = {
+            "key": "not_recorded",
+            "label": "Not recorded",
+            "reported": 0,
+            "yankee": 0,
+            "xray": 0,
+        }
+
+        for case in cases:
+            report_date = self._rta_case_report_date(case)
+            if date_from and (not report_date or report_date < date_from):
+                continue
+            if date_to and (not report_date or report_date > date_to):
+                continue
+
+            type_key = self._rta_case_type_key(case)
+            bucket = grouped.setdefault(type_key, {
+                "key": type_key,
+                "label": type_key.replace("_", " ").title(),
+                "reported": 0,
+                "yankee": 0,
+                "xray": 0,
+            })
+            counts = self._rta_case_casualty_counts(case, type_key)
+            bucket["reported"] += 1
+            bucket["yankee"] += counts["yankee"]
+            bucket["xray"] += counts["xray"]
+
+        rows = [
+            grouped[key]
+            for key, _label in RTA_STAT_TYPES
+        ]
+        if grouped["not_recorded"]["reported"] or grouped["not_recorded"]["yankee"] or grouped["not_recorded"]["xray"]:
+            rows.append(grouped["not_recorded"])
+
+        totals = {
+            "reported": sum(row["reported"] for row in rows),
+            "yankee": sum(row["yankee"] for row in rows),
+            "xray": sum(row["xray"] for row in rows),
+        }
+        return Response({
+            **period_payload,
+            "generated_at": timezone.now(),
+            "legend": {"yankee": "injured", "xray": "dead"},
+            "totals": totals,
+            "rows": rows,
         })
 
     def _service_statistics_report(self, qs, request):

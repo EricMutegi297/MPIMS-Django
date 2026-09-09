@@ -595,6 +595,17 @@ class CaseSerializer(serializers.ModelSerializer):
     extra_attachment_count = serializers.SerializerMethodField()
     latest_update = serializers.SerializerMethodField()
     latest_update_at = serializers.SerializerMethodField()
+    source_incident_number = serializers.SerializerMethodField()
+    source_incident_type = serializers.SerializerMethodField()
+    source_incident_date = serializers.SerializerMethodField()
+    source_incident_time = serializers.SerializerMethodField()
+    source_incident_place = serializers.SerializerMethodField()
+    source_incident_unit = serializers.SerializerMethodField()
+    source_incident_originating_unit = serializers.SerializerMethodField()
+    source_incident_history = serializers.SerializerMethodField()
+    source_incident_how_occurred = serializers.SerializerMethodField()
+    source_incident_rta_vehicles = serializers.SerializerMethodField()
+    source_incident_rta_casualties = serializers.SerializerMethodField()
     brief = CaseBriefSerializer(read_only=True)
     accused_entries = CaseAccusedSerializer(many=True, required=False)
 
@@ -675,6 +686,13 @@ class CaseSerializer(serializers.ModelSerializer):
 
         if errors:
             raise serializers.ValidationError(errors)
+
+    @staticmethod
+    def _source_incident(obj):
+        try:
+            return obj.source_incident
+        except Exception:
+            return None
 
     @staticmethod
     def _blank(value):
@@ -1246,6 +1264,54 @@ class CaseSerializer(serializers.ModelSerializer):
         if latest:
             return latest.created_at
         return obj.mentioning_date or obj.updated_at
+
+    def get_source_incident_number(self, obj):
+        incident = self._source_incident(obj)
+        return incident.incident_number if incident else None
+
+    def get_source_incident_type(self, obj):
+        incident = self._source_incident(obj)
+        return incident.incident_type if incident else None
+
+    def get_source_incident_date(self, obj):
+        incident = self._source_incident(obj)
+        if not incident or not incident.date_occurred:
+            return None
+        return timezone.localtime(incident.date_occurred).date().isoformat()
+
+    def get_source_incident_time(self, obj):
+        incident = self._source_incident(obj)
+        if not incident or not incident.date_occurred:
+            return None
+        return timezone.localtime(incident.date_occurred).strftime("%H:%M")
+
+    def get_source_incident_place(self, obj):
+        incident = self._source_incident(obj)
+        return incident.location if incident else None
+
+    def get_source_incident_unit(self, obj):
+        incident = self._source_incident(obj)
+        return incident.unit_involved if incident else None
+
+    def get_source_incident_originating_unit(self, obj):
+        incident = self._source_incident(obj)
+        return incident.originating_unit if incident else None
+
+    def get_source_incident_history(self, obj):
+        incident = self._source_incident(obj)
+        return incident.history if incident else None
+
+    def get_source_incident_how_occurred(self, obj):
+        incident = self._source_incident(obj)
+        return incident.how_occurred if incident else None
+
+    def get_source_incident_rta_vehicles(self, obj):
+        incident = self._source_incident(obj)
+        return incident.rta_vehicles if incident else []
+
+    def get_source_incident_rta_casualties(self, obj):
+        incident = self._source_incident(obj)
+        return incident.rta_casualties if incident else []
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

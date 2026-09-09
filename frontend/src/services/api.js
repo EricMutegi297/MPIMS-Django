@@ -78,6 +78,7 @@ export const caseService = {
   get: (id) => api.get(`/api/cases/${id}/`),
   activity: (id) => api.get(`/api/cases/${id}/activity/`),
   statistics: (params) => api.get("/api/cases/statistics/", { params }),
+  rtaStatistics: (params) => api.get("/api/cases/rta-statistics/", { params }),
   briefableCases: () => api.get("/api/cases/briefable-cases/"),
   briefs: () => api.get("/api/cases/briefs/"),
   backBriefs: () => api.get("/api/cases/back-briefs/"),

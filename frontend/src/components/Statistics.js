@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { caseService, dutyRoomService, incidentService, morningBriefService, userService } from "../services/api";
+import { caseService, incidentService, morningBriefService, userService } from "../services/api";
 
 const CASE_STATUSES = [
   { key: "new", label: "New", accent: "blue" },
@@ -152,20 +152,14 @@ function serviceCaseLink({ report, service, unitId, offence }) {
 
 function trafficEntryLink({ report, roadTrafficType, metric }) {
   const qs = new URLSearchParams();
-  qs.set("entry_type", "road_traffic_accident");
-  if (roadTrafficType && roadTrafficType !== "not_recorded") {
-    qs.set("road_traffic_type", roadTrafficType);
-  }
-  if (metric) {
-    qs.set("metric", metric);
-  }
+  qs.set("case_type", "rta");
   if (report?.period === "range") {
-    if (report.date_from) qs.set("date_from", report.date_from);
-    if (report.date_to) qs.set("date_to", report.date_to);
+    if (report.date_from) qs.set("created_from", report.date_from);
+    if (report.date_to) qs.set("created_to", report.date_to);
   } else if (report?.as_at) {
-    qs.set("date_to", report.as_at);
+    qs.set("created_to", report.as_at);
   }
-  return `/dashboard/duty-room?${qs.toString()}`;
+  return `/dashboard/cases?${qs.toString()}`;
 }
 
 function RankingPanel({ title, subtitle, items, emptyText, accent = "blue", filterParam, valueForLink }) {
@@ -868,7 +862,7 @@ export default function Statistics({ user }) {
     } else {
       reportParams.as_at = trafficFilters.as_at || todayIso();
     }
-    dutyRoomService.trafficStatistics(reportParams)
+    caseService.rtaStatistics(reportParams)
       .then((res) => setTrafficReport(res.data || null))
       .catch(() => setTrafficReportError("Failed to load traffic incident statistics."))
       .finally(() => setTrafficReportLoading(false));

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { caseService, dutyRoomService } from "../services/api";
+import { caseService } from "../services/api";
 
 const STATUS_COLORS = {
   new: "#2563eb",
@@ -327,7 +327,7 @@ export default function Graphs({ user }) {
 
     Promise.allSettled([
       caseService.statistics(),
-      dutyRoomService.trafficStatistics({
+      caseService.rtaStatistics({
         period: "range",
         date_from: monthStartIso(),
         date_to: todayIso(),
