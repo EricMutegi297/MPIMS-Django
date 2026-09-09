@@ -9,7 +9,7 @@ function toArray(data) {
 const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
-  detachment:   "IC COY",
+  detachment:   "IC Cases",
 };
 
 function displayUser(u) {

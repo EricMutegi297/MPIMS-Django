@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Roles a battalion admin can assign
 BATTALION_ADMIN_ROLES = {"co", "oc", "detachment", "personnel", "investigator", "hod", "adj", "2ic", "order_nco"}
-# Roles an IC COY can assign
+# Roles an IC Cases user can assign.
 DET_IC_ROLES = {"personnel", "investigator"}
 CORPS_COMMANDER_MANAGEMENT_ERROR = (
     "Corps Commander accounts can only be managed by a superuser or HQS Admin."
@@ -1162,7 +1162,7 @@ class UserListCreateView(generics.ListCreateAPIView):
                 raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
             return serializer.save(battalion=actor.battalion)
         if is_detachment_ic(actor):
-            raise PermissionDenied("IC COY cannot add users. Ask the battalion admin to create company users.")
+            raise PermissionDenied("IC Cases users cannot add users. Ask the battalion admin to create company users.")
         raise PermissionDenied("You do not have permission to create users.")
 
 

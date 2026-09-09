@@ -239,7 +239,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleAssignTeam = async () => {
-    if (!canManageDetachmentTeams) { setAssignError("Only IC COY can assign cases."); return; }
+    if (!canManageDetachmentTeams) { setAssignError("Only IC Cases can assign cases."); return; }
     if (assignmentMode === "team" && !selTeam) { setAssignError("Please select a team."); return; }
     if (assignmentMode === "io" && !selIo) { setAssignError("Please select an IO."); return; }
     if (!deadline) { setAssignError("Investigation deadline is required."); return; }
@@ -285,7 +285,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleCreateTeam = async () => {
-    if (!canManageDetachmentTeams) { setCreateTeamError("Only IC COY can create investigation teams."); return; }
+    if (!canManageDetachmentTeams) { setCreateTeamError("Only IC Cases can create investigation teams."); return; }
     if (!newTeamName.trim()) { setCreateTeamError("Team name is required."); return; }
     if (newTeamMembers.length < 2) { setCreateTeamError("Team must have at least 2 members."); return; }
     setCreatingTeam(true);

@@ -4,7 +4,7 @@ import { caseService, caseBriefService, teamService, attachmentService } from ".
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
-import { RTA_CASE_TYPE } from "../utils/caseTypes";
+import { RTA_CASE_TYPE, isRoadTrafficAccidentCase } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -44,6 +44,44 @@ function normalizeDateForApi(value) {
   const isoPrefix = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]/);
   if (isoPrefix) return isoPrefix[1];
   return text;
+}
+
+function normalizeDateForDisplay(value) {
+  const apiDate = normalizeDateForApi(value);
+  if (!apiDate) return "";
+  const match = apiDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : apiDate;
+}
+
+function parseDisplayDateForApi(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return text;
+  return `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+}
+
+const CLOSURE_BASIS_OPTIONS = [
+  { value: "part_ii_orders", label: "Part II Orders" },
+  { value: "cancellation_letter", label: "Cancellation Letter" },
+  { value: "service_hqs_authority", label: "Authority From Service HQs" },
+];
+
+const RTA_DAMAGE_AUTHORITY_SOURCES = [
+  { value: "hq_ka_moves", label: "HQ KA Moves" },
+  { value: "legal", label: "Legal" },
+];
+
+function closureDocumentLabel(value) {
+  if (value === "part_ii_orders") return "Part II Orders";
+  if (value === "cancellation_letter") return "Cancellation Letter PDF";
+  if (value === "service_hqs_authority") return "Authority From Service HQs PDF";
+  return "Closure PDF";
+}
+
+function rtaDamageAuthorityLabel(value) {
+  return RTA_DAMAGE_AUTHORITY_SOURCES.find((option) => option.value === value)?.label || "";
 }
 
 const STATUS_COLORS = {
@@ -780,7 +818,7 @@ function ResumeModal({ caseObj, onClose, onDone }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="bg-gray-800 rounded-xl w-full max-w-md shadow-2xl">
+      <div className="bg-gray-800 rounded-xl w-full max-w-lg shadow-2xl">
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <h3 className="text-white font-semibold">Resume Investigation</h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
@@ -918,28 +956,133 @@ function CaseUpdateModal({ caseObj, onClose, onDone }) {
 // ── Close Case Modal (HQ Admin only) ─────────────────────────────────────────
 function CloseModal({ caseObj, onClose, onDone }) {
   const [judgmentFiles, setJudgmentFiles] = useState([]);
+  const [verdict, setVerdict] = useState(caseObj?.action_taken || "");
+  const [closureBasis, setClosureBasis] = useState(caseObj?.closure_basis || "");
+  const [closureFile, setClosureFile] = useState(null);
+  const [partIiOrderSerialNo, setPartIiOrderSerialNo] = useState(caseObj?.part_ii_order_serial_no || "");
+  const [partIiOrderDate, setPartIiOrderDate] = useState(normalizeDateForDisplay(caseObj?.part_ii_order_date || ""));
+  const [rtaAuthoritySource, setRtaAuthoritySource] = useState(caseObj?.rta_damage_authority_source || "");
+  const [rtaAuthorityFile, setRtaAuthorityFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   useAutoDismiss(err, setErr);
-  const canClose = judgmentFiles.length > 0;
+  const isRtaCase = isRoadTrafficAccidentCase(caseObj);
+  const isPartIiOrders = closureBasis === "part_ii_orders";
+  const partIiOrderDateApi = parseDisplayDateForApi(partIiOrderDate);
+  const hasClosureFile = isPartIiOrders ? true : Boolean(closureBasis && closureFile);
+  const hasPartIiDetails = !isPartIiOrders || (String(partIiOrderSerialNo).trim() && partIiOrderDate);
+  const rtaHasAuthority = !caseObj?.rta_service_vehicle_damaged
+    || Boolean(rtaAuthoritySource && (rtaAuthorityFile || caseObj?.rta_damage_authority));
+  const canClose = isRtaCase
+    ? Boolean(caseObj?.traffic_accident_report && String(verdict).trim() && rtaHasAuthority)
+    : Boolean(closureBasis && String(verdict).trim() && hasClosureFile && hasPartIiDetails);
 
   const handleClose = async () => {
-    if (!canClose) { setErr("Attach at least one judgment file before closing."); return; }
+    if (isRtaCase) {
+      if (!caseObj?.traffic_accident_report) {
+        setErr("Attach the Traffic Accident Report before closing this RTA case.");
+        return;
+      }
+      if (!String(verdict).trim()) {
+        setErr("Verdict is required before closing this RTA case.");
+        return;
+      }
+      if (caseObj?.rta_service_vehicle_damaged) {
+        if (!rtaAuthoritySource) {
+          setErr("Select whether the damage authority is from HQ KA Moves or Legal.");
+          return;
+        }
+        if (!caseObj?.rta_damage_authority && !rtaAuthorityFile) {
+          setErr("Attach authority from HQ KA Moves or Legal before closing a damaged service-vehicle RTA case.");
+          return;
+        }
+        if (rtaAuthorityFile && !String(rtaAuthorityFile.name || "").toLowerCase().endsWith(".pdf")) {
+          setErr("RTA damage authority must be uploaded as a PDF.");
+          return;
+        }
+      }
+
+      setSaving(true);
+      setErr("");
+      try {
+        const fd = new FormData();
+        fd.append("status", "closed");
+        fd.append("action_taken", verdict.trim());
+        if (caseObj?.rta_service_vehicle_damaged) {
+          fd.append("rta_damage_authority_source", rtaAuthoritySource);
+          if (rtaAuthorityFile) fd.append("rta_damage_authority", rtaAuthorityFile);
+        }
+        await caseService.close(caseObj.id, fd);
+        onDone();
+        onClose();
+      } catch (ex) {
+        const data = ex?.response?.data;
+        const validationMsg = data && typeof data === "object"
+          ? Object.entries(data).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" | ")
+          : "";
+        setErr(validationMsg || data?.detail || "Failed to close RTA case.");
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    if (!closureBasis) {
+      setErr("Select what this case is being closed with.");
+      return;
+    }
+    if (!isPartIiOrders && !hasClosureFile) {
+      setErr(`Attach the ${closureDocumentLabel(closureBasis)} before closing.`);
+      return;
+    }
+    if (isPartIiOrders && !String(partIiOrderSerialNo).trim()) {
+      setErr("Part II Order Serial No is required.");
+      return;
+    }
+    if (isPartIiOrders && !partIiOrderDate) {
+      setErr("Part II Order Date is required.");
+      return;
+    }
+    if (isPartIiOrders && !/^\d{4}-\d{2}-\d{2}$/.test(partIiOrderDateApi)) {
+      setErr("Use date format dd/mm/yyyy.");
+      return;
+    }
+    if (!String(verdict).trim()) {
+      setErr("Verdict is required before closing.");
+      return;
+    }
+    for (const file of judgmentFiles) {
+      if (!String(file?.name || "").toLowerCase().endsWith(".pdf")) {
+        setErr("Only PDF files are allowed for supporting attachments.");
+        return;
+      }
+    }
+
     setSaving(true);
     setErr("");
     try {
-      setUploading(true);
-      for (const file of judgmentFiles) {
-        const fdUpload = new FormData();
-        fdUpload.append("document_type", "judgment");
-        fdUpload.append("label", `Judgment - ${file.name}`);
-        fdUpload.append("file", file);
-        await attachmentService.upload(caseObj.id, fdUpload);
+      if (judgmentFiles.length) {
+        setUploading(true);
+        for (const file of judgmentFiles) {
+          const fdUpload = new FormData();
+          fdUpload.append("document_type", "judgment");
+          fdUpload.append("label", `Supporting PDF - ${file.name}`);
+          fdUpload.append("file", file);
+          await attachmentService.upload(caseObj.id, fdUpload);
+        }
+        setUploading(false);
       }
-      setUploading(false);
       const fd = new FormData();
       fd.append("status", "closed");
+      fd.append("closure_basis", closureBasis);
+      fd.append("action_taken", verdict.trim());
+      if (isPartIiOrders) {
+        fd.append("part_ii_order_serial_no", partIiOrderSerialNo.trim());
+        fd.append("part_ii_order_date", partIiOrderDateApi);
+      } else if (closureFile) {
+        fd.append("chargesheet", closureFile);
+      }
       await caseService.close(caseObj.id, fd);
       onDone();
       onClose();
@@ -958,28 +1101,159 @@ function CloseModal({ caseObj, onClose, onDone }) {
         <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
           <div>
             <h3 className="text-white font-semibold">Close Case</h3>
-            <p className="text-gray-500 text-xs mt-0.5">Admin HQ — both documents required</p>
+            <p className="text-gray-500 text-xs mt-0.5">
+              {isRtaCase
+                ? "Traffic Accident Report required; authority only if damaged."
+                : "Select the closure basis and record the verdict."}
+            </p>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">✕</button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white p-1">X</button>
         </div>
         <div className="px-5 py-4 space-y-4">
           <p className="text-sm text-gray-400">Case: <span className="font-mono text-blue-400">{caseObj.case_number}</span></p>
           <p className="text-sm text-gray-400">Accused: <span className="text-white">{caseObj.accused_name || "--"}</span></p>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Judgment Files <span className="text-red-400">*</span></label>
-            <label className="cursor-pointer block">
-              <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
-                {judgmentFiles.length > 0 ? (
-                  <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
-                ) : (
-                  <span className="text-gray-500">Click to select judgment files...</span>
-                )}
+          {isRtaCase ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-orange-500/30 bg-orange-950/20 p-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-500">Traffic Accident Report</p>
+                  {caseObj.traffic_accident_report ? (
+                    <button
+                      type="button"
+                      onClick={() => openProtectedFile(caseObj.traffic_accident_report, { label: "traffic accident report" })}
+                      className="mt-1 text-sm text-blue-400 hover:underline"
+                    >
+                      View Report
+                    </button>
+                  ) : (
+                    <p className="mt-1 text-sm text-red-300">Missing. Attach report before closing.</p>
+                  )}
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-gray-500">Service Vehicle Damage</p>
+                  <p className="mt-1 text-sm text-gray-200">
+                    {caseObj.rta_service_vehicle_damaged ? "Damaged" : "No damage recorded"}
+                  </p>
+                </div>
               </div>
-              <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
-            </label>
+              {caseObj.rta_service_vehicle_damaged && (
+                <div className="rounded-lg border border-gray-700 bg-gray-700/40 p-4 space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Authority Source <span className="text-red-400">*</span></label>
+                    <select
+                      value={rtaAuthoritySource}
+                      onChange={(e) => { setRtaAuthoritySource(e.target.value); setErr(""); }}
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500"
+                    >
+                      <option value="">Select authority source...</option>
+                      {RTA_DAMAGE_AUTHORITY_SOURCES.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {caseObj.rta_damage_authority && (
+                    <button
+                      type="button"
+                      onClick={() => openProtectedFile(caseObj.rta_damage_authority, { label: "RTA damage authority" })}
+                      className="text-sm text-blue-400 hover:underline"
+                    >
+                      {rtaDamageAuthorityLabel(caseObj.rta_damage_authority_source) || "View Existing Authority"}
+                    </button>
+                  )}
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">
+                      Authority PDF {caseObj.rta_damage_authority ? "(replace optional)" : <span className="text-red-400">*</span>}
+                    </label>
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      onChange={(e) => { setRtaAuthorityFile(e.target.files?.[0] || null); setErr(""); }}
+                      className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Close With <span className="text-red-400">*</span></label>
+                <select
+                  value={closureBasis}
+                  onChange={(e) => { setClosureBasis(e.target.value); setClosureFile(null); setErr(""); }}
+                  className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500"
+                >
+                  <option value="">Select close document...</option>
+                  {CLOSURE_BASIS_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              {closureBasis && !isPartIiOrders && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">{closureDocumentLabel(closureBasis)} <span className="text-red-400">*</span></label>
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(e) => { setClosureFile(e.target.files?.[0] || null); setErr(""); }}
+                    className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1 file:text-xs file:text-white"
+                  />
+                </div>
+              )}
+              {isPartIiOrders && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Part II Order Serial No <span className="text-red-400">*</span></label>
+                    <input
+                      type="text"
+                      value={partIiOrderSerialNo}
+                      onChange={(e) => { setPartIiOrderSerialNo(e.target.value); setErr(""); }}
+                      placeholder="Enter serial number"
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1.5">Part II Order Date <span className="text-red-400">*</span></label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={partIiOrderDate}
+                      onChange={(e) => { setPartIiOrderDate(e.target.value); setErr(""); }}
+                      placeholder="dd/mm/yyyy"
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
+                    />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5">Verdict <span className="text-red-400">*</span></label>
+            <textarea
+              rows={3}
+              value={verdict}
+              onChange={(e) => { setVerdict(e.target.value); setErr(""); }}
+              placeholder="Enter the final verdict"
+              className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500 resize-none"
+            />
           </div>
-          {!canClose && <p className="text-yellow-500 text-xs">Attach at least one judgment PDF to enable closing.</p>}
-          {uploading && <p className="text-cyan-400 text-xs">Uploading judgment files...</p>}
+          {!isRtaCase && (
+            <div>
+              <label className="block text-xs text-gray-400 mb-1.5">Supporting PDFs (optional)</label>
+              <label className="cursor-pointer block">
+                <div className={`bg-gray-700 border border-dashed rounded-lg px-3 py-2.5 text-sm text-center transition-colors ${judgmentFiles.length > 0 ? "border-green-500/60" : "border-gray-500 hover:border-blue-500"}`}>
+                  {judgmentFiles.length > 0 ? (
+                    <span className="text-green-400 truncate block">{judgmentFiles.length} file(s) selected</span>
+                  ) : (
+                    <span className="text-gray-500">Click to select supporting PDF files...</span>
+                  )}
+                </div>
+                <input type="file" multiple accept=".pdf" className="sr-only" onChange={(e) => { setJudgmentFiles(Array.from(e.target.files || [])); setErr(""); }} />
+              </label>
+            </div>
+          )}
+          {!canClose && <p className="text-yellow-500 text-xs">Complete the required fields to enable closing.</p>}
+          {uploading && <p className="text-cyan-400 text-xs">Uploading supporting files...</p>}
           {err && <p className="text-red-400 text-xs">{err}</p>}
         </div>
         <div className="px-5 pb-4 flex justify-end gap-3">

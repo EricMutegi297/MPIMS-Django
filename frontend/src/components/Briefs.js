@@ -95,7 +95,7 @@ function printTable(title, headers, rows) {
 }
 
 const FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC COY" },
+  { value: "detachment", label: "IC Cases" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -106,7 +106,7 @@ const FORWARD_OPTIONS = [
 
 const BRIEF_STAGE_LABELS = {
   investigator: "Investigator",
-  detachment: "IC COY",
+  detachment: "IC Cases",
   adj: "Adjutant",
   hod: "HOD",
   "2ic": "2IC",
@@ -123,7 +123,7 @@ function roleLabel(value) {
   const labels = {
     investigator: "Investigator",
     hod: "HOD",
-    detachment: "IC COY",
+    detachment: "IC Cases",
     adj: "Adjutant",
     "2ic": "2IC",
     oc: "OC",
@@ -627,7 +627,7 @@ export default function Briefs({ user }) {
             >
               <option value="all">All stages</option>
               <option value="investigator">Investigator</option>
-              <option value="detachment">IC COY</option>
+              <option value="detachment">IC Cases</option>
               <option value="hod">HOD</option>
               <option value="adj">Adjutant</option>
               <option value="2ic">2IC</option>

@@ -31,7 +31,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         DUTY_OFFICER = "duty_officer", "Duty Officer"
         HOD = "hod", "Head of Department"
         GUARDROOM_IC = "guardroom_ic", "Guardroom IC"
-        DETACHMENT = "detachment", "IC COY"
+        DETACHMENT = "detachment", "IC Cases"
         PERSONNEL = "personnel", "Personnel"
         LEGAL = "legal", "Legal Officer"
         ORDER_NCO = "order_nco", "Order NCO"

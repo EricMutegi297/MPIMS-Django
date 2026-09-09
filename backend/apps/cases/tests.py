@@ -277,8 +277,13 @@ class CaseApiTests(TestCase):
                 "status": Case.Status.CLOSED,
                 "closure_basis": Case.ClosureBasis.CANCELLATION_LETTER,
                 "action_taken": action_taken,
+                "chargesheet": SimpleUploadedFile(
+                    "cancellation.pdf",
+                    b"%PDF-1.4\n",
+                    content_type="application/pdf",
+                ),
             },
-            format="json",
+            format="multipart",
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -439,6 +444,162 @@ class CaseApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_part_ii_orders_close_does_not_require_rfi_or_judgment_files(self):
+        case = Case.objects.create(
+            title="Part II Close Without RFI",
+            offence="Theft",
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "closure_basis": Case.ClosureBasis.PART_II_ORDERS,
+                "part_ii_order_serial_no": "P2/002/2026",
+                "part_ii_order_date": "2026-09-02",
+                "action_taken": "Convicted and sentenced.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_close_rta_requires_traffic_accident_report(self):
+        case = Case.objects.create(
+            title="RTA Report Required",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "action_taken": "Reviewed and closed.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("traffic_accident_report", response.data)
+
+    def test_close_rta_without_damage_does_not_require_authority(self):
+        case = Case.objects.create(
+            title="RTA No Damage",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            traffic_accident_report="cases/traffic-report.pdf",
+            rta_service_vehicle_damaged=False,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "action_taken": "Traffic Accident Report reviewed. No service vehicle damage.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_close_damaged_rta_requires_authority_source_and_pdf(self):
+        case = Case.objects.create(
+            title="RTA Damage",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            traffic_accident_report="cases/traffic-report.pdf",
+            rta_service_vehicle_damaged=True,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "action_taken": "Damage case reviewed.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("rta_damage_authority_source", response.data)
+        self.assertIn("rta_damage_authority", response.data)
+
+    def test_close_damaged_rta_with_authority_succeeds(self):
+        case = Case.objects.create(
+            title="RTA Damage With Authority",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.SERVED,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            traffic_accident_report="cases/traffic-report.pdf",
+            rta_service_vehicle_damaged=True,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "status": Case.Status.CLOSED,
+                "action_taken": "Authority reviewed and case closed.",
+                "rta_damage_authority_source": Case.RtaDamageAuthoritySource.HQ_KA_MOVES,
+                "rta_damage_authority": SimpleUploadedFile(
+                    "authority.pdf",
+                    b"%PDF-1.4\n",
+                    content_type="application/pdf",
+                ),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_upload_rta_report_marks_case_served_and_requests_close(self):
+        case = Case.objects.create(
+            title="RTA Upload Report",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.UNDER_INVESTIGATION,
+            tasked_battalion=self.special_battalion,
+            assigned_to=self.investigator,
+            created_by=self.superuser,
+        )
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "traffic_accident_report": SimpleUploadedFile(
+                    "traffic-report.pdf",
+                    b"%PDF-1.4\n",
+                    content_type="application/pdf",
+                ),
+                "rta_service_vehicle_damaged": "false",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        case.refresh_from_db()
+        self.assertEqual(case.status, Case.Status.SERVED)
+        self.assertTrue(case.close_requested)
 
     def assert_notification_message(self, case, expected):
         notifications = Notification.objects.filter(

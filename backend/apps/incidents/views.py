@@ -121,8 +121,26 @@ class IncidentViewSet(viewsets.ModelViewSet):
         if incident.date_occurred:
             occurred_on = timezone.localtime(incident.date_occurred).date().isoformat()
 
+        def truthy_value(value):
+            if isinstance(value, bool):
+                return value
+            text = str(value or "").strip().lower()
+            if text in {"1", "true", "yes", "y", "on"}:
+                return True
+            if text in {"0", "false", "no", "n", "off", ""}:
+                return False
+            return True
+
+        damage_default = bool(str(incident.damages or "").strip())
+
         payload = {
             "title": first_value("title", incident.incident_type or ""),
+            "case_type": first_value(
+                "case_type",
+                Case.CaseType.RTA
+                if "road traffic accident" in str(incident.incident_type or "").lower()
+                else Case.CaseType.INCIDENT,
+            ),
             "description": first_value("description", incident.history or incident.description or ""),
             "offence": first_value("offence", incident.incident_type or ""),
             "offence_type": first_value("offence_type"),
@@ -136,6 +154,7 @@ class IncidentViewSet(viewsets.ModelViewSet):
             "accused_rank": first_value("accused_rank"),
             "accused_service_number": first_value("accused_service_number"),
             "accused_service": first_value("accused_service"),
+            "rta_service_vehicle_damaged": truthy_value(first_value("rta_service_vehicle_damaged", damage_default)),
             "status": Case.Status.NEW,
         }
         if data.get("offence_ref"):

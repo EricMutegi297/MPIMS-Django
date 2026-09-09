@@ -346,6 +346,11 @@ const CLOSURE_BASIS_OPTIONS = [
   { value: "service_hqs_authority", label: "Authority From Service HQs" },
 ];
 
+const RTA_DAMAGE_AUTHORITY_SOURCES = [
+  { value: "hq_ka_moves", label: "HQ KA Moves" },
+  { value: "legal", label: "Legal" },
+];
+
 const CASE_SOURCE_RFI = "rfi";
 const CASE_SOURCE_INCIDENT = "incident";
 const CASE_SOURCE_RTA = "road_traffic_accident";
@@ -403,6 +408,10 @@ function closureDocumentLabel(value) {
   if (value === "cancellation_letter") return "Cancellation Letter PDF";
   if (value === "service_hqs_authority") return "Authority From Service HQs PDF";
   return "Closure PDF";
+}
+
+function rtaDamageAuthorityLabel(value) {
+  return RTA_DAMAGE_AUTHORITY_SOURCES.find((option) => option.value === value)?.label || "";
 }
 
 const ALL_RANKS = [
@@ -532,6 +541,7 @@ function emptyIncidentCaseForm(source = CASE_SOURCE_INCIDENT) {
     history: "",
     injuries: "",
     damages: "",
+    service_vehicle_damaged: "no",
     how_occurred: "",
     action_taken: "",
     police_ob_reference: "",
@@ -729,12 +739,17 @@ function buildIncidentCaseDescription(form) {
   return sections.filter(Boolean).join("\n\n");
 }
 
+function isRtaServiceVehicleDamaged(form) {
+  return String(form?.service_vehicle_damaged || "").toLowerCase() === "yes";
+}
+
 function buildRtaCaseDescription(form) {
   const vehicles = toArray(form.rta_vehicles).filter(hasVehicleData).map(cleanRtaVehicle);
   const casualties = toArray(form.rta_casualties).map(cleanRtaCasualty);
   const sections = [
     `${roadTrafficTypeLabel(form.road_traffic_type) || "Road Traffic Accident"} recorded at ${form.place || "place not specified"}.`,
     `Yankee (injured): ${countLabel(form.injured_count)}. Zulu (dead): ${countLabel(form.dead_count)}.`,
+    `Service vehicle damaged: ${isRtaServiceVehicleDamaged(form) ? "Yes" : "No"}.`,
   ];
   if (form.unit_involved) sections.push(`Unit involved: ${form.unit_involved}.`);
   if (form.originating_unit) sections.push(`Originating sub-unit: ${form.originating_unit}.`);
@@ -812,6 +827,9 @@ function validateIncidentSourceCase(form, sourceForm, source) {
   }
   if (isBlank(sourceForm.history)) return "History of the accident is required.";
   if (isBlank(sourceForm.how_occurred)) return "How the accident occurred is required.";
+  if (isRtaServiceVehicleDamaged(sourceForm) && isBlank(sourceForm.damages)) {
+    return "Describe the service vehicle damage before creating the RTA case.";
+  }
   const casualtyMissingSeverity = toArray(sourceForm.rta_casualties)
     .map(cleanRtaCasualty)
     .some((casualty) => casualty.casualty_status === "injured" && !casualty.injury_severity);
@@ -844,6 +862,9 @@ function buildSourceCasePayload(form, sourceForm, source) {
     : sourceForm.service_member_name || "";
 
   return {
+    case_type: source === CASE_SOURCE_RTA
+      ? RTA_CASE_TYPE
+      : (source === CASE_SOURCE_INCIDENT ? "incident" : CASE_SOURCE_RFI),
     title: sourceOffence,
     offence: form.offence || sourceOffence,
     offence_type: form.offence_type,
@@ -857,6 +878,7 @@ function buildSourceCasePayload(form, sourceForm, source) {
     accused_rank: accusedRank,
     accused_name: accusedName,
     police_station: sourceForm.police_ob_reference || "",
+    rta_service_vehicle_damaged: source === CASE_SOURCE_RTA && isRtaServiceVehicleDamaged(sourceForm),
   };
 }
 
@@ -929,6 +951,11 @@ function buildIncidentRecordPayload(form, sourceForm, source) {
 
 function isBlank(value) {
   return !String(value ?? "").trim();
+}
+
+function entityId(value) {
+  if (value && typeof value === "object") return value.id || value.pk || "";
+  return value || "";
 }
 
 function validateRequiredCreateCase(form, offencesAvailable) {
@@ -1623,8 +1650,14 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
 
   const hasRfi = Boolean(c?.rfi_document || c?.rfi_no || c?.rfi_date);
   const hasTaskingLetter = Boolean(c?.tasking_letter);
+  const hasTrafficAccidentReport = Boolean(c?.traffic_accident_report);
+  const hasRtaDamageAuthority = Boolean(c?.rta_damage_authority);
   const extraCount = Number(c?.extra_attachment_count || 0);
-  const totalCount = (hasRfi ? 1 : 0) + (hasTaskingLetter ? 1 : 0) + extraCount;
+  const totalCount = (hasRfi ? 1 : 0)
+    + (hasTaskingLetter ? 1 : 0)
+    + (hasTrafficAccidentReport ? 1 : 0)
+    + (hasRtaDamageAuthority ? 1 : 0)
+    + extraCount;
 
   async function toggleOpen(e) {
     if (clickable) e.stopPropagation();
@@ -1726,6 +1759,26 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
             </ProtectedDocumentButton>
           )}
 
+          {hasTrafficAccidentReport && (
+            <ProtectedDocumentButton
+              url={c.traffic_accident_report}
+              label="traffic accident report"
+              className="block text-blue-400 hover:underline"
+            >
+              Traffic Accident Report - View
+            </ProtectedDocumentButton>
+          )}
+
+          {hasRtaDamageAuthority && (
+            <ProtectedDocumentButton
+              url={c.rta_damage_authority}
+              label="RTA damage authority"
+              className="block text-blue-400 hover:underline"
+            >
+              {rtaDamageAuthorityLabel(c.rta_damage_authority_source) || "RTA Damage Authority"} - View
+            </ProtectedDocumentButton>
+          )}
+
           {extraCount > 0 && loadingExtra && (
             <p className="text-gray-400">Loading extra attachments...</p>
           )}
@@ -1759,7 +1812,7 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
 }
 
 const BRIEF_FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC COY" },
+  { value: "detachment", label: "IC Cases" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -1923,6 +1976,11 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [docFile, setDocFile] = useState(null);
   const [docUploading, setDocUploading] = useState(false);
   const [docUploadErr, setDocUploadErr] = useState("");
+  const [showTrafficReportUpload, setShowTrafficReportUpload] = useState(false);
+  const [trafficReportFile, setTrafficReportFile] = useState(null);
+  const [trafficReportDamaged, setTrafficReportDamaged] = useState("no");
+  const [trafficReportSaving, setTrafficReportSaving] = useState(false);
+  const [trafficReportErr, setTrafficReportErr] = useState("");
 
   // Brief upload workflow
   const [showBriefUpload, setShowBriefUpload] = useState(false);
@@ -1958,7 +2016,8 @@ export default function Cases({ user, criminalTypeFilter }) {
   const [closePartIiOrderSerialNo, setClosePartIiOrderSerialNo] = useState("");
   const [closePartIiOrderDate, setClosePartIiOrderDate] = useState("");
   const [closeChargesheetFile, setCloseChargesheetFile] = useState(null);
-  const [closeRfiFile, setCloseRfiFile] = useState(null);
+  const [closeRtaAuthoritySource, setCloseRtaAuthoritySource] = useState("");
+  const [closeRtaAuthorityFile, setCloseRtaAuthorityFile] = useState(null);
   const [dateFieldActive, setDateFieldActive] = useState(false);
   const [caseActivity, setCaseActivity] = useState([]);
   const [caseActivityLoading, setCaseActivityLoading] = useState(false);
@@ -2013,6 +2072,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   useAutoDismiss(statusErr, setStatusErr);
   useAutoDismiss(rowActionErr, setRowActionErr);
   useAutoDismiss(docUploadErr, setDocUploadErr);
+  useAutoDismiss(trafficReportErr, setTrafficReportErr);
   useAutoDismiss(briefUploadErr, setBriefUploadErr);
   useAutoDismiss(forwardErr, setForwardErr);
   useAutoDismiss(courtMilestoneErr, setCourtMilestoneErr);
@@ -2308,6 +2368,10 @@ export default function Cases({ user, criminalTypeFilter }) {
     setTaskErr("");
     setTeamErr("");
     setStatusErr("");
+    setShowTrafficReportUpload(false);
+    setTrafficReportFile(null);
+    setTrafficReportDamaged(c?.rta_service_vehicle_damaged ? "yes" : "no");
+    setTrafficReportErr("");
     setCourtMilestoneErr("");
     setCourtMilestoneSuccess("");
     setCaseActivity([]);
@@ -2322,16 +2386,37 @@ export default function Cases({ user, criminalTypeFilter }) {
       setClosePartIiOrderSerialNo("");
       setClosePartIiOrderDate("");
       setCloseChargesheetFile(null);
-      setCloseRfiFile(null);
+      setCloseRtaAuthoritySource("");
+      setCloseRtaAuthorityFile(null);
       setCourtCloseErr("");
     }
   }
 
   const selectedIsCourtMartial = selected?.criminal_offence_type === "court_martial";
   const selectedIsDci = selected?.criminal_offence_type === "dci_civ_police";
+  const selectedIsRta = isRoadTrafficAccidentCase(selected);
   const activeCloseCase = courtCloseCase || selected;
   const activeCloseCaseIsCourtMartial = activeCloseCase?.criminal_offence_type === "court_martial";
   const activeCloseCaseIsDci = activeCloseCase?.criminal_offence_type === "dci_civ_police";
+  const activeCloseCaseIsRta = isRoadTrafficAccidentCase(activeCloseCase);
+  const userBattalionId = entityId(user?.battalion_id || user?.battalion);
+  const userDetachmentId = entityId(user?.detachment_id || user?.detachment);
+  const canUploadTrafficAccidentReport = selectedIsRta
+    && selected?.status !== "closed"
+    && (
+      isHqsAdmin
+      || isSuperuser
+      || (
+        user?.role === "detachment"
+        && selected?.tasked_detachment
+        && String(userDetachmentId) === String(selected.tasked_detachment)
+      )
+      || (
+        user?.role === "admin"
+        && selected?.tasked_battalion
+        && String(userBattalionId) === String(selected.tasked_battalion)
+      )
+    );
 
   useEffect(() => {
     if (!selectedId || !selectedIsCourtMartial) {
@@ -2520,7 +2605,8 @@ export default function Cases({ user, criminalTypeFilter }) {
     setClosePartIiOrderSerialNo("");
     setClosePartIiOrderDate("");
     setCloseChargesheetFile(null);
-    setCloseRfiFile(null);
+    setCloseRtaAuthoritySource("");
+    setCloseRtaAuthorityFile(null);
     setCourtCloseErr("");
   }
 
@@ -2536,8 +2622,9 @@ export default function Cases({ user, criminalTypeFilter }) {
     setClosePartIiOrderSerialNo(caseObj.part_ii_order_serial_no || "");
     setClosePartIiOrderDate(normalizeDateForDisplay(caseObj.part_ii_order_date || ""));
     setCloseChargesheetFile(null);
-    setCloseRfiFile(null);
-    setJudgmentFileRows([newJudgmentFileRow()]);
+    setCloseRtaAuthoritySource(caseObj.rta_damage_authority_source || "");
+    setCloseRtaAuthorityFile(null);
+    setJudgmentFileRows([]);
     setShowCourtCloseModal(true);
   }
 
@@ -2551,16 +2638,80 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   function removeJudgmentFileRow(rowId) {
-    setJudgmentFileRows((prev) => {
-      const next = prev.filter((r) => r.id !== rowId);
-      return next.length ? next : [newJudgmentFileRow()];
-    });
+    setJudgmentFileRows((prev) => prev.filter((r) => r.id !== rowId));
     if (courtCloseErr) setCourtCloseErr("");
   }
 
   async function submitCourtCloseWithJudgmentFiles() {
     const closeCase = courtCloseCase || selected;
     if (!closeCase) return;
+    if (activeCloseCaseIsRta) {
+      if (!closeCase.traffic_accident_report) {
+        setCourtCloseErr("Attach the Traffic Accident Report before closing this RTA case.");
+        return;
+      }
+      if (!String(closeActionTaken || "").trim()) {
+        setCourtCloseErr("Verdict is required before closing this RTA case.");
+        return;
+      }
+      if (closeCase.rta_service_vehicle_damaged) {
+        if (!closeRtaAuthoritySource) {
+          setCourtCloseErr("Select whether the damage authority is from HQ KA Moves or Legal.");
+          return;
+        }
+        if (!closeCase.rta_damage_authority && !closeRtaAuthorityFile) {
+          setCourtCloseErr("Attach authority from HQ KA Moves or Legal before closing a damaged service-vehicle RTA case.");
+          return;
+        }
+        if (closeRtaAuthorityFile && !String(closeRtaAuthorityFile.name || "").toLowerCase().endsWith(".pdf")) {
+          setCourtCloseErr("RTA damage authority must be uploaded as a PDF.");
+          return;
+        }
+      }
+
+      setCourtCloseSaving(true);
+      setCourtCloseErr("");
+      try {
+        const fd = new FormData();
+        fd.append("status", "closed");
+        fd.append("action_taken", closeActionTaken.trim());
+        if (closeCase.rta_service_vehicle_damaged) {
+          fd.append("rta_damage_authority_source", closeRtaAuthoritySource);
+          if (closeRtaAuthorityFile) fd.append("rta_damage_authority", closeRtaAuthorityFile);
+        }
+        const res = await caseService.update(closeCase.id, fd);
+        refreshSelected(res.data);
+        setFilter("closed");
+        loadCases();
+        setShowCourtCloseModal(false);
+        setCourtCloseCase(null);
+        setJudgmentFileRows([]);
+        setCloseActionTaken("");
+        setCloseClosureBasis("");
+        setClosePartIiOrderSerialNo("");
+        setClosePartIiOrderDate("");
+        setCloseChargesheetFile(null);
+        setCloseRtaAuthoritySource("");
+        setCloseRtaAuthorityFile(null);
+        setStatusErr("");
+        setRowActionErr("");
+      } catch (err) {
+        const d = err?.response?.data;
+        if (d?.detail) {
+          setCourtCloseErr(String(d.detail));
+        } else if (d && typeof d === "object") {
+          const msgs = Object.entries(d)
+            .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+            .join(" | ");
+          setCourtCloseErr(msgs || "Failed to close RTA case.");
+        } else {
+          setCourtCloseErr("Failed to close RTA case.");
+        }
+      } finally {
+        setCourtCloseSaving(false);
+      }
+      return;
+    }
     const closeBasisIsPartIi = closeClosureBasis === "part_ii_orders";
     const partIiOrderDateApi = parseDisplayDateForApi(closePartIiOrderDate);
     const hasSelectedClosureFile = closeBasisIsPartIi
@@ -2587,29 +2738,19 @@ export default function Cases({ user, criminalTypeFilter }) {
       setCourtCloseErr("Use date format dd/mm/yyyy.");
       return;
     }
-    if (!rowsWithFiles.length) {
-      setCourtCloseErr("Attach at least one Judgment PDF file.");
-      return;
-    }
-
     if (!String(closeActionTaken || "").trim()) {
       setCourtCloseErr("Verdict is required before closing this case.");
       return;
     }
 
-    if (!activeCloseCase?.rfi_document && !closeRfiFile) {
-      setCourtCloseErr("Upload the RFI document before closing this case.");
-      return;
-    }
-
     for (const row of rowsWithFiles) {
       if (!String(row.label || "").trim()) {
-        setCourtCloseErr("Each Judgment PDF must have a file label.");
+        setCourtCloseErr("Each supporting PDF must have a file label.");
         return;
       }
       const name = String(row.file?.name || "").toLowerCase();
       if (!name.endsWith(".pdf")) {
-        setCourtCloseErr("Only PDF files are allowed for Judgment attachments.");
+        setCourtCloseErr("Only PDF files are allowed for supporting attachments.");
         return;
       }
     }
@@ -2617,15 +2758,6 @@ export default function Cases({ user, criminalTypeFilter }) {
     if (closeCase.criminal_offence_type === "court_martial") {
       if (!(isHqsAdmin || isSuperuser)) {
         setCourtCloseErr("Only HQ battalion admin can close a Court Martial case.");
-        return;
-      }
-      const judgment = courtMilestones.find((m) => m.milestone_type === "judgment");
-      if (!judgment?.scheduled_date) {
-        setCourtCloseErr("Judgment date is required before closing a Court Martial case.");
-        return;
-      }
-      if (!String(judgment.action_remarks || judgment.planning_comment || "").trim()) {
-        setCourtCloseErr("Judgment remarks/comment are required before closing a Court Martial case.");
         return;
       }
     }
@@ -2651,7 +2783,6 @@ export default function Cases({ user, criminalTypeFilter }) {
       } else if (closeChargesheetFile) {
         fd.append("chargesheet", closeChargesheetFile);
       }
-      if (closeRfiFile) fd.append("rfi_document", closeRfiFile);
 
       const res = await caseService.update(closeCase.id, fd);
       refreshSelected(res.data);
@@ -2666,7 +2797,8 @@ export default function Cases({ user, criminalTypeFilter }) {
       setClosePartIiOrderSerialNo("");
       setClosePartIiOrderDate("");
       setCloseChargesheetFile(null);
-      setCloseRfiFile(null);
+      setCloseRtaAuthoritySource("");
+      setCloseRtaAuthorityFile(null);
       setCourtCloseErr("");
       setStatusErr("");
       setRowActionErr("");
@@ -2678,10 +2810,10 @@ export default function Cases({ user, criminalTypeFilter }) {
         const msgs = Object.entries(d)
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
           .join(" | ");
-        setCourtCloseErr(msgs || "Failed to attach judgment files and close case.");
-      } else {
-        setCourtCloseErr("Failed to attach judgment files and close case.");
-      }
+          setCourtCloseErr(msgs || "Failed to attach supporting files and close case.");
+        } else {
+          setCourtCloseErr("Failed to attach supporting files and close case.");
+        }
     } finally {
       setCourtCloseSaving(false);
     }
@@ -3084,6 +3216,60 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
   }
 
+  function toggleTrafficReportUpload() {
+    setShowTrafficReportUpload((prev) => !prev);
+    setTrafficReportErr("");
+    if (!showTrafficReportUpload) {
+      setTrafficReportFile(null);
+      setTrafficReportDamaged(selected?.rta_service_vehicle_damaged ? "yes" : "no");
+    }
+  }
+
+  async function handleTrafficAccidentReportUpload(e) {
+    e.preventDefault();
+    if (!selected) return;
+    if (selected.status === "closed") {
+      setTrafficReportErr("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
+    if (!trafficReportFile) {
+      setTrafficReportErr("Attach the Traffic Accident Report PDF.");
+      return;
+    }
+    if (!String(trafficReportFile.name || "").toLowerCase().endsWith(".pdf")) {
+      setTrafficReportErr("Traffic Accident Report must be uploaded as a PDF.");
+      return;
+    }
+    setTrafficReportSaving(true);
+    setTrafficReportErr("");
+    try {
+      const fd = new FormData();
+      fd.append("traffic_accident_report", trafficReportFile);
+      fd.append("rta_service_vehicle_damaged", trafficReportDamaged === "yes" ? "true" : "false");
+      const res = await caseService.update(selected.id, fd);
+      refreshSelected(res.data);
+      setTrafficReportFile(null);
+      setTrafficReportDamaged(res.data?.rta_service_vehicle_damaged ? "yes" : "no");
+      setShowTrafficReportUpload(false);
+      loadCases();
+      showToast("Traffic Accident Report attached. HQ Admin has been notified.", "success");
+    } catch (err) {
+      const d = err?.response?.data;
+      if (d?.detail) {
+        setTrafficReportErr(String(d.detail));
+      } else if (d && typeof d === "object") {
+        const msgs = Object.entries(d)
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+          .join(" | ");
+        setTrafficReportErr(msgs || "Failed to attach Traffic Accident Report.");
+      } else {
+        setTrafficReportErr("Failed to attach Traffic Accident Report.");
+      }
+    } finally {
+      setTrafficReportSaving(false);
+    }
+  }
+
   async function handleBriefUpload(e) {
     e.preventDefault();
     if (selected?.status === "closed") { setBriefUploadErr("Closed cases do not allow further uploads or attachment changes."); return; }
@@ -3128,17 +3314,6 @@ export default function Cases({ user, criminalTypeFilter }) {
       if (selectedIsCourtMartial && newStatus === "closed") {
         if (!(isHqsAdmin || isSuperuser)) {
           setStatusErr("Only HQ battalion admin can close a Court Martial case.");
-          setStatusSaving(false);
-          return false;
-        }
-        const judgment = courtMilestones.find((m) => m.milestone_type === "judgment");
-        if (!judgment?.scheduled_date) {
-          setStatusErr("Judgment date is required before closing a Court Martial case.");
-          setStatusSaving(false);
-          return false;
-        }
-        if (!String(judgment.action_remarks || judgment.planning_comment || "").trim()) {
-          setStatusErr("Judgment remarks/comment are required before closing a Court Martial case.");
           setStatusSaving(false);
           return false;
         }
@@ -4234,6 +4409,116 @@ export default function Cases({ user, criminalTypeFilter }) {
               </div>
             )}
 
+            {selectedIsRta && (
+              <div>
+                <SectionLabel>Road Traffic Accident</SectionLabel>
+                <div className="grid grid-cols-1 gap-3 bg-gray-700/30 rounded-lg p-3 sm:grid-cols-2">
+                  <div>
+                    <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Traffic Accident Report</p>
+                    {selected.traffic_accident_report ? (
+                      <ProtectedDocumentButton
+                        url={selected.traffic_accident_report}
+                        label="traffic accident report"
+                        onError={(message) => showToast(message, "error")}
+                        className="text-sm text-blue-400 hover:underline"
+                      >
+                        View Report
+                      </ProtectedDocumentButton>
+                    ) : (
+                      <p className="text-sm text-amber-300">Pending upload</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Service Vehicle Damage</p>
+                    <p className="text-sm text-gray-200">{selected.rta_service_vehicle_damaged ? "Damaged" : "No damage recorded"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Damage Authority</p>
+                    {selected.rta_service_vehicle_damaged ? (
+                      selected.rta_damage_authority ? (
+                        <ProtectedDocumentButton
+                          url={selected.rta_damage_authority}
+                          label="RTA damage authority"
+                          onError={(message) => showToast(message, "error")}
+                          className="text-sm text-blue-400 hover:underline"
+                        >
+                          {rtaDamageAuthorityLabel(selected.rta_damage_authority_source) || "View Authority"}
+                        </ProtectedDocumentButton>
+                      ) : (
+                        <p className="text-sm text-amber-300">Required before HQ closure</p>
+                      )
+                    ) : (
+                      <p className="text-sm text-gray-200">Not required</p>
+                    )}
+                  </div>
+                  {selected.traffic_accident_report_uploaded_at && (
+                    <Field
+                      label="Report Uploaded"
+                      value={new Date(selected.traffic_accident_report_uploaded_at).toLocaleString("en-GB")}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {selectedIsRta && canUploadTrafficAccidentReport && (
+              <div className="border-t border-gray-700 pt-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <SectionLabel>Traffic Accident Report</SectionLabel>
+                    <p className="text-xs text-gray-400">
+                      Required for every RTA before HQ Admin can close the case. Authority is required later only when the service vehicle is damaged.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={toggleTrafficReportUpload}
+                    disabled={trafficReportSaving}
+                    className="px-3 py-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                  >
+                    {showTrafficReportUpload ? "Cancel Report Upload" : (selected.traffic_accident_report ? "Replace Report" : "Attach Report")}
+                  </button>
+                </div>
+                {showTrafficReportUpload && (
+                  <form onSubmit={handleTrafficAccidentReportUpload} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
+                    <ScannableFileInput
+                      label="Traffic Accident Report *"
+                      file={trafficReportFile}
+                      onFileChange={(file) => { setTrafficReportFile(file); if (trafficReportErr) setTrafficReportErr(""); }}
+                      onScanError={setTrafficReportErr}
+                      accept="application/pdf,.pdf"
+                      documentType="traffic-accident-report"
+                      disabled={trafficReportSaving}
+                      helperText="Upload the signed Traffic Accident Report as a PDF."
+                    />
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Service Vehicle Damaged *</label>
+                      <select
+                        value={trafficReportDamaged}
+                        onChange={(e) => {
+                          setTrafficReportDamaged(e.target.value);
+                          if (trafficReportErr) setTrafficReportErr("");
+                        }}
+                        disabled={trafficReportSaving}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      >
+                        <option value="no">No damage to service vehicle</option>
+                        <option value="yes">Service vehicle damaged</option>
+                      </select>
+                    </div>
+                    <ErrMsg msg={trafficReportErr} />
+                    <button
+                      type="submit"
+                      disabled={trafficReportSaving || !trafficReportFile}
+                      className="w-full py-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white rounded text-sm font-medium"
+                    >
+                      {trafficReportSaving ? "Saving..." : "Submit Traffic Accident Report"}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
             {(selected.closure_basis || selected.part_ii_order_serial_no || selected.part_ii_order_date) && (
               <div>
                 <SectionLabel>Closure</SectionLabel>
@@ -4870,12 +5155,128 @@ export default function Cases({ user, criminalTypeFilter }) {
             </button>
 
             <h3 className="text-lg font-semibold text-white">
-              {activeCloseCaseIsCourtMartial ? "Close Court Martial Case" : activeCloseCaseIsDci ? "Close DCI / Civ Police Case" : "Close Case"}
+              {activeCloseCaseIsRta
+                ? "Close Road Traffic Accident Case"
+                : activeCloseCaseIsCourtMartial
+                  ? "Close Court Martial Case"
+                  : activeCloseCaseIsDci
+                    ? "Close DCI / Civ Police Case"
+                    : "Close Case"}
             </h3>
             <p className="text-xs text-gray-400">
-              Attach one or more <span className="font-semibold text-gray-300">Judgment PDF</span> files with labels before closing this case.
+              {activeCloseCaseIsRta ? (
+                "Traffic Accident Report is required for every RTA. Authority from HQ KA Moves or Legal is required only when the service vehicle is damaged."
+              ) : (
+                <>
+                  Select the closure basis and record the verdict. Supporting PDFs can be attached where available.
+                </>
+              )}
             </p>
 
+            {activeCloseCaseIsRta ? (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-orange-500/30 bg-orange-950/20 p-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Traffic Accident Report</p>
+                      {activeCloseCase.traffic_accident_report ? (
+                        <ProtectedDocumentButton
+                          url={activeCloseCase.traffic_accident_report}
+                          label="traffic accident report"
+                          onError={(message) => setCourtCloseErr(message)}
+                          className="text-sm text-blue-400 hover:underline"
+                        >
+                          View Report
+                        </ProtectedDocumentButton>
+                      ) : (
+                        <p className="text-sm text-red-300">Missing. Attach report before closing.</p>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Service Vehicle Damage</p>
+                      <p className="text-sm text-gray-200">
+                        {activeCloseCase.rta_service_vehicle_damaged ? "Damaged" : "No damage recorded"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {activeCloseCase.rta_service_vehicle_damaged ? (
+                  <div className="rounded-lg border border-gray-700 bg-gray-700/40 p-4 space-y-3">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">Authority Source *</label>
+                      <select
+                        value={closeRtaAuthoritySource}
+                        onChange={(e) => {
+                          setCloseRtaAuthoritySource(e.target.value);
+                          setCourtCloseErr("");
+                        }}
+                        disabled={courtCloseSaving}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                      >
+                        <option value="">Select authority source...</option>
+                        {RTA_DAMAGE_AUTHORITY_SOURCES.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {activeCloseCase.rta_damage_authority && (
+                      <div>
+                        <p className="text-[10px] uppercase text-gray-500 tracking-wider mb-0.5">Existing Authority</p>
+                        <ProtectedDocumentButton
+                          url={activeCloseCase.rta_damage_authority}
+                          label="RTA damage authority"
+                          onError={(message) => setCourtCloseErr(message)}
+                          className="text-sm text-blue-400 hover:underline"
+                        >
+                          {rtaDamageAuthorityLabel(activeCloseCase.rta_damage_authority_source) || "View Authority"}
+                        </ProtectedDocumentButton>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1">
+                        Authority PDF {activeCloseCase.rta_damage_authority ? "(replace optional)" : "*"}
+                      </label>
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          setCloseRtaAuthorityFile(e.target.files?.[0] || null);
+                          setCourtCloseErr("");
+                        }}
+                        disabled={courtCloseSaving}
+                        className="w-full rounded border border-gray-600 bg-gray-700 px-3 py-2 text-xs text-gray-200 file:mr-3 file:rounded file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-blue-700 disabled:opacity-50"
+                      />
+                      {closeRtaAuthorityFile && (
+                        <p className="mt-2 text-xs text-gray-300">Selected: {closeRtaAuthorityFile.name}</p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-gray-700 bg-gray-700/30 px-4 py-3 text-sm text-gray-300">
+                    Authority attachment is not required because no service vehicle damage is recorded.
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">Verdict *</label>
+                  <textarea
+                    value={closeActionTaken}
+                    onChange={(e) => {
+                      setCloseActionTaken(e.target.value);
+                      setCourtCloseErr("");
+                    }}
+                    disabled={courtCloseSaving}
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
+                    rows={4}
+                    placeholder="Enter the final RTA verdict"
+                  />
+                </div>
+              </div>
+            ) : (
             <div className="space-y-3">
               <div className="grid grid-cols-1 gap-4">
                 <div>
@@ -4956,36 +5357,22 @@ export default function Cases({ user, criminalTypeFilter }) {
                     />
                   </div>
                 )}
-                {!activeCloseCase?.rfi_document && (
-
-                  <div>
-                    <ScannableFileInput
-                      label="RFI Document *"
-                      file={closeRfiFile}
-                      onFileChange={(file) => setCloseRfiFile(file)}
-                      onScanError={setCourtCloseErr}
-                      documentType="rfi-document"
-                      disabled={courtCloseSaving}
-                    />
-                    <p className="text-[11px] text-gray-500 mt-1">RFI upload is required unless an RFI document already exists for this case.</p>
-                  </div>
-                )}
               </div>
               {judgmentFileRows.map((row, idx) => (
                 <div key={row.id} className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-2 items-end bg-gray-700/40 rounded-lg p-3">
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">File Label #{idx + 1}</label>
+                    <label className="text-xs text-gray-400 block mb-1">Supporting PDF Label #{idx + 1}</label>
                     <input
                       type="text"
                       value={row.label}
                       onChange={(e) => updateJudgmentFileRow(row.id, { label: e.target.value })}
                       disabled={courtCloseSaving}
                       className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
-                      placeholder="e.g. Judgment Order - Session 1"
+                      placeholder="e.g. Judgment Order, covering memo, or related PDF"
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-gray-400 block mb-1">Judgment PDF</label>
+                    <label className="text-xs text-gray-400 block mb-1">Supporting PDF</label>
                     <input
                       type="file"
                       accept="application/pdf,.pdf"
@@ -5025,16 +5412,21 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </div>
               ))}
             </div>
+            )}
 
             <div className="flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={addJudgmentFileRow}
-                disabled={courtCloseSaving}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-xs font-medium"
-              >
-                + Add Another PDF
-              </button>
+              {!activeCloseCaseIsRta ? (
+                <button
+                  type="button"
+                  onClick={addJudgmentFileRow}
+                  disabled={courtCloseSaving}
+                  className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                >
+                  + Add Supporting PDF
+                </button>
+              ) : (
+                <span />
+              )}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -5050,7 +5442,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                   disabled={courtCloseSaving}
                   className="px-4 py-2 bg-green-700 hover:bg-green-800 disabled:opacity-50 text-white rounded text-xs font-medium"
                 >
-                  {courtCloseSaving ? "Closing..." : "Attach PDFs & Close Case"}
+                  {courtCloseSaving ? "Closing..." : (activeCloseCaseIsRta ? "Close RTA Case" : "Close Case")}
                 </button>
               </div>
             </div>
@@ -5846,8 +6238,8 @@ export default function Cases({ user, criminalTypeFilter }) {
                       <TextAutocompleteInput
                         value={sourceCaseForm.originating_unit}
                         onChange={(value) => updateSourceCaseField("originating_unit", value)}
-                        options={unitNames}
-                        placeholder="Type originating sub-unit..."
+                        options={originatingSubUnitOptions}
+                        placeholder="Search Coy or detachment..."
                       />
                     </div>
                     <div>
@@ -5858,6 +6250,18 @@ export default function Cases({ user, criminalTypeFilter }) {
                         placeholder="e.g. OB No. 57/13/07/2026"
                         className={CASE_FORM_CONTROL}
                       />
+                    </div>
+                    <div>
+                      <CaseFormLabel>Service Vehicle Damaged *</CaseFormLabel>
+                      <select
+                        value={sourceCaseForm.service_vehicle_damaged}
+                        onChange={(e) => updateSourceCaseField("service_vehicle_damaged", e.target.value)}
+                        required
+                        className={CASE_FORM_CONTROL}
+                      >
+                        <option value="no">No damage to service vehicle</option>
+                        <option value="yes">Service vehicle damaged</option>
+                      </select>
                     </div>
                     <div className="md:col-span-3">
                       <CaseFormLabel>History of the Accident *</CaseFormLabel>
@@ -5878,10 +6282,12 @@ export default function Cases({ user, criminalTypeFilter }) {
                       />
                     </div>
                     <div>
-                      <CaseFormLabel>Damages</CaseFormLabel>
+                      <CaseFormLabel>Damages {isRtaServiceVehicleDamaged(sourceCaseForm) ? "*" : ""}</CaseFormLabel>
                       <textarea
                         value={sourceCaseForm.damages}
                         onChange={(e) => updateSourceCaseField("damages", e.target.value)}
+                        required={isRtaServiceVehicleDamaged(sourceCaseForm)}
+                        placeholder={isRtaServiceVehicleDamaged(sourceCaseForm) ? "Describe service vehicle damage" : "Optional if there is no service vehicle damage"}
                         className={`${CASE_FORM_CONTROL} min-h-20 resize-none`}
                       />
                     </div>

@@ -110,7 +110,7 @@ const ROLE_LABELS = {
   duty_officer: "Duty Officer",
   hod: "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment: "IC COY",
+  detachment: "IC Cases",
   personnel: "Personnel",
   legal: "Legal Officer",
   order_nco: "Order NCO",

@@ -12,8 +12,8 @@ export const ROAD_TRAFFIC_ACCIDENT_LABELS = [
 
 export function isRoadTrafficAccidentCase(caseObj) {
   if (!caseObj) return false;
+  if (String(caseObj.case_type || "").toLowerCase() === RTA_CASE_TYPE) return true;
   return [
-    caseObj.case_type,
     caseObj.offence,
     caseObj.offence_name,
     caseObj.title,

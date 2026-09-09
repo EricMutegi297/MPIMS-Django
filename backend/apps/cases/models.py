@@ -46,6 +46,11 @@ def exhibit_lifecycle_document_path(instance, filename):
 
 
 class Case(models.Model):
+    class CaseType(models.TextChoices):
+        RFI = "rfi", "RFI Case"
+        INCIDENT = "incident", "Incident Case"
+        RTA = "rta", "Road Traffic Accident"
+
     class Status(models.TextChoices):
         NEW = "new", "New"
         OPEN = "open", "Open"
@@ -78,7 +83,12 @@ class Case(models.Model):
         CANCELLATION_LETTER = "cancellation_letter", "Cancellation Letter"
         SERVICE_HQS_AUTHORITY = "service_hqs_authority", "Authority From Service HQs"
 
+    class RtaDamageAuthoritySource(models.TextChoices):
+        HQ_KA_MOVES = "hq_ka_moves", "HQ KA Moves"
+        LEGAL = "legal", "Legal"
+
     case_number = models.CharField(max_length=30, unique=True, blank=True)
+    case_type = models.CharField(max_length=25, choices=CaseType.choices, default=CaseType.RFI)
     title = models.CharField(max_length=200, blank=True)
     description = EncryptedTextField(blank=True)
     status = models.CharField(max_length=25, choices=Status.choices, default=Status.NEW)
@@ -155,6 +165,23 @@ class Case(models.Model):
     closure_basis = models.CharField(max_length=35, choices=ClosureBasis.choices, blank=True)
     part_ii_order_serial_no = models.CharField(max_length=50, blank=True)
     part_ii_order_date = models.DateField(null=True, blank=True)
+    traffic_accident_report = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    traffic_accident_report_uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_traffic_accident_reports",
+    )
+    traffic_accident_report_uploaded_at = models.DateTimeField(null=True, blank=True)
+    rta_service_vehicle_damaged = models.BooleanField(default=False)
+    rta_damage_authority_source = models.CharField(
+        max_length=20,
+        choices=RtaDamageAuthoritySource.choices,
+        blank=True,
+    )
+    rta_damage_authority = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    rta_damage_authority_uploaded_at = models.DateTimeField(null=True, blank=True)
     mentioning_date = models.DateField(null=True, blank=True)
     mentioning_remarks = EncryptedTextField(blank=True)
     close_requested = models.BooleanField(default=False)
@@ -248,7 +275,7 @@ class CaseBrief(models.Model):
         CO = "co", "Commanding Officer"
         OC = "oc", "OC"
         CORPS_CMD = "corps_cmd", "Corps Cmd"
-        DETACHMENT = "detachment", "IC COY"
+        DETACHMENT = "detachment", "IC Cases"
         ADJ = "adj", "Adjutant"
         TWO_IC = "2ic", "2IC"
 

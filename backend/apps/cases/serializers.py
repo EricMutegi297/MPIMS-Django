@@ -18,11 +18,19 @@ from .models import (
     InvestigationTeam,
 )
 from apps.formations.models import Battalion, Unit
+from apps.users.access import is_hqs_admin
 from apps.users.models import User
 
 
 CLOSED_CASE_FILE_ERROR = "Closed cases do not allow further uploads or attachment changes."
-CASE_FILE_FIELDS = {"tasking_letter", "rfi_document", "chargesheet", "part_one_orders"}
+CASE_FILE_FIELDS = {
+    "tasking_letter",
+    "rfi_document",
+    "chargesheet",
+    "part_one_orders",
+    "traffic_accident_report",
+    "rta_damage_authority",
+}
 
 
 class CaseAttachmentSerializer(serializers.ModelSerializer):
@@ -672,6 +680,63 @@ class CaseSerializer(serializers.ModelSerializer):
     def _blank(value):
         return not str(value or "").strip()
 
+    @staticmethod
+    def _file_name(file_obj):
+        return str(getattr(file_obj, "name", "") or file_obj or "")
+
+    def _validate_pdf_upload(self, errors, field_name, file_obj, label):
+        if not file_obj:
+            return
+        if not self._file_name(file_obj).lower().endswith(".pdf"):
+            errors[field_name] = f"{label} must be uploaded as a PDF."
+
+    def _is_hqs_user(self, user):
+        return bool(user and user.is_authenticated and (user.is_superuser or is_hqs_admin(user)))
+
+    def _can_upload_rta_report(self, user, case):
+        if self._is_hqs_user(user):
+            return True
+        if not user or not user.is_authenticated or not case:
+            return False
+        if (
+            user.role == User.Role.DETACHMENT
+            and user.detachment_id
+            and user.detachment_id == case.tasked_detachment_id
+        ):
+            return True
+        if (
+            user.role == User.Role.ADMIN
+            and user.battalion_id
+            and user.battalion_id == case.tasked_battalion_id
+        ):
+            return True
+        return False
+
+    def _is_rta_case(self, attrs, instance, offence_ref=None, offence_text=""):
+        case_type = attrs.get("case_type", getattr(instance, "case_type", ""))
+        if case_type == Case.CaseType.RTA:
+            return True
+
+        source_incident_type = ""
+        if instance:
+            try:
+                source_incident_type = instance.source_incident.incident_type
+            except Exception:
+                source_incident_type = ""
+
+        values = [
+            offence_text,
+            attrs.get("offence"),
+            getattr(offence_ref, "name", ""),
+            getattr(attrs.get("offence_ref"), "name", ""),
+            attrs.get("title"),
+            getattr(instance, "offence", ""),
+            getattr(getattr(instance, "offence_ref", None), "name", ""),
+            getattr(instance, "title", ""),
+            source_incident_type,
+        ]
+        return any("road traffic accident" in str(value or "").lower() for value in values)
+
     def _validate_required_create_fields(self, attrs):
         errors = {}
 
@@ -783,6 +848,23 @@ class CaseSerializer(serializers.ModelSerializer):
             "part_ii_order_date",
             getattr(instance, "part_ii_order_date", None),
         )
+        traffic_accident_report = attrs.get(
+            "traffic_accident_report",
+            getattr(instance, "traffic_accident_report", None),
+        )
+        rta_service_vehicle_damaged = attrs.get(
+            "rta_service_vehicle_damaged",
+            getattr(instance, "rta_service_vehicle_damaged", False),
+        )
+        rta_damage_authority_source = attrs.get(
+            "rta_damage_authority_source",
+            getattr(instance, "rta_damage_authority_source", ""),
+        )
+        rta_damage_authority = attrs.get(
+            "rta_damage_authority",
+            getattr(instance, "rta_damage_authority", None),
+        )
+        is_rta_case = self._is_rta_case(attrs, instance, offence_ref, offence_text)
         tasking_requested = any(
             field in attrs
             for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
@@ -833,6 +915,23 @@ class CaseSerializer(serializers.ModelSerializer):
                 )
             self._validate_required_create_fields(attrs)
 
+        rta_report_fields = {"traffic_accident_report", "rta_service_vehicle_damaged"} & set(attrs)
+        if instance and rta_report_fields:
+            if not is_rta_case:
+                raise serializers.ValidationError(
+                    {"traffic_accident_report": "Traffic Accident Report can only be attached to RTA cases."}
+                )
+            if not self._can_upload_rta_report(user, instance):
+                raise serializers.ValidationError(
+                    {"traffic_accident_report": "Only IC Cases for the tasked Coy/Det, the tasked battalion admin, or HQ Admin can attach the Traffic Accident Report."}
+                )
+
+        rta_authority_fields = {"rta_damage_authority", "rta_damage_authority_source"} & set(attrs)
+        if instance and rta_authority_fields and not self._is_hqs_user(user):
+            raise serializers.ValidationError(
+                {"rta_damage_authority": "Only HQ Admin can attach RTA damage authority from HQ KA Moves or Legal."}
+            )
+
         if tasked_battalion and tasked_battalion.battalion_type not in {
             Battalion.BattalionType.SPECIAL,
             Battalion.BattalionType.NORMAL,
@@ -849,6 +948,33 @@ class CaseSerializer(serializers.ModelSerializer):
                 rfi_errors["rfi_date"] = "RFI date is required when an RFI attachment is uploaded."
             if rfi_errors:
                 raise serializers.ValidationError(rfi_errors)
+
+        document_errors = {}
+        if "traffic_accident_report" in attrs:
+            self._validate_pdf_upload(
+                document_errors,
+                "traffic_accident_report",
+                attrs.get("traffic_accident_report"),
+                "Traffic Accident Report",
+            )
+        if "rta_damage_authority" in attrs:
+            self._validate_pdf_upload(
+                document_errors,
+                "rta_damage_authority",
+                attrs.get("rta_damage_authority"),
+                "RTA damage authority",
+            )
+        if document_errors:
+            raise serializers.ValidationError(document_errors)
+
+        if instance and is_rta_case and "traffic_accident_report" in attrs and attrs.get("traffic_accident_report"):
+            if target_status in {Case.Status.TASKED, Case.Status.UNDER_INVESTIGATION, Case.Status.PENDING}:
+                attrs["status"] = Case.Status.SERVED
+                target_status = Case.Status.SERVED
+            if not close_requested:
+                attrs["close_requested"] = True
+                attrs["close_requested_at"] = timezone.now()
+                close_requested = True
 
         tasking_validation_requested = tasking_requested or (status_in_payload and target_status == Case.Status.TASKED)
         if tasking_validation_requested and not tasked_battalion:
@@ -951,6 +1077,30 @@ class CaseSerializer(serializers.ModelSerializer):
                     {"status": "Cases can only be closed after creation and service workflow."}
                 )
 
+            if is_rta_case:
+                rta_errors = {}
+                if not self._is_hqs_user(user):
+                    rta_errors["status"] = "Only HQ Admin can close Road Traffic Accident cases."
+                if not traffic_accident_report:
+                    rta_errors["traffic_accident_report"] = "Attach the Traffic Accident Report before closing this RTA case."
+                if not str(attrs.get("action_taken") or getattr(instance, "action_taken", "") or "").strip():
+                    rta_errors["action_taken"] = "Verdict is required before closing this RTA case."
+                if rta_service_vehicle_damaged:
+                    if self._blank(rta_damage_authority_source):
+                        rta_errors["rta_damage_authority_source"] = "Select whether authority is from HQ KA Moves or Legal."
+                    if not rta_damage_authority:
+                        rta_errors["rta_damage_authority"] = "Attach authority from HQ KA Moves or Legal before closing a damaged service-vehicle RTA case."
+                if rta_errors:
+                    raise serializers.ValidationError(rta_errors)
+                attrs["case_type"] = Case.CaseType.RTA
+                if not attrs.get("closed_at"):
+                    attrs["closed_at"] = timezone.now()
+
+                resolved_offence = self._resolved_offence_text(offence_text, offence_ref)
+                if resolved_offence:
+                    attrs["offence"] = resolved_offence
+                return attrs
+
             closure_errors = {}
             if self._blank(closure_basis):
                 closure_errors["closure_basis"] = "Select what this case is being closed with."
@@ -975,39 +1125,12 @@ class CaseSerializer(serializers.ModelSerializer):
                     {"chargesheet": "Attach the selected closure PDF before closing this case."}
                 )
 
-            if not (attrs.get("rfi_document") or getattr(instance, "rfi_document", None)):
-                raise serializers.ValidationError(
-                    {"rfi_document": "Upload the RFI document before closing this case."}
-                )
-
-            has_judgment_file = instance.extra_attachments.filter(
-                document_type=CaseAttachment.DocumentType.JUDGMENT
-            ).exists()
-            if not has_judgment_file:
-                raise serializers.ValidationError(
-                    {"status": "Attach at least one Judgment PDF file before closing this case."}
-                )
-
-            if is_court_martial:
-                judgment_qs = instance.court_martial_milestones.filter(
-                    milestone_type=CaseCourtMartialMilestone.MilestoneType.JUDGMENT
-                )
-                if not judgment_qs.exists():
-                    raise serializers.ValidationError(
-                        {"status": "Add a Judgment milestone date before closing a Court Martial case."}
-                    )
-                has_judgment_comment = judgment_qs.filter(
-                    Q(action_remarks__gt="") | Q(planning_comment__gt="")
-                ).exists()
-                if not has_judgment_comment:
-                    raise serializers.ValidationError(
-                        {"status": "Judgment remarks/comment are required before closing a Court Martial case."}
-                    )
-
         # Keep offence text populated from offence reference when free text is not provided.
         resolved_offence = self._resolved_offence_text(offence_text, offence_ref)
         if resolved_offence:
             attrs["offence"] = resolved_offence
+        if is_rta_case:
+            attrs["case_type"] = Case.CaseType.RTA
 
         return attrs
 
@@ -1054,6 +1177,14 @@ class CaseSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         accused_entries = validated_data.pop("accused_entries", None)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if validated_data.get("traffic_accident_report"):
+            validated_data["traffic_accident_report_uploaded_at"] = timezone.now()
+            if user and user.is_authenticated:
+                validated_data["traffic_accident_report_uploaded_by"] = user
+        if validated_data.get("rta_damage_authority"):
+            validated_data["rta_damage_authority_uploaded_at"] = timezone.now()
         case = super().update(instance, validated_data)
         if accused_entries is not None:
             self._create_or_update_accused_entries(case, accused_entries)

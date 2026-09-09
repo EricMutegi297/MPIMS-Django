@@ -81,11 +81,11 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         if should_block_command_write(request.user, request.method):
             raise PermissionDenied(command_read_only_message(request.user))
         if request.method not in permissions.SAFE_METHODS and not self._can_manage_teams(request.user):
-            raise PermissionDenied("Only IC COY or Special Battalion Admin can create or manage investigation teams.")
+            raise PermissionDenied("Only IC Cases or Special Battalion Admin can create or manage investigation teams.")
 
     def perform_create(self, serializer):
         user = self.request.user
-        # IC COY creates teams scoped to their company record
+        # IC Cases creates teams scoped to their company record.
         if user.role == "detachment" and user.detachment_id:
             serializer.save(battalion=user.battalion, detachment=user.detachment)
         else:
@@ -99,7 +99,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(
                 Q(team_ic=user) | Q(members=user)
             ).distinct()
-        # IC COY sees only their company teams
+        # IC Cases sees only their company teams.
         if user.role == "detachment" and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
         if user.battalion_id:
@@ -502,7 +502,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT:
             if user.role == User.Role.DETACHMENT and user.detachment_id == exhibit.target_detachment_id:
                 return
-            raise PermissionDenied("Only the target IC COY can review this exhibit storage request.")
+            raise PermissionDenied("Only the target IC Cases user can review this exhibit storage request.")
         if exhibit.storage_scope in {
             ExhibitStorageRequest.StorageScope.BATTALION,
             ExhibitStorageRequest.StorageScope.SPECIAL_BATTALION,
@@ -542,7 +542,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             if user.battalion_id in battalion_ids:
                 return
 
-        raise PermissionDenied("Only Admin, IC COY, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
+        raise PermissionDenied("Only Admin, IC Cases, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
 
     def _ensure_can_scan_release_document(self, user):
         allowed_roles = {
@@ -854,7 +854,8 @@ class CaseViewSet(viewsets.ModelViewSet):
         if case_type != "rta":
             return queryset
         return queryset.filter(
-            Q(offence__icontains="road traffic accident")
+            Q(case_type=Case.CaseType.RTA)
+            | Q(offence__icontains="road traffic accident")
             | Q(offence_ref__name__icontains="road traffic accident")
             | Q(title__icontains="road traffic accident")
             | Q(source_incident__incident_type__icontains="road traffic accident")
@@ -948,7 +949,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 | Q(assigned_team__detachment__battalion_id=user.battalion_id)
             ).distinct())
 
-        # IC COY (role=detachment) sees cases tasked to their company record
+        # IC Cases (role=detachment) sees cases tasked to their company record.
         if user.role == "detachment" and user.detachment_id:
             return self._apply_case_type_filter(base_qs.filter(
                 Q(tasked_detachment_id=user.detachment_id)
@@ -1107,6 +1108,8 @@ class CaseViewSet(viewsets.ModelViewSet):
             | Q(tasking_letter=media_name)
             | Q(chargesheet=media_name)
             | Q(part_one_orders=media_name)
+            | Q(traffic_accident_report=media_name)
+            | Q(rta_damage_authority=media_name)
             | Q(extra_attachments__file=media_name)
             | Q(brief__file=media_name)
             | Q(brief__back_brief__file=media_name)
@@ -1357,7 +1360,33 @@ class CaseViewSet(viewsets.ModelViewSet):
         previous_tasked_battalion_id = instance.tasked_battalion_id
         previous_tasked_detachment_id = instance.tasked_detachment_id
         previous_close_requested = instance.close_requested
+        previous_traffic_accident_report = instance.traffic_accident_report.name if instance.traffic_accident_report else ""
+        previous_rta_damage_authority = instance.rta_damage_authority.name if instance.rta_damage_authority else ""
         case = serializer.save()
+        current_traffic_accident_report = case.traffic_accident_report.name if case.traffic_accident_report else ""
+        current_rta_damage_authority = case.rta_damage_authority.name if case.rta_damage_authority else ""
+
+        if current_traffic_accident_report and current_traffic_accident_report != previous_traffic_accident_report:
+            damage_label = "Yes" if case.rta_service_vehicle_damaged else "No"
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.ATTACHMENT_UPLOADED,
+                f"Traffic Accident Report attached. Service vehicle damaged: {damage_label}.",
+            )
+            self._send_rta_report_notification(case, self.request.user)
+
+        if current_rta_damage_authority and current_rta_damage_authority != previous_rta_damage_authority:
+            authority_label = dict(Case.RtaDamageAuthoritySource.choices).get(
+                case.rta_damage_authority_source,
+                case.rta_damage_authority_source or "Not specified",
+            )
+            self._log_action(
+                case,
+                self.request.user,
+                CaseActivityLog.Action.ATTACHMENT_UPLOADED,
+                f"RTA damage authority attached from {authority_label}.",
+            )
 
         battalion_tasking_changed = (
             previous_tasked_battalion_id != case.tasked_battalion_id
@@ -1726,10 +1755,10 @@ class CaseViewSet(viewsets.ModelViewSet):
                 pass
 
     def _send_detachment_tasking_notification(self, case):
-        """Notify all users in the tasked company (role=detachment as IC COY)."""
+        """Notify all users in the tasked company (role=detachment as IC Cases)."""
         if not case.tasked_detachment_id:
             return
-        # Notify users whose company record matches and whose role is 'detachment' (IC COY)
+        # Notify users whose company record matches and whose role is 'detachment' (IC Cases).
         users = User.objects.filter(
             detachment_id=case.tasked_detachment_id,
             role="detachment",
@@ -1803,7 +1832,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 pass
 
     def _send_closed_notification(self, case):
-        """Notify assigned team (IC + members), tasked battalion admin, and IC COY if company-level."""
+        """Notify assigned team (IC + members), tasked battalion admin, and IC Cases if company-level."""
         recipients = set()
         if case.assigned_to and case.assigned_to.is_active:
             recipients.add(case.assigned_to)
@@ -1826,7 +1855,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 is_active=True,
             ))
 
-        # IC COY if this is a company-level case
+        # IC Cases if this is a company-level case.
         if case.tasked_detachment_id:
             recipients.update(User.objects.filter(
                 role="detachment",
@@ -1876,7 +1905,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 )
             )
 
-        # Tasked IC COY users
+        # Tasked IC Cases users.
         if case.tasked_detachment_id:
             recipients.update(
                 User.objects.filter(
@@ -1968,6 +1997,54 @@ class CaseViewSet(viewsets.ModelViewSet):
             try:
                 send_mail(
                     subject=f"[MPIMS] Close Request — Case {case.case_number}",
+                    message=msg,
+                    from_email=django_settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=email_list,
+                    fail_silently=True,
+                )
+            except Exception:
+                pass
+
+    def _send_rta_report_notification(self, case, actor=None):
+        """Notify HQ admins when IC Cases attaches the Traffic Accident Report."""
+        recipients = set(User.objects.filter(
+            Q(is_superuser=True)
+            | Q(
+                role__in=[User.Role.ADMIN, User.Role.MPC_HQS],
+                battalion__battalion_type=Battalion.BattalionType.HQS,
+            ),
+            is_active=True,
+        ))
+        if actor:
+            recipients.discard(actor)
+        if not recipients:
+            return
+
+        damage_message = (
+            "Service vehicle damage is recorded; attach HQ KA Moves or Legal authority before closure."
+            if case.rta_service_vehicle_damaged
+            else "No service vehicle damage is recorded; the case is ready for HQ closure review."
+        )
+        msg = (
+            f"Traffic Accident Report for RTA Case No {case.case_number} has been attached by "
+            f"{self._actor_label(actor)}. {damage_message}"
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=user,
+                message=msg,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            )
+            for user in recipients
+        ])
+
+        email_list = [user.email for user in recipients if user.email]
+        if email_list:
+            try:
+                send_mail(
+                    subject=f"[MPIMS] Traffic Accident Report {case.case_number}",
                     message=msg,
                     from_email=django_settings.DEFAULT_FROM_EMAIL,
                     recipient_list=email_list,

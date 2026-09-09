@@ -184,7 +184,7 @@ class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
 
         approver_id = request.data.get("forwarded_to")
         if not approver_id:
-            raise ValidationError({"forwarded_to": "Select IC COY, Adjutant, HOD, 2IC, or OC for approval."})
+            raise ValidationError({"forwarded_to": "Select IC Cases, Adjutant, HOD, 2IC, or OC for approval."})
         try:
             approver = self._approver_queryset(request.user).get(id=approver_id)
         except User.DoesNotExist as exc:
