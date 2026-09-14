@@ -1,34 +1,38 @@
-import re
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
-from django.db.models import Q
 from apps.cases.models import Case, CaseActivityLog
 from apps.cases.serializers import CaseSerializer
-from apps.dutyrooms.models import DutyRoster, DutyRosterPost
 from .models import Incident
 from .serializers import IncidentSerializer
-from apps.users.access import command_read_only_message, has_global_read_access, should_block_command_write
+from apps.users.access import command_read_only_message, is_hqs_admin, should_block_command_write
 from apps.users.models import User
-
-
-DUTY_OFFICER_POST_NAME = "duty officer"
-DUTY_OFFICER_COMPILE_GRACE_HOURS = 24
-
-
-def normalize_post_name(value):
-    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
 class IncidentViewSet(viewsets.ModelViewSet):
     queryset = Incident.objects.all()
     serializer_class = IncidentSerializer
     filterset_fields = ["status", "severity", "unit", "battalion", "is_belated"]
-    search_fields = ["incident_number", "incident_type", "location"]
+    search_fields = [
+        "incident_number",
+        "incident_type",
+        "location",
+        "service_vehicle",
+        "service_member",
+        "civilian",
+        "unit_involved",
+        "originating_unit",
+        "police_ob_reference",
+        "unit__name",
+        "unit__code",
+        "battalion__name",
+    ]
+    ordering_fields = ["incident_number", "date_occurred", "created_at", "updated_at", "status", "severity"]
+    ordering = ["-date_occurred"]
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
@@ -45,12 +49,22 @@ class IncidentViewSet(viewsets.ModelViewSet):
             "source_ob_entry__book",
         ).all()
         user = self.request.user
-        if has_global_read_access(user) or self._has_duty_officer_assignment(user):
-            scoped = qs
-        elif user.battalion_id:
-            scoped = qs.filter(Q(battalion_id=user.battalion_id) | Q(unit__battalion_id=user.battalion_id)).distinct()
-        else:
-            scoped = qs.filter(reported_by=user)
+        if not user or not user.is_authenticated:
+            return qs.none()
+        scoped = qs
+
+        kind = str(self.request.query_params.get("kind") or "").strip().lower()
+        if kind == "rta":
+            scoped = scoped.filter(incident_type__icontains="road traffic accident")
+        elif kind == "incident":
+            scoped = scoped.exclude(incident_type__icontains="road traffic accident")
+
+        date_from = self._parse_date_param("date_from")
+        date_to = self._parse_date_param("date_to")
+        if date_from:
+            scoped = scoped.filter(date_occurred__date__gte=date_from)
+        if date_to:
+            scoped = scoped.filter(date_occurred__date__lte=date_to)
 
         requires_investigation = str(self.request.query_params.get("requires_investigation", "")).lower()
         if requires_investigation in {"1", "true", "yes"}:
@@ -67,12 +81,23 @@ class IncidentViewSet(viewsets.ModelViewSet):
         return scoped
 
     def perform_create(self, serializer):
-        from datetime import timedelta
+        if not self._can_manage_incidents(self.request.user):
+            raise PermissionDenied("Only Superuser or HQ Admin can add new incidents.")
         obj = serializer.save(reported_by=self.request.user)
         # Mark belated if reported more than 24h after occurrence
         if obj.date_occurred and (timezone.now() - obj.date_occurred) > timedelta(hours=24):
             obj.is_belated = True
             obj.save(update_fields=["is_belated"])
+
+    def perform_update(self, serializer):
+        if not self._can_manage_incidents(self.request.user):
+            raise PermissionDenied("Only Superuser or HQ Admin can edit incidents.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not self._can_manage_incidents(self.request.user):
+            raise PermissionDenied("Only Superuser or HQ Admin can delete incidents.")
+        instance.delete()
 
     @action(detail=True, methods=["post"], url_path="convert-to-case")
     def convert_to_case(self, request, pk=None):
@@ -214,13 +239,14 @@ class IncidentViewSet(viewsets.ModelViewSet):
             return True
         return user.role == User.Role.ADMIN and getattr(user.battalion, "battalion_type", "") == "hqs"
 
-    def _has_duty_officer_assignment(self, user):
-        now = timezone.now()
-        handover_cutoff = now - timedelta(hours=DUTY_OFFICER_COMPILE_GRACE_HOURS)
-        posts = DutyRosterPost.objects.filter(
-            roster__status=DutyRoster.Status.PUBLISHED,
-            assigned_personnel=user,
-            starts_at__lte=now,
-            ends_at__gt=handover_cutoff,
-        ).order_by("-ends_at", "post_name")
-        return any(normalize_post_name(post.post_name) == DUTY_OFFICER_POST_NAME for post in posts)
+    def _can_manage_incidents(self, user):
+        return bool(user and user.is_authenticated and (user.is_superuser or is_hqs_admin(user)))
+
+    def _parse_date_param(self, name):
+        value = self.request.query_params.get(name)
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValidationError({name: "Use YYYY-MM-DD format."}) from exc

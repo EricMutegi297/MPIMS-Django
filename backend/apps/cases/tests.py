@@ -601,6 +601,33 @@ class CaseApiTests(TestCase):
         self.assertEqual(case.status, Case.Status.SERVED)
         self.assertTrue(case.close_requested)
 
+    def test_upload_rta_report_requires_io_or_team_assignment(self):
+        case = Case.objects.create(
+            title="RTA Unassigned Report",
+            offence="Road Traffic Accident",
+            case_type=Case.CaseType.RTA,
+            status=Case.Status.UNDER_INVESTIGATION,
+            tasked_battalion=self.special_battalion,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=self.special_admin)
+
+        response = self.client.patch(
+            reverse("case-detail", args=[case.id]),
+            {
+                "traffic_accident_report": SimpleUploadedFile(
+                    "traffic-report.pdf",
+                    b"%PDF-1.4\n",
+                    content_type="application/pdf",
+                ),
+                "rta_service_vehicle_damaged": "false",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("traffic_accident_report", response.data)
+
     def assert_notification_message(self, case, expected):
         notifications = Notification.objects.filter(
             recipient=self.corps_commander,

@@ -30,6 +30,8 @@ CASE_FILE_FIELDS = {
     "part_one_orders",
     "traffic_accident_report",
     "rta_damage_authority",
+    "served_abstract",
+    "clearance_certificate",
 }
 
 
@@ -606,6 +608,10 @@ class CaseSerializer(serializers.ModelSerializer):
     source_incident_how_occurred = serializers.SerializerMethodField()
     source_incident_rta_vehicles = serializers.SerializerMethodField()
     source_incident_rta_casualties = serializers.SerializerMethodField()
+    abstract_acknowledged_by_name = serializers.SerializerMethodField()
+    unit_closure_requested_by_name = serializers.SerializerMethodField()
+    unit_closure_decided_by_name = serializers.SerializerMethodField()
+    clearance_certificate_uploaded_by_name = serializers.SerializerMethodField()
     brief = CaseBriefSerializer(read_only=True)
     accused_entries = CaseAccusedSerializer(many=True, required=False)
 
@@ -625,7 +631,24 @@ class CaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Case
         fields = "__all__"
-        read_only_fields = ["case_number", "created_at", "updated_at", "served_at"]
+        read_only_fields = [
+            "case_number",
+            "created_at",
+            "updated_at",
+            "served_at",
+            "abstract_acknowledged_at",
+            "abstract_acknowledged_by",
+            "unit_closure_status",
+            "unit_closure_requested_at",
+            "unit_closure_requested_by",
+            "unit_closure_request_note",
+            "unit_closure_decided_at",
+            "unit_closure_decided_by",
+            "unit_closure_decision_note",
+            "clearance_certificate",
+            "clearance_certificate_uploaded_by",
+            "clearance_certificate_uploaded_at",
+        ]
 
     def to_internal_value(self, data):
         if isinstance(data, Mapping):
@@ -726,9 +749,40 @@ class CaseSerializer(serializers.ModelSerializer):
             user.role == User.Role.ADMIN
             and user.battalion_id
             and user.battalion_id == case.tasked_battalion_id
+            and getattr(user.battalion, "battalion_type", None) == Battalion.BattalionType.SPECIAL
         ):
             return True
         return False
+
+    def _can_mark_served(self, user, case):
+        if self._is_hqs_user(user):
+            return True
+        if not user or not user.is_authenticated or not case:
+            return False
+        if user.role == User.Role.DETACHMENT and user.detachment_id:
+            return user.detachment_id == case.tasked_detachment_id
+        if user.role in {User.Role.CO, User.Role.OC, User.Role.ADJ, User.Role.TWO_IC, User.Role.COMMANDANT}:
+            return bool(
+                user.detachment_id
+                and user.detachment_id == case.tasked_detachment_id
+            )
+        if user.role == User.Role.ADMIN:
+            return bool(
+                user.battalion_id
+                and user.battalion_id == case.tasked_battalion_id
+                and getattr(user.battalion, "battalion_type", None) == Battalion.BattalionType.SPECIAL
+            )
+        return False
+
+    @staticmethod
+    def _case_has_investigation_assignment(case):
+        return bool(
+            case
+            and (
+                getattr(case, "assigned_to_id", None)
+                or getattr(case, "assigned_team_id", None)
+            )
+        )
 
     def _is_rta_case(self, attrs, instance, offence_ref=None, offence_text=""):
         case_type = attrs.get("case_type", getattr(instance, "case_type", ""))
@@ -940,6 +994,26 @@ class CaseSerializer(serializers.ModelSerializer):
                 )
             self._validate_required_create_fields(attrs)
 
+        if instance and "rta_service_vehicle_damaged" in attrs and not self._is_hqs_user(user):
+            current_damage = bool(getattr(instance, "rta_service_vehicle_damaged", False))
+            requested_damage = bool(attrs.get("rta_service_vehicle_damaged"))
+            if requested_damage != current_damage:
+                raise serializers.ValidationError(
+                    {"rta_service_vehicle_damaged": "Only Superuser or HQ Admin can change service vehicle damage status."}
+                )
+            attrs.pop("rta_service_vehicle_damaged", None)
+
+        if instance and "served_abstract" in attrs:
+            if not self._can_mark_served(user, instance):
+                raise serializers.ValidationError({"status": "Only IC Cases, IC Det/Det Commander, or Special Battalion Admin can serve a case."})
+            abstract = attrs.get("served_abstract")
+            if not abstract:
+                raise serializers.ValidationError({"served_abstract": "Attach the abstract before serving this case."})
+            attrs["status"] = Case.Status.SERVED
+            target_status = Case.Status.SERVED
+        elif "abstract_acknowledgement_form" in attrs and target_status != Case.Status.SERVED:
+            raise serializers.ValidationError({"abstract_acknowledgement_form": "The abstract can only be attached while serving the case."})
+
         rta_report_fields = {"traffic_accident_report", "rta_service_vehicle_damaged"} & set(attrs)
         if instance and rta_report_fields:
             if not is_rta_case:
@@ -948,7 +1022,11 @@ class CaseSerializer(serializers.ModelSerializer):
                 )
             if not self._can_upload_rta_report(user, instance):
                 raise serializers.ValidationError(
-                    {"traffic_accident_report": "Only IC Cases for the tasked Coy/Det, the tasked battalion admin, or HQ Admin can attach the Traffic Accident Report."}
+                    {"traffic_accident_report": "Only IC Cases for the tasked Coy/Det, Special Admin battalion, or HQ Admin can attach the Traffic Accident Report."}
+                )
+            if "traffic_accident_report" in attrs and attrs.get("traffic_accident_report") and not self._case_has_investigation_assignment(instance):
+                raise serializers.ValidationError(
+                    {"traffic_accident_report": "Assign this RTA case to an IO or team before uploading the Traffic Accident Report."}
                 )
 
         rta_authority_fields = {"rta_damage_authority", "rta_damage_authority_source"} & set(attrs)
@@ -975,6 +1053,13 @@ class CaseSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(rfi_errors)
 
         document_errors = {}
+        if instance and "served_abstract" in attrs:
+            self._validate_pdf_upload(
+                document_errors,
+                "served_abstract",
+                attrs.get("served_abstract"),
+                "Abstract",
+            )
         if "traffic_accident_report" in attrs:
             self._validate_pdf_upload(
                 document_errors,
@@ -1214,6 +1299,18 @@ class CaseSerializer(serializers.ModelSerializer):
         if accused_entries is not None:
             self._create_or_update_accused_entries(case, accused_entries)
         return case
+
+    def get_abstract_acknowledged_by_name(self, obj):
+        return str(obj.abstract_acknowledged_by) if obj.abstract_acknowledged_by else None
+
+    def get_unit_closure_requested_by_name(self, obj):
+        return str(obj.unit_closure_requested_by) if obj.unit_closure_requested_by else None
+
+    def get_unit_closure_decided_by_name(self, obj):
+        return str(obj.unit_closure_decided_by) if obj.unit_closure_decided_by else None
+
+    def get_clearance_certificate_uploaded_by_name(self, obj):
+        return str(obj.clearance_certificate_uploaded_by) if obj.clearance_certificate_uploaded_by else None
 
     def get_assigned_to_name(self, obj):
         return str(obj.assigned_to) if obj.assigned_to else None

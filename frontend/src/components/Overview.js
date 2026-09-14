@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, formationService, incidentService, userService } from "../services/api";
 import { UnitDirectoryModal } from "./UnitDirectory";
-import { isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
+import { caseAccusedUnitLabel, caseDisplayDescription, isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -35,7 +35,8 @@ const ROLE_LABELS = {
   investigator: "Investigator", duty_officer: "Duty Officer", guardroom_ic: "Guardroom IC",
   detachment: "IC Cases", personnel: "Personnel", legal: "Legal Officer",
   order_nco: "Order NCO", mpc_hqs: "MPC HQS Admin", bsm: "BSM", cop: "COP",
-  adj: "Adjutant", "2ic": "2nd in Command",
+  adj: "Adjutant", "2ic": "2nd in Command", docus_clerk: "Docus Clerk",
+  commandant: "Commandant", ci: "Chief Instructor", si: "SI",
 };
 
 const CASE_STATUS_STYLE = {
@@ -332,13 +333,14 @@ export default function Overview({ user }) {
           <p className="p-5 text-gray-500 text-sm">No cases recorded yet.</p>
         ) : (
           <div className="overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-            <table className="w-full min-w-[980px] text-sm">
+            <table className="w-full min-w-[1120px] text-sm">
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Case #</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Service No</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Rank</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Accused</th>
+                <th className="text-left px-3 md:px-5 py-2.5 font-medium">Unit</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Offence</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Description</th>
                 <th className="text-left px-3 md:px-5 py-2.5 font-medium">Status</th>
@@ -348,17 +350,20 @@ export default function Overview({ user }) {
               {recentCases.map((c) => (
                 <tr
                   key={c.id}
-                  onClick={() => navigate("/dashboard/cases")}
+                  onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}
                   className="border-b border-gray-700/40 hover:bg-gray-700/30 transition-colors cursor-pointer"
                 >
                   <td className="px-3 md:px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap">{c.case_number || "--"}</td>
                   <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_service_number || "--"}</td>
                   <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_rank || "--"}</td>
                   <td className="px-3 md:px-5 py-3 text-gray-400 text-xs whitespace-nowrap">{c.accused_name || "--"}</td>
+                  <td className="px-3 md:px-5 py-3 text-gray-400 text-xs min-w-[140px] max-w-[220px]">
+                    <p className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</p>
+                  </td>
                   <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
                   <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px]">
                     {(() => {
-                      const desc = c.description || "--";
+                      const desc = caseDisplayDescription(c) || "--";
                       const expanded = !!expandedDesc[c.id];
                       const longDesc = desc.length > descLimit;
                       const shown = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;

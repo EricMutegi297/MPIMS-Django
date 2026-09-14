@@ -87,6 +87,11 @@ class Case(models.Model):
         HQ_KA_MOVES = "hq_ka_moves", "HQ KA Moves"
         LEGAL = "legal", "Legal"
 
+    class UnitClosureStatus(models.TextChoices):
+        PENDING = "pending", "Pending Review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
     case_number = models.CharField(max_length=30, unique=True, blank=True)
     case_type = models.CharField(max_length=25, choices=CaseType.choices, default=CaseType.RFI)
     title = models.CharField(max_length=200, blank=True)
@@ -188,6 +193,49 @@ class Case(models.Model):
     close_requested_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    served_abstract = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    abstract_acknowledged_at = models.DateTimeField(null=True, blank=True)
+    abstract_acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="abstract_acknowledged_cases",
+    )
+    abstract_acknowledgement_form = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    unit_closure_status = models.CharField(
+        max_length=20,
+        choices=UnitClosureStatus.choices,
+        blank=True,
+        default="",
+    )
+    unit_closure_requested_at = models.DateTimeField(null=True, blank=True)
+    unit_closure_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="unit_closure_requested_cases",
+    )
+    unit_closure_request_note = EncryptedTextField(blank=True)
+    unit_closure_decided_at = models.DateTimeField(null=True, blank=True)
+    unit_closure_decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="unit_closure_reviewed_cases",
+    )
+    unit_closure_decision_note = EncryptedTextField(blank=True)
+    clearance_certificate = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
+    clearance_certificate_uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_clearance_certificates",
+    )
+    clearance_certificate_uploaded_at = models.DateTimeField(null=True, blank=True)
     date_of_offence = models.DateField(null=True, blank=True)
     investigation_deadline = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

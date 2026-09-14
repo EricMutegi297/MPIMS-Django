@@ -20,6 +20,10 @@ const ROLE_LABELS = {
   cop:          "COP",
   adj:          "Adjutant",
   "2ic":        "2nd in Command",
+  docus_clerk:  "Docus Clerk",
+  commandant:   "Commandant",
+  ci:           "Chief Instructor",
+  si:           "SI",
 };
 
 const ROLE_BADGE = {
@@ -40,10 +44,135 @@ const ROLE_BADGE = {
   cop:          "bg-rose-500/20 text-rose-400",
   adj:          "bg-violet-500/20 text-violet-400",
   "2ic":        "bg-sky-500/20 text-sky-400",
+  docus_clerk:  "bg-emerald-500/20 text-emerald-400",
+  commandant:   "bg-blue-500/20 text-blue-300",
+  ci:           "bg-teal-500/20 text-teal-300",
+  si:           "bg-cyan-500/20 text-cyan-300",
 };
+
+const UNIT_COMMAND_ROLES = ["adj", "co", "2ic", "commandant", "ci", "si"];
+const UNIT_SCOPED_ROLES = ["docus_clerk", "commandant", "ci", "si"];
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function compactSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function unitLabel(unit) {
+  if (!unit) return "";
+  return [unit.name, unit.code, unit.service, unit.battalion_name || unit.formation_name, unit.location_county]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function unitSearchText(unit) {
+  return [
+    unit?.name,
+    unit?.code,
+    unit?.service,
+    unit?.battalion_name,
+    unit?.formation_name,
+    unit?.location_county,
+    unit?.mobile_no,
+    unit?.email,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function unitMatches(unit, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const text = unitSearchText(unit);
+  const compactText = compactSearchText(text);
+  const compactNeedle = compactSearchText(needle);
+  const tokens = needle.split(/\s+/).filter(Boolean);
+  return (
+    text.includes(needle)
+    || (compactNeedle && compactText.includes(compactNeedle))
+    || tokens.every((token) => text.includes(token) || compactText.includes(compactSearchText(token)))
+  );
+}
+
+function unitRank(unit, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return 50;
+  const name = String(unit?.name || "").toLowerCase();
+  const code = String(unit?.code || "").toLowerCase();
+  if (name === needle || code === needle) return 0;
+  if (name.startsWith(needle) || code.startsWith(needle)) return 1;
+  if (unitSearchText(unit).includes(needle)) return 2;
+  return 3;
+}
+
+function UnitPicker({ units, value, onChange, disabled = false, placeholder = "Type to search accused unit..." }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = units.find((unit) => String(unit.id) === String(value));
+  const visibleUnits = units
+    .filter((unit) => unitMatches(unit, query))
+    .sort((a, b) => unitRank(a, query) - unitRank(b, query) || unitLabel(a).localeCompare(unitLabel(b)))
+    .slice(0, 60);
+
+  return (
+    <div className="relative">
+      <input
+        value={open ? query : unitLabel(selected)}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onBlur={() => {
+          window.setTimeout(() => {
+            setOpen(false);
+            setQuery("");
+          }, 120);
+        }}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+          if (value) onChange("");
+        }}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-300"
+      />
+      {open && !disabled && (
+        <div className="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
+          {visibleUnits.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-gray-400">No matching units found.</div>
+          ) : (
+            visibleUnits.map((unit) => (
+              <button
+                key={unit.id}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onChange(String(unit.id));
+                  setOpen(false);
+                  setQuery("");
+                }}
+                className={`block w-full px-3 py-2 text-left text-sm transition-colors hover:bg-blue-600/30 ${
+                  String(unit.id) === String(value) ? "bg-blue-600/20 text-blue-200" : "text-gray-100"
+                }`}
+              >
+                <span className="block font-medium">{unit.name || "Unnamed unit"}</span>
+                <span className="block text-[11px] text-gray-400">
+                  {[unit.code, unit.service, unit.battalion_name || unit.formation_name, unit.location_county]
+                    .filter(Boolean)
+                    .join(" | ") || "No extra details"}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function mfaBadge(user) {
@@ -74,14 +203,16 @@ export default function Users({ user }) {
   const isSuperuser     = Boolean(user?.is_superuser);
   const isBattalionAdmin = user?.role === "admin" && !isHqsAdmin && !isSuperuser;
   const isDetachmentIC  = user?.role === "detachment";
-  const canCreateUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin;
+  const isDocusClerk    = user?.role === "docus_clerk";
+  const canCreateUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin || isDocusClerk;
   const canManage       = canCreateUsers || isDetachmentIC;
-
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","oc","corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic"]
+    ? ["admin","co","oc","corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
     : isBattalionAdmin
-    ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
+    ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic","docus_clerk"]
+    : isDocusClerk
+    ? UNIT_COMMAND_ROLES
     : isDetachmentIC
     ? ["personnel","investigator"]
     : [];
@@ -91,7 +222,9 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic"]
+      ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic","docus_clerk"]
+      : isDocusClerk
+      ? UNIT_COMMAND_ROLES
       : isDetachmentIC
       ? ["personnel","investigator"]
       : []
@@ -100,25 +233,38 @@ export default function Users({ user }) {
   // Create user modal state
   const BLANK_FORM = {
     service_number: "", name: "", rank: "", email: "", role: "",
-    battalion: "", detachment: "",
+    battalion: "", detachment: "", unit: "",
   };
   const [showCreate, setShowCreate]     = useState(false);
   const [form, setForm]                 = useState(BLANK_FORM);
   const [battalions, setBattalions]     = useState([]);
+  const [units, setUnits]               = useState([]);
   const [detachments, setDetachments]   = useState([]);
   const [creating, setCreating]         = useState(false);
   const [createError, setCreateError]   = useState("");
   const [createNotice, setCreateNotice] = useState("");
+  const [createActivationLink, setCreateActivationLink] = useState("");
 
   // Roles that can optionally be scoped to a company
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
   const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
+  const roleNeedsUnit = useCallback((role) => (
+    UNIT_SCOPED_ROLES.includes(role) || (isDocusClerk && UNIT_COMMAND_ROLES.includes(role))
+  ), [isDocusClerk]);
 
   const loadDetachments = useCallback((battalionId) => {
     if (!battalionId) { setDetachments([]); return; }
     formationService.detachments({ battalion: battalionId, page_size: 200 })
       .then((r) => setDetachments(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
       .catch(() => setDetachments([]));
+  }, []);
+
+  const loadUnits = useCallback((battalionId = "") => {
+    const params = { page_size: 1000 };
+    if (battalionId) params.battalion = battalionId;
+    formationService.units(params)
+      .then((r) => setUnits(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
+      .catch(() => setUnits([]));
   }, []);
 
   // Edit modal state
@@ -160,11 +306,13 @@ export default function Users({ user }) {
     const prefill = {
       ...BLANK_FORM,
       battalion: isBattalionAdmin ? String(user.battalion ?? "") : "",
+      unit: isDocusClerk ? String(user.unit ?? "") : "",
       detachment: "",
     };
     setForm(prefill);
     setCreateError("");
     setCreateNotice("");
+    setCreateActivationLink("");
     setDetachments([]);
     setShowCreate(true);
     if (battalions.length === 0) {
@@ -175,6 +323,11 @@ export default function Users({ user }) {
     // Pre-load detachments when battalion is already known
     if (isBattalionAdmin && user.battalion) {
       loadDetachments(String(user.battalion));
+      loadUnits();
+    } else if (isDocusClerk) {
+      setUnits(user?.unit ? [{ id: user.unit, name: user.unit_name || "Assigned unit" }] : []);
+    } else {
+      loadUnits();
     }
   };
 
@@ -243,10 +396,17 @@ export default function Users({ user }) {
       setCreating(false);
       return;
     }
+    if (roleNeedsUnit(form.role) && !form.unit && !(isDocusClerk && user?.unit)) {
+      setCreateError("Select the accused unit for this account.");
+      setCreating(false);
+      return;
+    }
     try {
       const payload = { ...form };
       if (!payload.detachment) delete payload.detachment;
       if (!payload.battalion) delete payload.battalion;
+      if (!payload.unit) delete payload.unit;
+      if (isDocusClerk && user?.unit) payload.unit = user.unit;
       delete payload.password;
       // For battalion admin the backend auto-assigns battalion; for superuser use form value.
       if (isBattalionAdmin) delete payload.battalion;
@@ -254,12 +414,13 @@ export default function Users({ user }) {
       const email = res.data?.activation_email || payload.email;
       const sent = Boolean(res.data?.activation_email_sent);
       const delivery = res.data?.activation_delivery;
+      setCreateActivationLink(res.data?.activation_setup_url || "");
       setCreateNotice(
         sent && delivery === "console"
-          ? `Account created. Activation link printed in the backend terminal for ${email}.`
+          ? `Account created. Activation link is available below for ${email}.`
           : sent
           ? `Account created. Activation link sent to ${email}.`
-          : `Account created, but activation email could not be sent to ${email}. Check email settings.`
+          : `Account created, but activation email could not be sent to ${email}. Use the activation link below and check email settings.`
       );
       setShowCreate(false);
       loadUsers();
@@ -281,7 +442,9 @@ export default function Users({ user }) {
     setError("");
     const params = { page_size: 200 };
     // Non-HQS/non-superuser battalion restriction
-    if (!isHqsAdmin && !isSuperuser && !isDetachmentIC && user?.battalion) {
+    if (isDocusClerk && user?.unit) {
+      params.unit = user.unit;
+    } else if (!isHqsAdmin && !isSuperuser && !isDetachmentIC && user?.battalion) {
       params.battalion = user.battalion;
     }
     if (isDetachmentIC && user?.detachment) {
@@ -292,7 +455,7 @@ export default function Users({ user }) {
       .then((res) => setUsers(toArray(res.data)))
       .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [isHqsAdmin, isSuperuser, isDetachmentIC, user?.battalion, user?.detachment]);
+  }, [isHqsAdmin, isSuperuser, isDetachmentIC, isDocusClerk, user?.battalion, user?.detachment, user?.unit]);
 
   useEffect(() => {
     loadUsers();
@@ -302,7 +465,8 @@ export default function Users({ user }) {
     const matchSearch =
       !search ||
       u.name?.toLowerCase().includes(search.toLowerCase()) ||
-      u.service_number?.toLowerCase().includes(search.toLowerCase());
+      u.service_number?.toLowerCase().includes(search.toLowerCase()) ||
+      u.unit_name?.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === "all" || u.role === roleFilter;
     return matchSearch && matchRole;
   });
@@ -313,6 +477,8 @@ export default function Users({ user }) {
     ? "All Users"
     : isDetachmentIC
     ? `${user?.detachment_name ?? "Company"} — Personnel`
+    : isDocusClerk
+    ? `${user?.unit_name ?? "Unit"} - Unit Command`
     : user?.battalion_name
     ? `${user.battalion_name} — Personnel`
     : "Battalion Personnel";
@@ -361,6 +527,17 @@ export default function Users({ user }) {
             Add User
           </button>
         )}
+        {isDocusClerk && (
+          <button
+            onClick={openCreate}
+            className="flex items-center gap-2 text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Add User
+          </button>
+        )}
       </div>
 
       {/* Filters */}
@@ -393,8 +570,24 @@ export default function Users({ user }) {
       )}
 
       {createNotice && (
-        <div className="bg-blue-900/30 border border-blue-700 text-blue-200 text-sm rounded-lg px-4 py-3 mb-5">
-          {createNotice}
+        <div className="bg-blue-900/30 border border-blue-700 text-blue-200 text-sm rounded-lg px-4 py-3 mb-5 space-y-2">
+          <p>{createNotice}</p>
+          {createActivationLink && (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                readOnly
+                value={createActivationLink}
+                className="min-w-0 flex-1 rounded-md border border-blue-700 bg-gray-900 px-3 py-2 font-mono text-xs text-blue-100"
+              />
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(createActivationLink)}
+                className="rounded-md bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                Copy Link
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -423,8 +616,9 @@ export default function Users({ user }) {
                   <th className="text-left px-5 py-3 font-medium hidden sm:table-cell">Rank</th>
                   <th className="text-left px-5 py-3 font-medium">Role</th>
                   <th className="text-left px-5 py-3 font-medium hidden md:table-cell">Battalion</th>
+                  <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">Unit</th>
                   <th className="text-left px-5 py-3 font-medium">Status</th>
-                  <th className="text-left px-5 py-3 font-medium hidden lg:table-cell">MFA</th>
+                  <th className="text-left px-5 py-3 font-medium hidden xl:table-cell">MFA</th>
                   {canManage && <th className="text-left px-5 py-3 font-medium">Actions</th>}
                 </tr>
               </thead>
@@ -455,6 +649,9 @@ export default function Users({ user }) {
                     <td className="px-5 py-3 text-gray-400 text-xs hidden md:table-cell">
                       {u.battalion_name || "--"}
                     </td>
+                    <td className="px-5 py-3 text-gray-400 text-xs hidden lg:table-cell">
+                      {u.unit_name || "--"}
+                    </td>
                     <td className="px-5 py-3">
                       <span
                         className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
@@ -469,7 +666,7 @@ export default function Users({ user }) {
                         {u.is_active ? "Active" : "Inactive"}
                       </span>
                     </td>
-                    <td className="px-5 py-3 hidden lg:table-cell">
+                    <td className="px-5 py-3 hidden xl:table-cell">
                       <span className={`inline-block px-2 py-0.5 rounded text-[11px] font-medium ${mfaBadge(u).className}`}>
                         {mfaBadge(u).label}
                       </span>
@@ -574,16 +771,21 @@ export default function Users({ user }) {
                   onChange={(e) => {
                     const newRole = e.target.value;
                     const isGlobalRole = GLOBAL_LEVEL_ROLES.includes(newRole);
+                    const needsUnit = roleNeedsUnit(newRole);
                     const clearDet = !DETACHMENT_LEVEL_ROLES.includes(newRole);
                     setForm({
                       ...form,
                       role: newRole,
-                      battalion: isGlobalRole ? "" : form.battalion,
-                      detachment: clearDet || isGlobalRole ? "" : form.detachment,
+                      battalion: isGlobalRole || needsUnit ? "" : form.battalion,
+                      detachment: clearDet || isGlobalRole || needsUnit ? "" : form.detachment,
+                      unit: needsUnit ? (isDocusClerk ? String(user?.unit ?? "") : form.unit) : "",
                     });
                     // Load companies when switching to a company-level role and battalion is known
                     if (DETACHMENT_LEVEL_ROLES.includes(newRole) && form.battalion && !isGlobalRole) {
                       loadDetachments(form.battalion);
+                    }
+                    if (needsUnit && !isDocusClerk) {
+                      loadUnits();
                     }
                   }}
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -594,37 +796,64 @@ export default function Users({ user }) {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">
-                  Battalion {GLOBAL_LEVEL_ROLES.includes(form.role) ? "" : "*"}
-                </label>
-                {GLOBAL_LEVEL_ROLES.includes(form.role) ? (
-                  <input
-                    readOnly value="No battalion required"
-                    className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
-                  />
-                ) : isSuperuser || isHqsAdmin ? (
-                  <select
-                    required={!GLOBAL_LEVEL_ROLES.includes(form.role)} value={form.battalion}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setForm({ ...form, battalion: val, detachment: "" });
-                      loadDetachments(val);
-                    }}
-                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="">Select battalion</option>
-                    {battalions.map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    readOnly value={user?.battalion_name ?? user?.battalion ?? ""}
-                    className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
-                  />
-                )}
-              </div>
+              {!roleNeedsUnit(form.role) && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Battalion {GLOBAL_LEVEL_ROLES.includes(form.role) ? "" : "*"}
+                  </label>
+                  {GLOBAL_LEVEL_ROLES.includes(form.role) ? (
+                    <input
+                      readOnly value="No battalion required"
+                      className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                    />
+                  ) : isSuperuser || isHqsAdmin ? (
+                    <select
+                      required={!GLOBAL_LEVEL_ROLES.includes(form.role)} value={form.battalion}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setForm({ ...form, battalion: val, detachment: "", unit: "" });
+                        loadDetachments(val);
+                        loadUnits(val);
+                      }}
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="">Select battalion</option>
+                      {battalions.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      readOnly value={user?.battalion_name ?? user?.battalion ?? ""}
+                      className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                    />
+                  )}
+                </div>
+              )}
+              {roleNeedsUnit(form.role) && (
+                <div className="col-span-2">
+                  <label className="block text-xs text-gray-400 mb-1">Accused Unit *</label>
+                  {isDocusClerk ? (
+                    <input
+                      readOnly
+                      value={user?.unit_name ?? "Assigned unit"}
+                      className="w-full bg-gray-600 border border-gray-600 text-gray-300 text-sm rounded-lg px-3 py-2 cursor-not-allowed"
+                    />
+                  ) : (
+                    <UnitPicker
+                      units={units}
+                      value={form.unit}
+                      onChange={(unit) => setForm({ ...form, unit })}
+                      placeholder="Type unit name, code, service, battalion, or location..."
+                    />
+                  )}
+                  {form.role === "docus_clerk" && (
+                    <p className="mt-1 text-[11px] text-gray-500">
+                      Each accused unit can have two Docus Clerk accounts. A third account must be created by the superuser.
+                    </p>
+                  )}
+                </div>
+              )}
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">

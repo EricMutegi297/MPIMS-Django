@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { caseBriefService, caseService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import { caseDisplayDescription } from "../utils/caseTypes";
 
 function toArray(payload) {
   if (Array.isArray(payload)) return payload;
@@ -28,7 +29,7 @@ function unitDisplay(caseObj) {
   const units = entries.map((entry) => entry.unit_name).filter(Boolean);
   const uniqueUnits = [...new Set(units)];
   if (uniqueUnits.length) return uniqueUnits.join(", ");
-  return caseObj?.accused_unit_name || caseObj?.submitting_unit_name || "--";
+  return caseObj?.accused_unit_name || caseObj?.source_incident_unit || caseObj?.submitting_unit_name || "--";
 }
 
 function displayDate(value) {
@@ -354,7 +355,7 @@ export default function Briefs({ user }) {
         accusedDisplay(caseObj),
         unitDisplay(caseObj),
         caseObj.offence || caseObj.offence_name,
-        caseObj.description,
+        caseDisplayDescription(caseObj),
         briefStatus(brief),
         forwardedSource(brief, user),
         brief.approved_by_name,
@@ -374,7 +375,7 @@ export default function Briefs({ user }) {
         accusedDisplay(caseObj),
         unitDisplay(caseObj),
         caseObj.offence || caseObj.offence_name || "--",
-        caseObj.description || "--",
+        caseDisplayDescription(caseObj) || "--",
         briefStatus(brief),
       ];
       if (showForwardedFromColumn) base.push(forwardedSource(brief, user));
@@ -674,7 +675,7 @@ export default function Briefs({ user }) {
                         <td className="px-4 py-3 text-slate-800">{accusedDisplay(caseObj)}</td>
                         <td className="px-4 py-3 text-slate-600">{unitDisplay(caseObj)}</td>
                         <td className="px-4 py-3 text-slate-600">{caseObj.offence || caseObj.offence_name || "--"}</td>
-                        <td className="px-4 py-3 text-slate-600 max-w-xs whitespace-normal break-words">{caseObj.description || "--"}</td>
+                        <td className="px-4 py-3 text-slate-600 max-w-xs whitespace-normal break-words">{caseDisplayDescription(caseObj) || "--"}</td>
                         <td className="px-4 py-3">
                           <span className="inline-flex rounded-md bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700">
                             {briefStatus(brief)}

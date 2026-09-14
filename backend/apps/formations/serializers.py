@@ -24,13 +24,17 @@ class DetachmentSerializer(serializers.ModelSerializer):
 
 class UnitSerializer(serializers.ModelSerializer):
     formation_name = serializers.SerializerMethodField()
+    battalion_name = serializers.SerializerMethodField()
 
     def get_formation_name(self, obj):
         return obj.formation.name if obj.formation else None
 
+    def get_battalion_name(self, obj):
+        return obj.battalion.name if obj.battalion else None
+
     class Meta:
         model = Unit
-        fields = ["id", "name", "code", "formation", "formation_name",
+        fields = ["id", "name", "code", "formation", "formation_name", "battalion", "battalion_name",
                   "service", "email", "mobile_no", "location_county"]
 
     def validate(self, attrs):

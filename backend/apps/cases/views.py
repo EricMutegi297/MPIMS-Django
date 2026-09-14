@@ -3,7 +3,7 @@ import re
 from pathlib import PurePosixPath
 from urllib.parse import quote, unquote, urlparse
 
-from rest_framework import viewsets, permissions, status as http_status
+from rest_framework import viewsets, permissions, status as http_status, filters
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -50,7 +50,9 @@ from apps.users.access import (
     has_global_read_access,
     is_hqs_admin,
     is_battalion_command,
+    is_unit_level_case_viewer,
     should_block_command_write,
+    unit_case_scope_q,
 )
 from apps.users.models import User
 
@@ -181,7 +183,26 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
     serializer_class = ExhibitStorageRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["status", "case", "storage_scope", "target_detachment", "target_battalion"]
+    search_fields = [
+        "case__case_number",
+        "case__offence",
+        "case__offence_ref__name",
+        "case__accused_name",
+        "case__accused_service_number",
+        "case__accused_entries__name",
+        "case__accused_entries__service_number",
+        "exhibit_name",
+        "storage_reference",
+        "physical_location",
+        "target_detachment__name",
+        "target_battalion__name",
+        "requested_by__name",
+        "requested_by__service_number",
+    ]
+    ordering_fields = ["created_at", "updated_at", "status", "exhibit_name"]
+    ordering = ["-created_at"]
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
@@ -215,34 +236,52 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         )
         user = self.request.user
         if has_global_read_access(user):
-            return qs
+            return self._apply_exhibit_query_filters(qs)
         if user.role == User.Role.INVESTIGATOR:
-            return qs.filter(
+            return self._apply_exhibit_query_filters(qs.filter(
                 Q(requested_by=user)
                 | Q(case__assigned_to=user)
                 | Q(case__assigned_team__team_ic=user)
                 | Q(case__assigned_team__members=user)
-            ).distinct()
+            ).distinct())
         if user.role == User.Role.DETACHMENT and user.detachment_id:
-            return qs.filter(
+            return self._apply_exhibit_query_filters(qs.filter(
                 Q(target_detachment_id=user.detachment_id)
                 | Q(case__tasked_detachment_id=user.detachment_id)
                 | Q(case__assigned_team__detachment_id=user.detachment_id)
-            ).distinct()
+            ).distinct())
         if user.role == User.Role.ADMIN and user.battalion_id:
-            return qs.filter(
+            return self._apply_exhibit_query_filters(qs.filter(
                 Q(target_battalion_id=user.battalion_id)
                 | Q(case__tasked_battalion_id=user.battalion_id)
                 | Q(case__tasked_detachment__battalion_id=user.battalion_id)
                 | Q(case__assigned_team__battalion_id=user.battalion_id)
-            ).distinct()
+            ).distinct())
         if user.battalion_id:
-            return qs.filter(
+            return self._apply_exhibit_query_filters(qs.filter(
                 Q(case__tasked_battalion_id=user.battalion_id)
                 | Q(case__tasked_detachment__battalion_id=user.battalion_id)
                 | Q(case__assigned_team__battalion_id=user.battalion_id)
-            ).distinct()
-        return qs.filter(requested_by=user)
+            ).distinct())
+        return self._apply_exhibit_query_filters(qs.filter(requested_by=user))
+
+    def _apply_exhibit_query_filters(self, qs):
+        date_from = self._parse_date_param("date_from") or self._parse_date_param("created_from")
+        date_to = self._parse_date_param("date_to") or self._parse_date_param("created_to")
+        if date_from:
+            qs = qs.filter(created_at__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(created_at__date__lte=date_to)
+        return qs
+
+    def _parse_date_param(self, name):
+        value = self.request.query_params.get(name)
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValidationError({name: "Use YYYY-MM-DD format."}) from exc
 
     def perform_create(self, serializer):
         ensure_case_accepts_file_changes(serializer.validated_data.get("case"))
@@ -848,22 +887,144 @@ class CaseViewSet(viewsets.ModelViewSet):
     serializer_class = CaseSerializer
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = {
         "status": ["exact", "in"],
         "assigned_to": ["exact"],
-        "accused_unit": ["exact"],
         "tasked_detachment": ["exact"],
         "tasked_battalion": ["exact"],
         "criminal_offence_type": ["exact"],
     }
-    search_fields = ["case_number", "title", "accused_name", "accused_service_number"]
+    search_fields = [
+        "case_number",
+        "title",
+        "offence",
+        "offence_ref__name",
+        "place_of_offence",
+        "police_station",
+        "rfi_no",
+        "accused_name",
+        "accused_rank",
+        "accused_service_number",
+        "accused_service",
+        "accused_unit__name",
+        "accused_unit__code",
+        "submitting_unit__name",
+        "submitting_unit__code",
+        "tasked_battalion__name",
+        "tasked_detachment__name",
+        "assigned_to__name",
+        "assigned_to__service_number",
+        "assigned_team__name",
+        "accused_entries__name",
+        "accused_entries__rank",
+        "accused_entries__service_number",
+        "accused_entries__service",
+        "accused_entries__unit__name",
+        "accused_entries__unit__code",
+        "source_incident__incident_number",
+        "source_incident__incident_type",
+        "source_incident__location",
+        "source_incident__service_vehicle",
+        "source_incident__service_member",
+        "source_incident__unit_involved",
+        "source_incident__originating_unit",
+        "source_incident__police_ob_reference",
+    ]
+    ordering_fields = [
+        "case_number",
+        "created_at",
+        "updated_at",
+        "date_of_offence",
+        "tasking_date",
+        "team_assigned_at",
+        "served_at",
+        "closed_at",
+        "mentioning_date",
+        "rfi_date",
+    ]
+    ordering = ["-created_at"]
 
     def _apply_case_type_filter(self, queryset):
         case_type = str(self.request.query_params.get("case_type") or "").strip().lower()
         if case_type != "rta":
             return queryset
         return self._rta_case_queryset(queryset)
+
+    def _prepare_case_queryset(self, queryset):
+        return self._apply_case_query_filters(self._apply_case_type_filter(queryset)).distinct()
+
+    def _apply_case_query_filters(self, queryset):
+        params = self.request.query_params
+        accused_unit = params.get("accused_unit")
+        if accused_unit:
+            queryset = queryset.filter(
+                Q(accused_unit_id=accused_unit)
+                | Q(accused_entries__unit_id=accused_unit)
+            )
+
+        accused_service = params.get("accused_service")
+        if accused_service:
+            queryset = queryset.filter(
+                Q(accused_service=accused_service)
+                | Q(accused_entries__service=accused_service)
+            )
+
+        place = str(params.get("place_of_offence") or "").strip()
+        if place:
+            queryset = queryset.filter(
+                Q(place_of_offence__iexact=place)
+                | Q(source_incident__location__iexact=place)
+            )
+
+        offence = str(params.get("offence") or "").strip()
+        if offence:
+            queryset = queryset.filter(
+                Q(offence__iexact=offence)
+                | Q(offence_ref__name__iexact=offence)
+                | Q(source_incident__incident_type__iexact=offence)
+            )
+
+        date_from = self._parse_case_list_date("date_from") or self._parse_case_list_date("created_from")
+        date_to = self._parse_case_list_date("date_to") or self._parse_case_list_date("created_to")
+        if date_from or date_to:
+            queryset = queryset.filter(self._case_date_range_q(date_from, date_to))
+
+        return queryset
+
+    def _parse_case_list_date(self, name):
+        value = self.request.query_params.get(name)
+        if not value:
+            return None
+        try:
+            return date.fromisoformat(str(value))
+        except ValueError as exc:
+            raise ValidationError({name: "Use YYYY-MM-DD format."}) from exc
+
+    @staticmethod
+    def _case_date_range_q(date_from, date_to):
+        fields = [
+            "date_of_offence",
+            "created_at__date",
+            "updated_at__date",
+            "tasking_date__date",
+            "team_assigned_at__date",
+            "served_at__date",
+            "closed_at__date",
+            "mentioning_date",
+            "rfi_date",
+            "investigation_deadline",
+            "source_incident__date_occurred__date",
+        ]
+        combined = Q()
+        for field in fields:
+            lookups = {}
+            if date_from:
+                lookups[f"{field}__gte"] = date_from
+            if date_to:
+                lookups[f"{field}__lte"] = date_to
+            combined |= Q(**lookups)
+        return combined
 
     @staticmethod
     def _rta_case_queryset(queryset):
@@ -973,6 +1134,10 @@ class CaseViewSet(viewsets.ModelViewSet):
             getattr(self, "action", None) == "brief"
             and request.method == "PATCH"
             and getattr(request.user, "role", None) == User.Role.ADJ
+        ) or (
+            getattr(self, "action", None) in {"acknowledge", "request_closure", "clearance_certificate"}
+            and request.method == "POST"
+            and is_unit_level_case_viewer(request.user)
         )
         if should_block_command_write(request.user, request.method) and not command_write_allowed:
             raise PermissionDenied(command_read_only_message(request.user))
@@ -982,6 +1147,10 @@ class CaseViewSet(viewsets.ModelViewSet):
             return False
         if has_global_read_access(user):
             return True
+        if is_unit_level_case_viewer(user):
+            if case_obj.accused_unit_id == user.unit_id:
+                return True
+            return case_obj.accused_entries.filter(unit_id=user.unit_id).exists()
         if user.role == User.Role.INVESTIGATOR:
             if case_obj.assigned_to_id == user.id:
                 return True
@@ -1013,6 +1182,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             "tasked_detachment",
             "source_incident",
         ).prefetch_related(
+            "accused_entries",
             "extra_attachments",
             "court_martial_hearings",
             "court_martial_milestones",
@@ -1029,10 +1199,13 @@ class CaseViewSet(viewsets.ModelViewSet):
             return base_qs.none()
 
         if has_global_read_access(user):
-            return self._apply_case_type_filter(base_qs.all())
+            return self._prepare_case_queryset(base_qs.all())
+
+        if is_unit_level_case_viewer(user):
+            return self._prepare_case_queryset(base_qs.filter(unit_case_scope_q(user)).distinct())
 
         if user.role == User.Role.INVESTIGATOR:
-            return self._apply_case_type_filter(base_qs.filter(
+            return self._prepare_case_queryset(base_qs.filter(
                 Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
@@ -1040,7 +1213,7 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         # Battalion command users see cases tasked to their battalion or its companies.
         if is_battalion_command(user):
-            return self._apply_case_type_filter(base_qs.filter(
+            return self._prepare_case_queryset(base_qs.filter(
                 battalion_scope_q(
                     user,
                     battalion_field="tasked_battalion_id",
@@ -1054,14 +1227,14 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         # IC Cases (role=detachment) sees cases tasked to their company record.
         if user.role == "detachment" and user.detachment_id:
-            return self._apply_case_type_filter(base_qs.filter(
+            return self._prepare_case_queryset(base_qs.filter(
                 Q(tasked_detachment_id=user.detachment_id)
                 | Q(assigned_to__detachment_id=user.detachment_id)
                 | Q(assigned_team__detachment_id=user.detachment_id)
             ).distinct())
 
         if user.battalion_id:
-            return self._apply_case_type_filter(base_qs.filter(
+            return self._prepare_case_queryset(base_qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
                 | Q(tasked_detachment__battalion_id=user.battalion_id)
                 | Q(assigned_to=user)
@@ -1069,7 +1242,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 | Q(assigned_team__members=user)
             ).distinct())
 
-        return self._apply_case_type_filter(base_qs.filter(assigned_to=user))
+        return self._prepare_case_queryset(base_qs.filter(assigned_to=user))
 
     def _log_action(self, case, actor, action, detail=""):
         CaseActivityLog.objects.create(case=case, actor=actor, action=action, detail=detail)
@@ -1170,6 +1343,80 @@ class CaseViewSet(viewsets.ModelViewSet):
             return False
         return team.team_ic_id == user.id or team.members.filter(id=user.id).exists()
 
+    def _can_manage_unit_service(self, user, case_obj):
+        return bool(
+            is_unit_level_case_viewer(user)
+            and case_obj.criminal_offence_type not in {
+                Case.CriminalOffenceType.DCI_CIV,
+                Case.CriminalOffenceType.COURT_MARTIAL,
+            }
+            and (
+                case_obj.accused_unit_id == user.unit_id
+                or case_obj.accused_entries.filter(unit_id=user.unit_id).exists()
+            )
+        )
+
+    def _notify_hq_reviewers(self, case, actor, message):
+        recipients = set(User.objects.filter(
+            is_active=True,
+            role__in=[User.Role.ADMIN, User.Role.MPC_HQS],
+            battalion__battalion_type="hqs",
+        ))
+        recipients.update(User.objects.filter(is_active=True, is_superuser=True))
+        recipients.discard(actor)
+        if not recipients:
+            return
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=recipient,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            )
+            for recipient in recipients
+        ])
+        email_list = [recipient.email for recipient in recipients if recipient.email]
+        if email_list:
+            send_mail(
+                subject=f"[MPIMS] Case {case.case_number} — Unit service workflow",
+                message=message,
+                from_email=django_settings.DEFAULT_FROM_EMAIL,
+                recipient_list=email_list,
+                fail_silently=True,
+            )
+
+    def _notify_accused_unit_users(self, case, actor, message):
+        unit_ids = set(case.accused_entries.values_list("unit_id", flat=True))
+        if case.accused_unit_id:
+            unit_ids.add(case.accused_unit_id)
+        unit_ids.discard(None)
+        if not unit_ids:
+            return
+        recipients = set(User.objects.filter(is_active=True, unit_id__in=unit_ids))
+        recipients.discard(actor)
+        if not recipients:
+            return
+        Notification.objects.bulk_create([
+            Notification(
+                recipient=recipient,
+                message=message,
+                notification_type=Notification.Type.CASE,
+                related_model="case",
+                related_id=case.id,
+            )
+            for recipient in recipients
+        ])
+        email_list = [recipient.email for recipient in recipients if recipient.email]
+        if email_list:
+            send_mail(
+                subject=f"[MPIMS] Case {case.case_number} — Unit service workflow",
+                message=message,
+                from_email=django_settings.DEFAULT_FROM_EMAIL,
+                recipient_list=email_list,
+                fail_silently=True,
+            )
+
     def _can_manage_case_brief(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
@@ -1211,8 +1458,11 @@ class CaseViewSet(viewsets.ModelViewSet):
             | Q(tasking_letter=media_name)
             | Q(chargesheet=media_name)
             | Q(part_one_orders=media_name)
+            | Q(served_abstract=media_name)
+            | Q(abstract_acknowledgement_form=media_name)
             | Q(traffic_accident_report=media_name)
             | Q(rta_damage_authority=media_name)
+            | Q(clearance_certificate=media_name)
             | Q(extra_attachments__file=media_name)
             | Q(brief__file=media_name)
             | Q(brief__back_brief__file=media_name)
@@ -1220,6 +1470,156 @@ class CaseViewSet(viewsets.ModelViewSet):
             | Q(exhibit_storage_requests__photo=media_name)
             | Q(exhibit_storage_requests__lifecycle_attachment=media_name)
         )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="acknowledge",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def acknowledge(self, request, pk=None):
+        case = self.get_object()
+        if not self._can_manage_unit_service(request.user, case):
+            raise PermissionDenied("Only the accused unit can acknowledge service on this case.")
+        if case.status != Case.Status.UNDER_INVESTIGATION or not case.served_abstract:
+            raise ValidationError({"detail": "The case must have a served abstract before acknowledgement."})
+        if case.abstract_acknowledged_at:
+            raise ValidationError({"detail": "This abstract has already been acknowledged."})
+        case.abstract_acknowledged_at = timezone.now()
+        case.abstract_acknowledged_by = request.user
+        form = request.FILES.get("abstract_acknowledgement_form")
+        if form:
+            if not str(getattr(form, "name", "") or "").lower().endswith(".pdf"):
+                raise ValidationError({"abstract_acknowledgement_form": "Acknowledgement form must be uploaded as a PDF."})
+            case.abstract_acknowledgement_form = form
+        case.status = Case.Status.SERVED
+        case.served_at = timezone.now()
+        case.save(update_fields=[
+            "status", "served_at", "abstract_acknowledged_at", "abstract_acknowledged_by",
+            "abstract_acknowledgement_form", "updated_at",
+        ])
+        self._log_action(case, request.user, CaseActivityLog.Action.CASE_UPDATED, "Unit acknowledged receipt of abstract")
+        self._send_served_notification(case, request.user)
+        self._notify_hq_reviewers(
+            case,
+            request.user,
+            f"{self._actor_label(request.user)} acknowledged receipt of the abstract for Case #{case.case_number}.",
+        )
+        return Response(CaseSerializer(case, context={"request": request}).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="request-closure",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def request_closure(self, request, pk=None):
+        case = self.get_object()
+        if not self._can_manage_unit_service(request.user, case):
+            raise PermissionDenied("Only the accused unit can request closure on this case.")
+        if case.status != Case.Status.SERVED:
+            raise ValidationError({"detail": "Closure can only be requested for served cases."})
+        if not case.abstract_acknowledged_at:
+            raise ValidationError({"detail": "Acknowledge receipt of the abstract before requesting closure."})
+        chargesheet = request.FILES.get("chargesheet")
+        if not chargesheet:
+            raise ValidationError({"chargesheet": "Attach the charge sheet before requesting closure."})
+        if not str(getattr(chargesheet, "name", "") or "").lower().endswith(".pdf"):
+            raise ValidationError({"chargesheet": "The charge sheet must be uploaded as a PDF."})
+        if case.unit_closure_status == Case.UnitClosureStatus.PENDING:
+            raise ValidationError({"detail": "A closure request is already awaiting HQ review."})
+        case.unit_closure_status = Case.UnitClosureStatus.PENDING
+        case.unit_closure_requested_at = timezone.now()
+        case.unit_closure_requested_by = request.user
+        case.unit_closure_request_note = str(request.data.get("note") or "").strip()
+        case.unit_closure_decided_at = None
+        case.unit_closure_decided_by = None
+        case.unit_closure_decision_note = ""
+        case.chargesheet = chargesheet
+        case.save(update_fields=[
+            "chargesheet",
+            "unit_closure_status", "unit_closure_requested_at", "unit_closure_requested_by",
+            "unit_closure_request_note", "unit_closure_decided_at", "unit_closure_decided_by",
+            "unit_closure_decision_note", "updated_at",
+        ])
+        self._log_action(case, request.user, CaseActivityLog.Action.CASE_UPDATED, "Unit requested case closure")
+        self._notify_hq_reviewers(
+            case,
+            request.user,
+            f"{self._actor_label(request.user)} requested closure of Case #{case.case_number} after acknowledging service.",
+        )
+        return Response(CaseSerializer(case, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="review-closure", parser_classes=[JSONParser])
+    def review_closure(self, request, pk=None):
+        if not (is_hqs_admin(request.user) or request.user.is_superuser):
+            raise PermissionDenied("Only Admin HQs can approve or reject unit closure requests.")
+        case = self.get_object()
+        if case.unit_closure_status != Case.UnitClosureStatus.PENDING:
+            raise ValidationError({"detail": "This case has no pending unit closure request."})
+        decision = str(request.data.get("decision") or "").strip().lower()
+        if decision not in {"approve", "reject"}:
+            raise ValidationError({"decision": "Choose approve or reject."})
+        note = str(request.data.get("comment") or request.data.get("note") or "").strip()
+        if decision == "reject" and not note:
+            raise ValidationError({"comment": "A reason is required when rejecting a closure request."})
+        case.unit_closure_status = Case.UnitClosureStatus.APPROVED if decision == "approve" else Case.UnitClosureStatus.REJECTED
+        case.unit_closure_decided_at = timezone.now()
+        case.unit_closure_decided_by = request.user
+        case.unit_closure_decision_note = note
+        update_fields = [
+            "unit_closure_status", "unit_closure_decided_at", "unit_closure_decided_by",
+            "unit_closure_decision_note", "updated_at",
+        ]
+        if decision == "approve" and not case.close_requested:
+            case.close_requested = True
+            case.close_requested_at = timezone.now()
+            update_fields.extend(["close_requested", "close_requested_at"])
+        case.save(update_fields=update_fields)
+        self._log_action(case, request.user, CaseActivityLog.Action.CASE_UPDATED, f"HQ {decision}d unit closure request")
+        self._notify_team(
+            case,
+            request.user,
+            f"HQ {decision}d the unit closure request for Case #{case.case_number}." + (f" Comment: {note}" if note else ""),
+        )
+        self._notify_accused_unit_users(
+            case,
+            request.user,
+            f"HQ {decision}d the unit closure request for Case #{case.case_number}." + (f" Comment: {note}" if note else ""),
+        )
+        return Response(CaseSerializer(case, context={"request": request}).data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="clearance-certificate",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def clearance_certificate(self, request, pk=None):
+        case = self.get_object()
+        if not self._can_manage_unit_service(request.user, case):
+            raise PermissionDenied("Only the accused unit can attach a clearance certificate.")
+        if case.status == Case.Status.CLOSED:
+            raise ValidationError({"detail": CLOSED_CASE_FILE_ERROR})
+        certificate = request.FILES.get("clearance_certificate")
+        if not certificate:
+            raise ValidationError({"clearance_certificate": "Attach the clearance certificate file."})
+        if not str(getattr(certificate, "name", "") or "").lower().endswith(".pdf"):
+            raise ValidationError({"clearance_certificate": "Clearance certificate must be uploaded as a PDF."})
+        case.clearance_certificate = certificate
+        case.clearance_certificate_uploaded_by = request.user
+        case.clearance_certificate_uploaded_at = timezone.now()
+        case.save(update_fields=[
+            "clearance_certificate", "clearance_certificate_uploaded_by",
+            "clearance_certificate_uploaded_at", "updated_at",
+        ])
+        self._log_action(case, request.user, CaseActivityLog.Action.ATTACHMENT_UPLOADED, "Uploaded clearance certificate")
+        self._notify_hq_reviewers(
+            case,
+            request.user,
+            f"{self._actor_label(request.user)} uploaded a clearance certificate for Case #{case.case_number}.",
+        )
+        return Response(CaseSerializer(case, context={"request": request}).data)
 
     @action(detail=False, methods=["get"], url_path="protected-file", parser_classes=[JSONParser])
     def protected_file(self, request):
@@ -1465,6 +1865,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         previous_close_requested = instance.close_requested
         previous_traffic_accident_report = instance.traffic_accident_report.name if instance.traffic_accident_report else ""
         previous_rta_damage_authority = instance.rta_damage_authority.name if instance.rta_damage_authority else ""
+        previous_served_abstract = instance.served_abstract.name if instance.served_abstract else ""
         case = serializer.save()
         current_traffic_accident_report = case.traffic_accident_report.name if case.traffic_accident_report else ""
         current_rta_damage_authority = case.rta_damage_authority.name if case.rta_damage_authority else ""
@@ -1532,6 +1933,15 @@ class CaseViewSet(viewsets.ModelViewSet):
                 CaseActivityLog.Action.CASE_UPDATED,
                 f"Close requested for Case {case.case_number}",
             )
+
+        current_served_abstract = case.served_abstract.name if case.served_abstract else ""
+        if current_served_abstract and current_served_abstract != previous_served_abstract:
+            self._notify_accused_unit_users(
+                case,
+                self.request.user,
+                f"Case #{case.case_number} has been served with the abstract attached. Please upload the acknowledgement sheet to confirm receipt.",
+            )
+            self._log_action(case, self.request.user, CaseActivityLog.Action.CASE_UPDATED, f"Case {case.case_number} served awaiting unit acknowledgement")
 
         if previous_status != case.status:
             if case.status == Case.Status.SERVED:
@@ -1885,7 +2295,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         ])
 
     def _send_served_notification(self, case, actor=None):
-        """Notify all admin users in HQS battalions that a case has been served."""
+        """Notify HQ reviewers and accused-unit users that a case has been served."""
         hqs_admins = User.objects.filter(
             role="admin",
             battalion__battalion_type=Battalion.BattalionType.HQS,
@@ -1893,6 +2303,11 @@ class CaseViewSet(viewsets.ModelViewSet):
         )
         recipients = set(hqs_admins)
         recipients.update(User.objects.filter(role=User.Role.CORPS_CMD, is_active=True))
+        unit_ids = set(case.accused_entries.values_list("unit_id", flat=True))
+        if case.accused_unit_id:
+            unit_ids.add(case.accused_unit_id)
+        unit_ids.discard(None)
+        recipients.update(User.objects.filter(unit_id__in=unit_ids, is_active=True))
         if not recipients:
             return
         # Build actor attribution: "by Rank Name of Company/Battalion"
@@ -1921,7 +2336,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             ) for u in recipients
         ])
 
-        email_list = [u.email for u in hqs_admins if u.email]
+        email_list = [u.email for u in recipients if u.email]
         if email_list:
             try:
                 send_mail(

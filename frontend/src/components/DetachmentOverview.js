@@ -3,6 +3,7 @@ import api from "../axiosConfig";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import AddAnotherModal from "./common/AddAnotherModal";
+import { caseAccusedUnitLabel } from "../utils/caseTypes";
 
 /* ─────────────────────── constants ────────────────────────────── */
 
@@ -130,7 +131,8 @@ function DrilldownPanel({ drill, onClose }) {
       (c.case_number || "").toLowerCase().includes(q) ||
       (c.title || "").toLowerCase().includes(q) ||
       (c.accused_name || "").toLowerCase().includes(q) ||
-      (c.accused_service_number || "").toLowerCase().includes(q)
+      (c.accused_service_number || "").toLowerCase().includes(q) ||
+      caseAccusedUnitLabel(c).toLowerCase().includes(q)
     );
   });
 
@@ -148,6 +150,7 @@ function DrilldownPanel({ drill, onClose }) {
           <td>${c.case_number || "--"}</td>
           <td>${c.title || c.offence || c.offence_name || "--"}</td>
           <td>${c.accused_name || "--"}</td>
+          <td>${caseAccusedUnitLabel(c) || "--"}</td>
           <td>${(c.status || "").replace(/_/g, " ")}</td>
           <td>${c.created_at ? new Date(c.created_at).toLocaleDateString("en-GB") : "--"}</td>
         </tr>`
@@ -174,7 +177,7 @@ function DrilldownPanel({ drill, onClose }) {
      &nbsp;|&nbsp; Printed: ${new Date().toLocaleString("en-GB")}</p>
   <table>
     <thead>
-      <tr><th>#</th><th>Title / Offence</th><th>Accused</th><th>Status</th><th>Date</th></tr>
+      <tr><th>#</th><th>Title / Offence</th><th>Accused</th><th>Unit</th><th>Status</th><th>Date</th></tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
@@ -282,7 +285,7 @@ function DrilldownPanel({ drill, onClose }) {
               <CaseTableHead />
               <tbody>
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <SkeletonRow key={i} cols={5} />
+                  <SkeletonRow key={i} cols={6} />
                 ))}
               </tbody>
             </table>
@@ -322,6 +325,9 @@ function DrilldownPanel({ drill, onClose }) {
                         </span>
                       )}
                     </td>
+                    <td className="px-5 py-2.5 text-gray-300 min-w-[150px] max-w-[240px]">
+                      <p className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</p>
+                    </td>
                     <td className="px-5 py-2.5">
                       <Badge label={c.status} />
                     </td>
@@ -348,6 +354,7 @@ function CaseTableHead() {
         <th className="text-left px-5 py-3 font-medium">Case #</th>
         <th className="text-left px-5 py-3 font-medium">Title / Offence</th>
         <th className="text-left px-5 py-3 font-medium">Accused</th>
+        <th className="text-left px-5 py-3 font-medium">Unit</th>
         <th className="text-left px-5 py-3 font-medium">Status</th>
         <th className="text-left px-5 py-3 font-medium">Date</th>
       </tr>

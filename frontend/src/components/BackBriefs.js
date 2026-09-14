@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { caseBriefService, caseService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import { caseDisplayDescription } from "../utils/caseTypes";
 
 function toArray(payload) {
   if (Array.isArray(payload)) return payload;
@@ -22,7 +23,7 @@ function unitDisplay(caseObj) {
   const units = entries.map((entry) => entry.unit_name).filter(Boolean);
   const uniqueUnits = [...new Set(units)];
   if (uniqueUnits.length) return uniqueUnits.join(", ");
-  return caseObj?.accused_unit_name || caseObj?.submitting_unit_name || "--";
+  return caseObj?.accused_unit_name || caseObj?.source_incident_unit || caseObj?.submitting_unit_name || "--";
 }
 
 function fileName(url) {
@@ -157,7 +158,7 @@ export default function BackBriefs({ user }) {
         accusedDisplay(caseObj),
         unitDisplay(caseObj),
         caseObj.offence || caseObj.offence_name,
-        caseObj.description,
+        caseDisplayDescription(caseObj),
         fileName(brief.file),
         fileName(backBrief?.file),
         backBrief?.uploaded_by_name,
@@ -221,7 +222,7 @@ export default function BackBriefs({ user }) {
         accusedDisplay(caseObj),
         unitDisplay(caseObj),
         caseObj.offence || caseObj.offence_name || "--",
-        caseObj.description || "--",
+        caseDisplayDescription(caseObj) || "--",
         backBriefStatusLabel(status),
         backBrief.uploaded_by_name || "--",
         displayDate(backBrief.uploaded_at),
@@ -326,7 +327,7 @@ export default function BackBriefs({ user }) {
                       <td className="px-4 py-3 text-slate-800">{accusedDisplay(caseObj)}</td>
                       <td className="px-4 py-3 text-slate-600">{unitDisplay(caseObj)}</td>
                       <td className="px-4 py-3 text-slate-600">{caseObj.offence || caseObj.offence_name || "--"}</td>
-                      <td className="px-4 py-3 text-slate-600 max-w-xs whitespace-normal break-words">{caseObj.description || "--"}</td>
+                      <td className="px-4 py-3 text-slate-600 max-w-xs whitespace-normal break-words">{caseDisplayDescription(caseObj) || "--"}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${status === "attached" ? "bg-emerald-50 text-emerald-700" : status === "ready" ? "bg-blue-50 text-blue-700" : status === "awaiting_approval" ? "bg-purple-50 text-purple-700" : "bg-amber-50 text-amber-700"}`}>
                           {backBriefStatusLabel(status)}

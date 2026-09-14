@@ -1,13 +1,20 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService, incidentService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import useDebouncedValue from "../hooks/useDebouncedValue";
 import ActionModal from "./common/ActionModal";
+import PaginationControls from "./common/PaginationControls";
 import { openProtectedFile } from "../utils/protectedFiles";
-import { isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
+import { caseDisplayDescription, isRoadTrafficAccidentCase, RTA_CASE_TYPE } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function resultCount(data) {
+  if (typeof data?.count === "number") return data.count;
+  return toArray(data).length;
 }
 
 function userLabel(user) {
@@ -40,8 +47,9 @@ function accusedUnitLabel(caseObj) {
   const units = [
     caseObj?.accused_unit_name,
     ...toArray(caseObj?.accused_entries).map((entry) => entry?.unit_name || entry?.unit),
+    caseObj?.source_incident_unit,
   ].filter(Boolean);
-  return [...new Set(units)].join("; ");
+  return [...new Set(units)].join("; ") || caseObj?.submitting_unit_name || "";
 }
 
 function taskedBattalionCompanyLabel(caseObj) {
@@ -96,29 +104,6 @@ function formatDateTimeForReport(value) {
   return date.toLocaleString("en-GB");
 }
 
-function caseDateValues(caseObj) {
-  return [
-    caseObj?.date_of_offence,
-    caseObj?.created_at,
-    caseObj?.updated_at,
-    caseObj?.tasking_date,
-    caseObj?.team_assigned_at,
-    caseObj?.served_at,
-    caseObj?.closed_at,
-    caseObj?.mentioning_date,
-    caseObj?.rfi_date,
-    caseObj?.investigation_deadline,
-    caseObj?.source_incident_date,
-  ].map(normalizeDateForApi).filter(Boolean);
-}
-
-function caseMatchesDateRange(caseObj, dateFrom, dateTo) {
-  if (!dateFrom && !dateTo) return true;
-  return caseDateValues(caseObj).some((dateValue) =>
-    (!dateFrom || dateValue >= dateFrom) && (!dateTo || dateValue <= dateTo)
-  );
-}
-
 function caseUnitLabel(caseObj) {
   const accusedEntryUnits = toArray(caseObj?.accused_entries)
     .map((entry) => entry?.unit_name || entry?.unit)
@@ -127,6 +112,7 @@ function caseUnitLabel(caseObj) {
   return [
     caseObj?.accused_unit_name,
     ...accusedEntryUnits,
+    caseObj?.source_incident_unit,
     caseObj?.submitting_unit_name,
     taskedTo,
     caseObj?.assigned_team_name,
@@ -210,59 +196,6 @@ function rtaCaseHowOccurred(caseObj) {
 
 function rtaCaseOriginatingUnit(caseObj) {
   return caseObj?.source_incident_originating_unit || caseObj?.tasked_detachment_name || "";
-}
-
-function caseSearchText(caseObj) {
-  const accusedEntries = toArray(caseObj?.accused_entries).flatMap((entry) => [
-    entry?.name,
-    entry?.rank,
-    entry?.service_number,
-    entry?.service,
-    entry?.unit_name,
-    entry?.unit,
-  ]);
-  return [
-    caseObj?.case_number,
-    caseObj?.status,
-    STATUS_CHIP_META[caseObj?.status]?.label,
-    caseObj?.title,
-    caseObj?.offence,
-    caseObj?.offence_name,
-    caseObj?.description,
-    caseObj?.source_incident_number,
-    caseObj?.source_incident_type,
-    caseObj?.source_incident_place,
-    caseObj?.source_incident_unit,
-    caseObj?.source_incident_originating_unit,
-    caseObj?.source_incident_history,
-    caseObj?.source_incident_how_occurred,
-    rtaCaseOffence(caseObj),
-    rtaCasePlace(caseObj),
-    rtaCaseHistory(caseObj),
-    rtaCaseHowOccurred(caseObj),
-    rtaCaseOriginatingUnit(caseObj),
-    caseObj?.place_of_offence,
-    caseObj?.police_station,
-    caseObj?.accused_name,
-    caseObj?.accused_rank,
-    caseObj?.accused_service_number,
-    caseObj?.accused_service,
-    caseObj?.accused_unit_name,
-    accusedUnitLabel(caseObj),
-    caseObj?.submitting_unit_name,
-    caseObj?.tasked_battalion_name,
-    caseObj?.tasked_detachment_name,
-    caseObj?.assigned_team_name,
-    caseObj?.assigned_to_name,
-    caseObj?.remarks,
-    caseObj?.action_taken,
-    caseObj?.mentioning_remarks,
-    caseObj?.latest_update,
-    caseObj?.reason_for_pending,
-    caseObj?.rfi_no,
-    ...caseDateValues(caseObj),
-    ...accusedEntries,
-  ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function csvEscape(value) {
@@ -2027,10 +1960,12 @@ function getBriefForwardOptions(user, caseObj) {
   return [];
 }
 
-export default function Cases({ user, criminalTypeFilter }) {
+export default function Cases({ user, criminalTypeFilter, clearanceOnly = false }) {
   const detailPanelRef = useRef(null);
   const actionSaveInFlightRef = useRef(new Set());
   const [searchParams] = useSearchParams();
+  const caseQueryId = searchParams.get("case");
+  const caseAction = searchParams.get("action");
   const initialStatus = searchParams.get("status");
   const initialFilter = ALL_STATUSES.includes(initialStatus) ? initialStatus : "all";
   const placeOfOffenceFilter = searchParams.get("place_of_offence") || "";
@@ -2047,9 +1982,16 @@ export default function Cases({ user, criminalTypeFilter }) {
   const activeCaseTypeFilter = String(caseTypeQueryFilter || "").toLowerCase();
   const isRtaCaseFilter = activeCaseTypeFilter === RTA_CASE_TYPE;
   const [cases, setCases]       = useState([]);
+  const [caseCount, setCaseCount] = useState(0);
+  const [caseStatusTotal, setCaseStatusTotal] = useState(0);
+  const [caseStatusCounts, setCaseStatusCounts] = useState({});
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [loading, setLoading]   = useState(true);
+  const [countLoading, setCountLoading] = useState(false);
   const [filter, setFilter]     = useState(initialFilter);
   const [search, setSearch]     = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [accusedUnitFilter, setAccusedUnitFilter] = useState(accusedUnitQueryFilter);
   const [dateFrom, setDateFrom] = useState(createdFromFilter);
   const [dateTo, setDateTo]     = useState(createdToFilter);
@@ -2098,8 +2040,19 @@ export default function Cases({ user, criminalTypeFilter }) {
   // Status update
   const [statusSaving, setStatusSaving] = useState(false);
   const [statusErr, setStatusErr]     = useState("");
+  const [serveAbstractFile, setServeAbstractFile] = useState(null);
+  const [serveFormOpen, setServeFormOpen] = useState(false);
+  const [servePromptCase, setServePromptCase] = useState(null);
+  const [acknowledgementPromptCase, setAcknowledgementPromptCase] = useState(null);
   const [rowActionSavingId, setRowActionSavingId] = useState(null);
   const [rowActionErr, setRowActionErr] = useState("");
+  const [unitWorkflowSaving, setUnitWorkflowSaving] = useState(false);
+  const [unitWorkflowErr, setUnitWorkflowErr] = useState("");
+  const [acknowledgementFile, setAcknowledgementFile] = useState(null);
+  const [clearanceFile, setClearanceFile] = useState(null);
+  const [closureReviewComment, setClosureReviewComment] = useState("");
+  const [closurePromptCase, setClosurePromptCase] = useState(null);
+  const [closureChargesheetFile, setClosureChargesheetFile] = useState(null);
 
   // Document upload workflow
   const [showDocumentUpload, setShowDocumentUpload] = useState(false);
@@ -2173,10 +2126,15 @@ export default function Cases({ user, criminalTypeFilter }) {
   const canCreate   = isHqsAdmin || isSuperuser;
   const canTask     = isHqsAdmin || isSuperuser;
   const canManageCases = isHqsAdmin || isSuperuser;
+  const canEditTrafficDamageStatus = isHqsAdmin
+    || isSuperuser
+    || (user?.role === "mpc_hqs" && String(user?.battalion_type || "").toLowerCase() === "hqs");
   // Battalion admin/CO who is NOT HQS can assign teams
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
     (user?.role === "admin" || user?.role === "co");
   const isInvestigator = user?.role === "investigator";
+  const isAccusedUnitUser = Boolean(user?.unit_id || user?.unit) && ["adj", "co", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role);
+  const supportsUnitServiceWorkflow = !["dci_civ_police", "court_martial"].includes(String(selected?.criminal_offence_type || activeCriminalTypeFilter || "").toLowerCase());
   const briefForwardOptions = getBriefForwardOptions(user, selected);
   const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
   const sortedInvestigators = [...investigators].sort(sortUsersByWorkload(workloadMap));
@@ -2202,6 +2160,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   useAutoDismiss(teamErr, setTeamErr);
   useAutoDismiss(statusErr, setStatusErr);
   useAutoDismiss(rowActionErr, setRowActionErr);
+  useAutoDismiss(unitWorkflowErr, setUnitWorkflowErr);
   useAutoDismiss(docUploadErr, setDocUploadErr);
   useAutoDismiss(trafficReportErr, setTrafficReportErr);
   useAutoDismiss(briefUploadErr, setBriefUploadErr);
@@ -2240,25 +2199,97 @@ export default function Cases({ user, criminalTypeFilter }) {
   ]);
 
   // ── Load cases ────────────────────────────────────────────────────
-  function loadCases() {
-    setLoading(true);
-    const params = { page_size: 200 };
+  const buildCaseListParams = useCallback(({ includePage = true, includeStatus = true, statusOverride } = {}) => {
+    const params = { ordering: "-created_at" };
+    if (includePage) {
+      params.page = page;
+      params.page_size = pageSize;
+    }
+    const statusValue = statusOverride || (includeStatus && filter !== "all" ? filter : "");
+    if (statusValue && statusValue !== "all") params.status = statusValue;
+    if (debouncedSearch.trim()) params.search = debouncedSearch.trim();
+    if (accusedUnitFilter) params.accused_unit = accusedUnitFilter;
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+    if (placeOfOffenceFilter) params.place_of_offence = placeOfOffenceFilter;
+    if (offenceFilter) params.offence = offenceFilter;
+    if (accusedServiceFilter) params.accused_service = accusedServiceFilter;
+    if (activeCriminalTypeFilter) params.criminal_offence_type = activeCriminalTypeFilter;
     if (taskedDetachmentFilter) {
       params.tasked_detachment = taskedDetachmentFilter;
     } else if (taskedBattalionFilter) {
       params.tasked_battalion = taskedBattalionFilter;
     }
-    if (isRtaCaseFilter) {
-      params.case_type = RTA_CASE_TYPE;
-    }
+    if (isRtaCaseFilter) params.case_type = RTA_CASE_TYPE;
+    return params;
+  }, [
+    accusedServiceFilter,
+    accusedUnitFilter,
+    activeCriminalTypeFilter,
+    dateFrom,
+    dateTo,
+    debouncedSearch,
+    filter,
+    isRtaCaseFilter,
+    offenceFilter,
+    page,
+    pageSize,
+    placeOfOffenceFilter,
+    taskedBattalionFilter,
+    taskedDetachmentFilter,
+  ]);
+
+  const loadCases = useCallback(() => {
+    setLoading(true);
+    const params = buildCaseListParams();
     caseService
       .list(params)
-      .then((res) => setCases(toArray(res.data)))
-      .catch(() => {})
+      .then((res) => {
+        setCases(toArray(res.data));
+        setCaseCount(resultCount(res.data));
+      })
+      .catch((err) => {
+        if (err?.response?.status === 404 && page > 1) {
+          setPage(1);
+        }
+      })
       .finally(() => setLoading(false));
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadCases(); }, [taskedBattalionFilter, taskedDetachmentFilter, isRtaCaseFilter]);
+  }, [buildCaseListParams, page]);
+
+  useEffect(() => { loadCases(); }, [loadCases]);
+
+  useEffect(() => {
+    if (!caseQueryId || loading) return;
+    const caseFromQuery = cases.find((caseObj) => String(caseObj.id) === String(caseQueryId));
+    if (caseFromQuery) {
+      if (caseAction === "acknowledge" && caseFromQuery.served_abstract && !caseFromQuery.abstract_acknowledged_at) {
+        setAcknowledgementFile(null);
+        setUnitWorkflowErr("");
+        setAcknowledgementPromptCase(caseFromQuery);
+      } else {
+        setSelected(caseFromQuery);
+      }
+    }
+  }, [caseAction, caseQueryId, cases, loading]);
+
+  useEffect(() => {
+    setCountLoading(true);
+    const baseParams = buildCaseListParams({ includePage: false, includeStatus: false });
+    Promise.all([
+      caseService.list({ ...baseParams, page_size: 1 }),
+      ...ALL_STATUSES.map((status) => caseService.list({ ...baseParams, status, page_size: 1 })),
+    ])
+      .then(([totalRes, ...statusResults]) => {
+        setCaseStatusTotal(resultCount(totalRes.data));
+        const nextCounts = {};
+        ALL_STATUSES.forEach((status, index) => {
+          nextCounts[status] = resultCount(statusResults[index].data);
+        });
+        setCaseStatusCounts(nextCounts);
+      })
+      .catch(() => {})
+      .finally(() => setCountLoading(false));
+  }, [buildCaseListParams]);
 
   // Load offences for dropdown
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2345,11 +2376,67 @@ export default function Cases({ user, criminalTypeFilter }) {
     setAccusedUnitFilter(accusedUnitQueryFilter);
   }, [accusedUnitQueryFilter]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [
+    accusedUnitFilter,
+    activeCriminalTypeFilter,
+    dateFrom,
+    dateTo,
+    debouncedSearch,
+    filter,
+    isRtaCaseFilter,
+    offenceFilter,
+    placeOfOffenceFilter,
+    taskedBattalionFilter,
+    taskedDetachmentFilter,
+  ]);
+
   // ── Helpers ───────────────────────────────────────────────────────
   const todayISO = new Date().toISOString().slice(0, 10);
   function refreshSelected(updated) {
     setSelected(updated);
     setCases((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+  }
+
+  function canServeCase(caseObj) {
+    if (!caseObj || caseObj.status === "served" || caseObj.status === "closed" || caseObj.served_abstract) return false;
+    if (isHqsAdmin || isSuperuser || isSpecialBattalionAdmin) return true;
+    if (user?.role === "detachment") {
+      return Boolean(userDetachmentId && caseObj.tasked_detachment && String(userDetachmentId) === String(caseObj.tasked_detachment));
+    }
+    return ["co", "oc", "adj", "2ic", "commandant"].includes(user?.role)
+      && Boolean(userDetachmentId && caseObj.tasked_detachment && String(userDetachmentId) === String(caseObj.tasked_detachment));
+  }
+
+  async function serveCaseWithAbstract(caseObj = selected) {
+    if (!caseObj?.id || !serveAbstractFile) {
+      setStatusErr("Attach the abstract PDF before serving this case.");
+      return;
+    }
+    setStatusSaving(true);
+    setStatusErr("");
+    try {
+      const formData = new FormData();
+      formData.append("status", "under_investigation");
+      formData.append("served_abstract", serveAbstractFile);
+      const res = await caseService.update(caseObj.id, formData);
+      if (selected?.id === caseObj.id) {
+        refreshSelected(res.data);
+      } else {
+        setCases((prev) => prev.map((row) => (row.id === res.data.id ? res.data : row)));
+      }
+      setServeAbstractFile(null);
+      setServeFormOpen(false);
+      setServePromptCase(null);
+      loadCases();
+      showToast("Abstract uploaded. Case is awaiting unit acknowledgement.", "success");
+    } catch (err) {
+      const data = err?.response?.data;
+      setStatusErr(data?.detail || data?.abstract_acknowledgement_form?.[0] || data?.status?.[0] || "Failed to serve case.");
+    } finally {
+      setStatusSaving(false);
+    }
   }
 
   function closeCaseForm() {
@@ -2521,6 +2608,8 @@ export default function Cases({ user, criminalTypeFilter }) {
 
   function selectCase(c) {
     setSelected(c);
+    setServeFormOpen(false);
+    setServeAbstractFile(null);
     setShowTask(false);
     setTaskModalMode(false);
     setShowTeam(false);
@@ -2555,6 +2644,14 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
   }
 
+  function openServeFromRow(caseObj, event) {
+    event.stopPropagation();
+    if (!canServeCase(caseObj)) return;
+    setServeAbstractFile(null);
+    setStatusErr("");
+    setServePromptCase(caseObj);
+  }
+
   const selectedIsCourtMartial = selected?.criminal_offence_type === "court_martial";
   const selectedIsDci = selected?.criminal_offence_type === "dci_civ_police";
   const selectedIsRta = isRoadTrafficAccidentCase(selected);
@@ -2564,22 +2661,38 @@ export default function Cases({ user, criminalTypeFilter }) {
   const activeCloseCaseIsRta = isRoadTrafficAccidentCase(activeCloseCase);
   const userBattalionId = entityId(user?.battalion_id || user?.battalion);
   const userDetachmentId = entityId(user?.detachment_id || user?.detachment);
-  const canUploadTrafficAccidentReport = selectedIsRta
-    && selected?.status !== "closed"
-    && (
+  const userBattalionType = String(user?.battalion_type || user?.battalion?.battalion_type || "").toLowerCase();
+  const isSpecialBattalionAdmin = user?.role === "admin" && userBattalionType === "special";
+
+  function caseHasInvestigationAssignment(caseObj) {
+    return Boolean(
+      caseObj?.assigned_to
+      || caseObj?.assigned_to_name
+      || caseObj?.assigned_team
+      || caseObj?.assigned_team_name
+    );
+  }
+
+  function canUploadTrafficAccidentReportForCase(caseObj) {
+    if (!isRoadTrafficAccidentCase(caseObj) || caseObj?.status === "closed") return false;
+    return (
       isHqsAdmin
       || isSuperuser
       || (
         user?.role === "detachment"
-        && selected?.tasked_detachment
-        && String(userDetachmentId) === String(selected.tasked_detachment)
+        && caseObj?.tasked_detachment
+        && String(userDetachmentId) === String(caseObj.tasked_detachment)
       )
       || (
-        user?.role === "admin"
-        && selected?.tasked_battalion
-        && String(userBattalionId) === String(selected.tasked_battalion)
+        isSpecialBattalionAdmin
+        && caseObj?.tasked_battalion
+        && String(userBattalionId) === String(caseObj.tasked_battalion)
       )
     );
+  }
+
+  const canUploadTrafficAccidentReport = canUploadTrafficAccidentReportForCase(selected)
+    && caseHasInvestigationAssignment(selected);
 
   useEffect(() => {
     if (!selectedId || !selectedIsCourtMartial) {
@@ -3388,11 +3501,36 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
   }
 
+  function openTrafficReportUploadFromRow(caseObj, event) {
+    event.stopPropagation();
+    if (!canUploadTrafficAccidentReportForCase(caseObj)) {
+      setRowActionErr("Only IC Cases for the tasked Coy/Det, Special Admin battalion, or HQ Admin can upload Traffic Accident Reports.");
+      return;
+    }
+    if (!caseHasInvestigationAssignment(caseObj)) {
+      setRowActionErr("Assign this RTA case to an IO or team before uploading the Traffic Accident Report.");
+      return;
+    }
+    setRowActionErr("");
+    selectCase(caseObj);
+    setShowTrafficReportUpload(true);
+    setTrafficReportFile(null);
+    setTrafficReportDamaged(caseObj?.rta_service_vehicle_damaged ? "yes" : "no");
+    setTrafficReportErr("");
+    window.setTimeout(() => {
+      detailPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
   async function handleTrafficAccidentReportUpload(e) {
     e.preventDefault();
     if (!selected) return;
     if (selected.status === "closed") {
       setTrafficReportErr("Closed cases do not allow further uploads or attachment changes.");
+      return;
+    }
+    if (!caseHasInvestigationAssignment(selected)) {
+      setTrafficReportErr("Assign this RTA case to an IO or team before uploading the Traffic Accident Report.");
       return;
     }
     if (!trafficReportFile) {
@@ -3408,7 +3546,9 @@ export default function Cases({ user, criminalTypeFilter }) {
     try {
       const fd = new FormData();
       fd.append("traffic_accident_report", trafficReportFile);
-      fd.append("rta_service_vehicle_damaged", trafficReportDamaged === "yes" ? "true" : "false");
+      if (canEditTrafficDamageStatus) {
+        fd.append("rta_service_vehicle_damaged", trafficReportDamaged === "yes" ? "true" : "false");
+      }
       const res = await caseService.update(selected.id, fd);
       refreshSelected(res.data);
       setTrafficReportFile(null);
@@ -3530,6 +3670,110 @@ export default function Cases({ user, criminalTypeFilter }) {
     }
   }
 
+  async function acknowledgeServedCase(caseObj = selected) {
+    if (!caseObj?.id) return;
+    setUnitWorkflowSaving(true);
+    setUnitWorkflowErr("");
+    try {
+      const formData = new FormData();
+      if (acknowledgementFile) {
+        formData.append("abstract_acknowledgement_form", acknowledgementFile);
+      }
+      const res = await caseService.acknowledge(caseObj.id, formData);
+      refreshSelected(res.data);
+      setCases((prev) => prev.map((row) => (row.id === res.data.id ? res.data : row)));
+      setAcknowledgementFile(null);
+      setAcknowledgementPromptCase(null);
+      showToast("Abstract receipt acknowledged.", "success");
+    } catch (err) {
+      setUnitWorkflowErr(err?.response?.data?.detail || "Failed to acknowledge receipt of the abstract.");
+    } finally {
+      setUnitWorkflowSaving(false);
+    }
+  }
+
+  function openAcknowledgementFromRow(caseObj, event) {
+    event.stopPropagation();
+    if (!caseObj?.served_abstract) return;
+    setAcknowledgementFile(null);
+    setUnitWorkflowErr("");
+    setAcknowledgementPromptCase(caseObj);
+  }
+
+  async function requestUnitClosure(caseObj = selected) {
+    if (!caseObj?.id) return;
+    if (!closureChargesheetFile) {
+      setUnitWorkflowErr("Attach the charge sheet before requesting closure.");
+      return;
+    }
+    setUnitWorkflowSaving(true);
+    setUnitWorkflowErr("");
+    try {
+      const formData = new FormData();
+      formData.append("chargesheet", closureChargesheetFile);
+      const res = await caseService.requestClosure(caseObj.id, formData);
+      refreshSelected(res.data);
+      setCases((prev) => prev.map((row) => (row.id === res.data.id ? res.data : row)));
+      showToast("Closure request sent to Admin HQs.", "success");
+      setClosureChargesheetFile(null);
+      setClosurePromptCase(null);
+    } catch (err) {
+      setUnitWorkflowErr(err?.response?.data?.detail || "Failed to request case closure.");
+    } finally {
+      setUnitWorkflowSaving(false);
+    }
+  }
+
+  function openClosurePrompt(caseObj, event) {
+    event?.stopPropagation();
+    setClosurePromptCase(caseObj);
+    setClosureChargesheetFile(null);
+    setUnitWorkflowErr("");
+  }
+
+  async function uploadClearanceCertificate() {
+    if (!selected?.id || !clearanceFile) return;
+    setUnitWorkflowSaving(true);
+    setUnitWorkflowErr("");
+    try {
+      const formData = new FormData();
+      formData.append("clearance_certificate", clearanceFile);
+      const res = await caseService.uploadClearanceCertificate(selected.id, formData);
+      refreshSelected(res.data);
+      setCases((prev) => prev.map((row) => (row.id === res.data.id ? res.data : row)));
+      setClearanceFile(null);
+      showToast("Clearance certificate attached.", "success");
+    } catch (err) {
+      setUnitWorkflowErr(err?.response?.data?.detail || "Failed to attach the clearance certificate.");
+    } finally {
+      setUnitWorkflowSaving(false);
+    }
+  }
+
+  async function reviewUnitClosure(decision) {
+    if (!selected?.id) return;
+    if (decision === "reject" && !closureReviewComment.trim()) {
+      setUnitWorkflowErr("Add a comment before rejecting the closure request.");
+      return;
+    }
+    setUnitWorkflowSaving(true);
+    setUnitWorkflowErr("");
+    try {
+      const res = await caseService.reviewClosure(selected.id, {
+        decision,
+        comment: closureReviewComment.trim(),
+      });
+      refreshSelected(res.data);
+      setCases((prev) => prev.map((row) => (row.id === res.data.id ? res.data : row)));
+      setClosureReviewComment("");
+      showToast(`Closure request ${decision}d.`, "success");
+    } catch (err) {
+      setUnitWorkflowErr(err?.response?.data?.detail || `Failed to ${decision} the closure request.`);
+    } finally {
+      setUnitWorkflowSaving(false);
+    }
+  }
+
   function handleCloseFromRow(caseObj) {
     if (!caseObj?.id || !caseObj.close_requested) return;
     setRowActionErr("");
@@ -3537,51 +3781,13 @@ export default function Cases({ user, criminalTypeFilter }) {
   }
 
   // ── Filter / search ───────────────────────────────────────────────
-  const caseMatchesFilters = (c, { includeStatus = true } = {}) => {
-    const matchStatus = !includeStatus || filter === "all" || c.status === filter;
-    const matchCriminalType = !activeCriminalTypeFilter || c.criminal_offence_type === activeCriminalTypeFilter;
-    const matchCaseType = !isRtaCaseFilter || isRoadTrafficAccidentCase(c);
-    const matchPlace =
-      !placeOfOffenceFilter ||
-      String(c.place_of_offence || "").toLowerCase() === placeOfOffenceFilter.toLowerCase();
-    const matchOffence =
-      !offenceFilter ||
-      String(c.offence || c.offence_name || "").toLowerCase() === offenceFilter.toLowerCase();
-    const matchAccusedUnit =
-      !accusedUnitFilter ||
-      String(c.accused_unit || "") === String(accusedUnitFilter) ||
-      (Array.isArray(c.accused_entries) && c.accused_entries.some((entry) => String(entry.unit || "") === String(accusedUnitFilter)));
-    const matchAccusedService =
-      !accusedServiceFilter ||
-      String(c.accused_service || "") === String(accusedServiceFilter) ||
-      (Array.isArray(c.accused_entries) && c.accused_entries.some((entry) => String(entry.service || "") === String(accusedServiceFilter)));
-    const matchTaskedBattalion =
-      !taskedBattalionFilter || String(c.tasked_battalion || "") === String(taskedBattalionFilter);
-    const matchTaskedDetachment =
-      !taskedDetachmentFilter || String(c.tasked_detachment || "") === String(taskedDetachmentFilter);
-    const q = search.trim().toLowerCase();
-    const matchSearch = !q || caseSearchText(c).includes(q);
-    const matchDateRange = caseMatchesDateRange(c, dateFrom, dateTo);
-    return (
-      matchStatus &&
-      matchSearch &&
-      matchCriminalType &&
-      matchCaseType &&
-      matchPlace &&
-      matchOffence &&
-      matchAccusedUnit &&
-      matchAccusedService &&
-      matchTaskedBattalion &&
-      matchTaskedDetachment &&
-      matchDateRange
-    );
-  };
-
-  const statusCountCases = cases.filter((c) => caseMatchesFilters(c, { includeStatus: false }));
-  const filtered = cases.filter((c) => caseMatchesFilters(c));
+  const statusCountCases = { length: caseStatusTotal };
+  const filtered = clearanceOnly
+    ? cases.filter((caseObj) => caseObj.status === "served" || caseObj.clearance_certificate)
+    : cases;
 
   const counts = ALL_STATUSES.reduce((acc, s) => {
-    acc[s] = statusCountCases.filter((c) => c.status === s).length;
+    acc[s] = caseStatusCounts[s] || 0;
     return acc;
   }, {});
 
@@ -3609,6 +3815,7 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isUnderInvestigationFilter = filter === "under_investigation";
   const showDciUpdateColumns = isDciFilter && isUnderInvestigationFilter;
   const showDciActionColumn = isDciFilter && (isAllFilter || isUnderInvestigationFilter);
+  const showUnderInvestigationActionColumn = isUnderInvestigationFilter && !isDciFilter;
   const primaryStatusChips = isDciFilter
     ? PRIMARY_STATUS_CHIPS.filter((s) => s !== "pending" && s !== "served")
     : PRIMARY_STATUS_CHIPS;
@@ -3616,14 +3823,15 @@ export default function Cases({ user, criminalTypeFilter }) {
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
   const canCloseServedCases = isHqsAdmin || isSuperuser;
+  const showServedActionColumn = isServedFilter && (canCloseServedCases || (isAccusedUnitUser && supportsUnitServiceWorkflow));
   const defaultCaseExportColumns = [
     "Case #",
     "Status",
     "Service No",
     "Rank",
     "Accused",
-    "Offence",
     "Unit",
+    "Offence",
     "Place",
     "Assignment",
     "Date of Offence",
@@ -3668,6 +3876,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       : defaultCaseExportColumns;
 
   function caseViewTitle() {
+    if (clearanceOnly) return "Clearance Certificates";
     if (isRtaCaseFilter) return "RTA Cases";
     if (activeCriminalTypeFilter === "court_martial") return "Court Martial Cases";
     if (activeCriminalTypeFilter === "dci_civ_police") return "DCI / Civ Police Cases";
@@ -3687,7 +3896,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       : activeCriminalTypeFilter
         ? `Type: ${activeCriminalTypeFilter.replace(/_/g, " ")}`
         : "Type: All";
-    return `${typeLabel} | ${statusLabel} | ${rangeLabel} | ${searchLabel} | ${filtered.length} case${filtered.length !== 1 ? "s" : ""}`;
+    return `${typeLabel} | ${statusLabel} | ${rangeLabel} | ${searchLabel} | ${caseCount} case${caseCount !== 1 ? "s" : ""}`;
   }
 
   function caseExportRow(caseObj) {
@@ -3698,7 +3907,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       Rank: caseObj.accused_rank || "",
       Accused: caseObj.accused_name || "",
       Offence: caseObj.offence_name || caseObj.offence || "",
-      Unit: isDciFilter ? accusedUnitLabel(caseObj) : caseUnitLabel(caseObj),
+      Unit: accusedUnitLabel(caseObj) || caseUnitLabel(caseObj),
       Place: caseObj.place_of_offence || "",
       Time: "",
       Assignment: caseAssignmentLabel(caseObj),
@@ -3710,7 +3919,7 @@ export default function Cases({ user, criminalTypeFilter }) {
       "Tasking Date": formatDateTimeForReport(caseObj.tasking_date),
       "Served Date": formatDateTimeForReport(caseObj.served_at),
       "Closed Date": formatDateTimeForReport(caseObj.closed_at),
-      Description: caseObj.description || "",
+      Description: caseDisplayDescription(caseObj) || "",
       "History of the Accident": rtaCaseHistory(caseObj),
       "How the Accident Occurred": rtaCaseHowOccurred(caseObj),
       "Originating Unit": rtaCaseOriginatingUnit(caseObj),
@@ -3952,7 +4161,10 @@ export default function Cases({ user, criminalTypeFilter }) {
               Filtered: {isRtaCaseFilter ? "RTA Cases" : criminalTypeFilter === "court_martial" ? "Court Martial" : "DCI / Civ Police"}
             </span>
           )}
-          <p className="text-sm text-gray-500 mt-0.5">{filtered.length} of {statusCountCases.length} case{statusCountCases.length !== 1 ? "s" : ""}</p>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {caseCount} of {caseStatusTotal} case{caseStatusTotal !== 1 ? "s" : ""}
+            {countLoading ? " (updating counts...)" : ""}
+          </p>
         </div>
         {canCreate && (
           <button
@@ -4103,7 +4315,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             disabled={loading || !filtered.length}
             className="self-end rounded-lg border border-emerald-500/40 bg-emerald-600/20 px-3 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Print
+            Print Page
           </button>
           <button
             type="button"
@@ -4111,7 +4323,7 @@ export default function Cases({ user, criminalTypeFilter }) {
             disabled={loading || !filtered.length}
             className="self-end rounded-lg border border-sky-500/40 bg-sky-600/20 px-3 py-2 text-xs font-semibold text-sky-300 transition-colors hover:bg-sky-600/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Export CSV
+            Export Page CSV
           </button>
         </div>
       </div>
@@ -4219,19 +4431,44 @@ export default function Cases({ user, criminalTypeFilter }) {
                         <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
                           <p className="line-clamp-2 break-words">{rtaCaseOriginatingUnit(c) || "--"}</p>
                         </td>
-                        <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
-                          {c.traffic_accident_report ? (
-                            <ProtectedDocumentButton
-                              url={c.traffic_accident_report}
-                              label="traffic accident report"
-                              onError={(message) => showToast(message, "error")}
-                              className="text-xs text-blue-400 hover:underline"
-                            >
-                              View
-                            </ProtectedDocumentButton>
-                          ) : (
-                            <span className="text-gray-500">--</span>
-                          )}
+                        <td className="px-4 py-2.5 text-gray-300 min-w-[180px]">
+                          {(() => {
+                            const canUploadReport = canUploadTrafficAccidentReportForCase(c);
+                            const hasAssignment = caseHasInvestigationAssignment(c);
+                            const uploadDisabled = !hasAssignment || trafficReportSaving;
+                            return (
+                              <div className="flex flex-col items-start gap-1.5">
+                                {c.traffic_accident_report ? (
+                                  <ProtectedDocumentButton
+                                    url={c.traffic_accident_report}
+                                    label="traffic accident report"
+                                    onError={(message) => showToast(message, "error")}
+                                    className="text-xs text-blue-400 hover:underline"
+                                  >
+                                    View
+                                  </ProtectedDocumentButton>
+                                ) : (
+                                  <span className="text-xs text-gray-500">Not attached</span>
+                                )}
+                                {canUploadReport && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => openTrafficReportUploadFromRow(c, event)}
+                                      disabled={uploadDisabled}
+                                      title={hasAssignment ? "Upload Traffic Accident Report" : "Assign this case to an IO or team first"}
+                                      className="rounded-md bg-orange-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-orange-700 disabled:cursor-not-allowed disabled:bg-gray-600 disabled:text-gray-300"
+                                    >
+                                      {c.traffic_accident_report ? "Replace Report" : "Upload Report"}
+                                    </button>
+                                    {!hasAssignment && (
+                                      <span className="text-[10px] font-medium text-amber-300">Assign IO/team first</span>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-2.5">
                           <Badge
@@ -4245,16 +4482,14 @@ export default function Cases({ user, criminalTypeFilter }) {
                 </tbody>
               </table>
             ) : (
-            <table className={`sticky-head w-full ${isDciFilter ? "min-w-[1760px]" : "min-w-[1380px]"} text-sm`}>
+            <table className={`sticky-head w-full ${isDciFilter ? "min-w-[1760px]" : "min-w-[1520px]"} text-sm`}>
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-4 py-3 font-medium">Case #</th>
                   <th className="text-left px-4 py-3 font-medium">Service No</th>
                   <th className="text-left px-4 py-3 font-medium">Rank</th>
                   <th className="text-left px-4 py-3 font-medium">Accused</th>
-                  {isDciFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Unit</th>
-                  )}
+                  <th className="text-left px-4 py-3 font-medium">Unit</th>
                   <th className="text-left px-4 py-3 font-medium">Offence</th>
                   <th className="text-left px-4 py-3 font-medium">Description</th>
                   {isDciFilter && (
@@ -4284,6 +4519,9 @@ export default function Cases({ user, criminalTypeFilter }) {
                   {!isDciFilter && isUnderInvestigationFilter && (
                     <th className="text-left px-4 py-3 font-medium">Abstract</th>
                   )}
+                  {showUnderInvestigationActionColumn && (
+                    <th className="text-left px-4 py-3 font-medium">Action</th>
+                  )}
                   {!isDciFilter && showDciUpdateColumns && (
                     <th className="text-left px-4 py-3 font-medium">Date Updated</th>
                   )}
@@ -4308,7 +4546,7 @@ export default function Cases({ user, criminalTypeFilter }) {
                   {!isDciFilter && isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Remarks</th>
                   )}
-                  {!isDciFilter && isServedFilter && canCloseServedCases && (
+                  {!isDciFilter && showServedActionColumn && (
                     <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
                   {!isDciFilter && isClosedFilter && (
@@ -4325,7 +4563,7 @@ export default function Cases({ user, criminalTypeFilter }) {
               <tbody>
                 {filtered.map((c) => (
                   (() => {
-                    const desc = c.description || "--";
+                    const desc = caseDisplayDescription(c) || "--";
                     const expanded = !!expandedDesc[c.id];
                     const longDesc = desc.length > descLimit;
                     const shownDesc = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;
@@ -4345,11 +4583,9 @@ export default function Cases({ user, criminalTypeFilter }) {
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_service_number || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_rank || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">{c.accused_name || "--"}</td>
-                    {isDciFilter && (
-                      <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
-                        <p className="line-clamp-2 break-words">{accusedUnitLabel(c) || "--"}</p>
-                      </td>
-                    )}
+                    <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
+                      <p className="line-clamp-2 break-words">{accusedUnitLabel(c) || "--"}</p>
+                    </td>
                     <td className="px-4 py-2.5 text-gray-200 whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
                     <td className="px-4 py-2.5 text-gray-300 min-w-[260px] max-w-[420px]">
                       <p className="whitespace-pre-wrap break-words">{shownDesc}</p>
@@ -4450,6 +4686,29 @@ export default function Cases({ user, criminalTypeFilter }) {
                     {!isDciFilter && isUnderInvestigationFilter && (
                       <td className="px-4 py-2.5 text-gray-300"><AbstractAttachmentsCell c={c} /></td>
                     )}
+                    {showUnderInvestigationActionColumn && (
+                      <td className="px-4 py-2.5 whitespace-nowrap">
+                        {canServeCase(c) ? (
+                          <button
+                            type="button"
+                            onClick={(event) => openServeFromRow(c, event)}
+                            className="px-2.5 py-1 rounded text-xs font-medium bg-purple-700/80 hover:bg-purple-600 text-white transition-colors"
+                          >
+                            Serve Case
+                          </button>
+                        ) : c.served_abstract ? (
+                          <button
+                            type="button"
+                            onClick={(event) => openAcknowledgementFromRow(c, event)}
+                            className="px-2.5 py-1 rounded text-xs font-medium bg-sky-700/80 hover:bg-sky-600 text-white transition-colors"
+                          >
+                            Attach Acknowledgement
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-500">--</span>
+                        )}
+                      </td>
+                    )}
                     {!isDciFilter && showDciUpdateColumns && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
                         {normalizeDateForDisplay(c.mentioning_date) || (c.updated_at ? new Date(c.updated_at).toLocaleDateString("en-GB") : "--")}
@@ -4529,18 +4788,21 @@ export default function Cases({ user, criminalTypeFilter }) {
                     {!isDciFilter && isServedFilter && (
                       <td className="px-4 py-2.5 text-gray-300">{c.remarks || "--"}</td>
                     )}
-                    {!isDciFilter && isServedFilter && canCloseServedCases && (
+                    {!isDciFilter && showServedActionColumn && (
                       <td className="px-4 py-2.5 whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openCourtCloseModal(c);
-                          }}
-                          className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors"
-                        >
-                          Close Case
-                        </button>
+                        {canCloseServedCases ? (
+                          <button type="button" onClick={(e) => { e.stopPropagation(); openCourtCloseModal(c); }} className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors">Close Case</button>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5">
+                            {!c.abstract_acknowledged_at && c.served_abstract && (
+                              <button type="button" onClick={(e) => openAcknowledgementFromRow(c, e)} disabled={rowActionSavingId === c.id || unitWorkflowSaving} className="px-2.5 py-1 rounded text-xs font-medium bg-sky-700/80 hover:bg-sky-600 disabled:opacity-50 text-white transition-colors">Attach Acknowledgement</button>
+                            )}
+                            {c.abstract_acknowledged_at && !["pending", "approved"].includes(c.unit_closure_status) && (
+                              <button type="button" onClick={(e) => openClosurePrompt(c, e)} disabled={rowActionSavingId === c.id || unitWorkflowSaving} className="px-2.5 py-1 rounded text-xs font-medium bg-amber-700/80 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">Request Closure</button>
+                            )}
+                            <button type="button" onClick={(e) => { e.stopPropagation(); selectCase(c); }} className="px-2.5 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-white transition-colors">Details</button>
+                          </div>
+                        )}
                       </td>
                     )}
                     {!isDciFilter && isClosedFilter && (
@@ -4572,8 +4834,28 @@ export default function Cases({ user, criminalTypeFilter }) {
         </div>
 
         {/* ── Case detail panel ──────────────────────────────────── */}
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          totalCount={caseCount}
+          itemLabel="cases"
+          loading={loading}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          variant="dark"
+        />
+
         {selected && !taskModalMode && (
-          <div ref={detailPanelRef} className="w-full bg-gray-800 rounded-xl p-5 space-y-5 relative">
+          <div
+            className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-8"
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setSelected(null)}
+          >
+          <div ref={detailPanelRef} className="relative w-full max-w-5xl rounded-xl bg-gray-800 p-5 space-y-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
 
             {/* Close */}
             <button
@@ -4597,10 +4879,74 @@ export default function Cases({ user, criminalTypeFilter }) {
               <h3 className="text-lg font-semibold text-white mt-1">
                 {selected.title || selected.offence || "Untitled Case"}
               </h3>
-              {selected.description && (
-                <p className="text-sm text-gray-400 mt-1">{selected.description}</p>
+              {caseDisplayDescription(selected) && (
+                <p className="text-sm text-gray-400 mt-1">{caseDisplayDescription(selected)}</p>
               )}
             </div>
+
+            {supportsUnitServiceWorkflow && (isAccusedUnitUser || ((isHqsAdmin || isSuperuser) && selected.unit_closure_status === "pending")) && (
+              <div className="rounded-lg border border-sky-500/30 bg-sky-950/20 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <SectionLabel>Unit service workflow</SectionLabel>
+                  {selected.unit_closure_status && (
+                    <span className="inline-block rounded bg-sky-500/20 px-2 py-0.5 text-[11px] font-medium capitalize text-sky-200">
+                      Closure {selected.unit_closure_status.replace(/_/g, " ")}
+                    </span>
+                  )}
+                </div>
+                {selected.served_abstract && (
+                  <ProtectedDocumentButton url={selected.served_abstract} label="abstract of evidence" className="text-xs text-blue-300 hover:underline">
+                    View abstract of evidence
+                  </ProtectedDocumentButton>
+                )}
+                {isAccusedUnitUser && selected.status === "under_investigation" && selected.served_abstract && !selected.abstract_acknowledged_at && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-gray-300">The abstract has been served. Attach the signed acknowledgement sheet to confirm receipt and complete service.</p>
+                    <input type="file" accept="application/pdf,.pdf" onChange={(event) => setAcknowledgementFile(event.target.files[0] || null)} className="w-full text-xs text-gray-400" />
+                    <button type="button" onClick={acknowledgeServedCase} disabled={unitWorkflowSaving} className="px-3 py-2 rounded bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white text-xs font-medium">
+                      {unitWorkflowSaving ? "Saving..." : "Acknowledge Abstract Received"}
+                    </button>
+                  </div>
+                )}
+                {selected.abstract_acknowledged_at && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-emerald-300">Abstract acknowledged{selected.abstract_acknowledged_by_name ? ` by ${selected.abstract_acknowledged_by_name}` : ""}.</p>
+                    {selected.abstract_acknowledgement_form && (
+                      <ProtectedDocumentButton url={selected.abstract_acknowledgement_form} label="acknowledgement form" className="text-xs text-blue-300 hover:underline">
+                        View acknowledgement form
+                      </ProtectedDocumentButton>
+                    )}
+                  </div>
+                )}
+                {isAccusedUnitUser && selected.status === "served" && selected.abstract_acknowledged_at && selected.unit_closure_status !== "pending" && selected.unit_closure_status !== "approved" && (
+                  <button type="button" onClick={() => openClosurePrompt(selected)} disabled={unitWorkflowSaving} className="px-3 py-2 rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-medium">
+                    {unitWorkflowSaving ? "Sending..." : "Request Closure from Admin HQs"}
+                  </button>
+                )}
+                {isAccusedUnitUser && selected.status !== "closed" && (
+                  <div className="space-y-2 border-t border-sky-500/20 pt-3">
+                    <p className="text-xs text-gray-300">Clearance certificate</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input type="file" accept="application/pdf,.pdf" onChange={(event) => setClearanceFile(event.target.files[0] || null)} className="min-w-0 flex-1 text-xs text-gray-400" />
+                      <button type="button" onClick={uploadClearanceCertificate} disabled={unitWorkflowSaving || !clearanceFile} className="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-medium">
+                        Attach Clearance Certificate
+                      </button>
+                    </div>
+                    {selected.clearance_certificate && <ProtectedDocumentButton url={selected.clearance_certificate} label="clearance certificate" className="text-xs text-blue-300 hover:underline">View current certificate</ProtectedDocumentButton>}
+                  </div>
+                )}
+                {(isHqsAdmin || isSuperuser) && selected.unit_closure_status === "pending" && (
+                  <div className="space-y-2 border-t border-sky-500/20 pt-3">
+                    <textarea value={closureReviewComment} onChange={(event) => setClosureReviewComment(event.target.value)} rows={2} placeholder="Comment or rejection reason" className="w-full rounded bg-gray-700 border border-gray-600 px-3 py-2 text-sm text-white" />
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => reviewUnitClosure("approve")} disabled={unitWorkflowSaving} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-medium">Approve Closure Request</button>
+                      <button type="button" onClick={() => reviewUnitClosure("reject")} disabled={unitWorkflowSaving} className="px-3 py-2 rounded bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium">Reject with Comment</button>
+                    </div>
+                  </div>
+                )}
+                <ErrMsg msg={unitWorkflowErr} />
+              </div>
+            )}
 
             {canManageCases && (
               <div className="flex flex-wrap gap-2 border-y border-gray-700 py-3">
@@ -4805,12 +5151,17 @@ export default function Cases({ user, criminalTypeFilter }) {
                           setTrafficReportDamaged(e.target.value);
                           if (trafficReportErr) setTrafficReportErr("");
                         }}
-                        disabled={trafficReportSaving}
+                        disabled={trafficReportSaving || !canEditTrafficDamageStatus}
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       >
                         <option value="no">No damage to service vehicle</option>
                         <option value="yes">Service vehicle damaged</option>
                       </select>
+                      {!canEditTrafficDamageStatus && (
+                        <p className="mt-1 text-xs text-gray-400">
+                          Only Superuser or HQ Admin can change service vehicle damage status.
+                        </p>
+                      )}
                     </div>
                     <ErrMsg msg={trafficReportErr} />
                     <button
@@ -5360,13 +5711,22 @@ export default function Cases({ user, criminalTypeFilter }) {
             )}
 
             {/* Investigator / Admin: Status transitions */}
-            {(isInvestigator || canTask) &&
-              ["under_investigation", "pending", "served"].includes(selected.status) && (
+            {(isInvestigator || canTask || canServeCase(selected)) &&
+              ["under_investigation", "pending", "served", "referred"].includes(selected.status) && (
               <div className="border-t border-gray-700 pt-4">
                 <SectionLabel>Update Status</SectionLabel>
                 <ErrMsg msg={statusErr} />
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {selected.status === "under_investigation" && !selectedIsDci && (
+                  {selected.status === "under_investigation" && !selectedIsDci && canServeCase(selected) && !serveFormOpen && (
+                    <button
+                      onClick={() => { setServeFormOpen(true); setStatusErr(""); }}
+                      disabled={statusSaving}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                    >
+                      Serve Case
+                    </button>
+                  )}
+                  {selected.status === "under_investigation" && !selectedIsDci && isInvestigator && (
                     <button
                       onClick={() => handleStatus("pending")}
                       disabled={statusSaving}
@@ -5382,15 +5742,6 @@ export default function Cases({ user, criminalTypeFilter }) {
                       className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-xs font-medium"
                     >
                       Resume Investigation
-                    </button>
-                  )}
-                  {["under_investigation", "pending"].includes(selected.status) && !selectedIsDci && (
-                    <button
-                      onClick={() => handleStatus("served")}
-                      disabled={statusSaving}
-                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded text-xs font-medium"
-                    >
-                      Mark Served
                     </button>
                   )}
                   {selected.status === "under_investigation" && selectedIsDci && isInvestigator && (
@@ -5424,20 +5775,180 @@ export default function Cases({ user, criminalTypeFilter }) {
                       Close Case
                     </button>
                   )}
-                  <button
-                    onClick={() => handleStatus("referred")}
-                    disabled={statusSaving}
-                    className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white rounded text-xs font-medium"
-                  >
-                    Refer Case
-                  </button>
+                  {selected.status === "referred" ? (
+                    <button
+                      onClick={() => handleStatus("under_investigation")}
+                      disabled={statusSaving}
+                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                    >
+                      Undo Referral
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleStatus("referred")}
+                      disabled={statusSaving}
+                      className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                    >
+                      Refer Case
+                    </button>
+                  )}
                 </div>
+                {serveFormOpen && selected.status === "under_investigation" && canServeCase(selected) && (
+                  <div className="mt-3 rounded-lg border border-purple-500/30 bg-purple-950/20 p-4 space-y-3">
+                    <p className="text-xs text-gray-300">Attach the abstract PDF to serve this case. Serving cannot be completed without it.</p>
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      onChange={(event) => { setServeAbstractFile(event.target.files[0] || null); setStatusErr(""); }}
+                      disabled={statusSaving}
+                      className="w-full text-xs text-gray-400"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={serveCaseWithAbstract} disabled={statusSaving || !serveAbstractFile} className="px-3 py-2 rounded bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-medium">
+                        {statusSaving ? "Serving..." : "Serve with Abstract"}
+                      </button>
+                      <button type="button" onClick={() => { setServeFormOpen(false); setServeAbstractFile(null); }} disabled={statusSaving} className="px-3 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs font-medium">Cancel</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
           </div>
+          </div>
         )}
       </div>
+
+      {servePromptCase && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !statusSaving) {
+              setServePromptCase(null);
+              setServeAbstractFile(null);
+              setStatusErr("");
+            }
+          }}
+        >
+          <div className="w-full max-w-md rounded-xl bg-gray-800 p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-white">Attach Abstract of Evidence</h3>
+                <p className="mt-1 font-mono text-xs text-gray-400">{servePromptCase.case_number}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setServePromptCase(null);
+                  setServeAbstractFile(null);
+                  setStatusErr("");
+                }}
+                disabled={statusSaving}
+                className="text-gray-500 hover:text-white disabled:opacity-40"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 py-4">
+              <p className="text-sm text-gray-300">
+                Attach the abstract PDF to serve this case. The case will not be served without the document.
+              </p>
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(event) => {
+                  setServeAbstractFile(event.target.files[0] || null);
+                  setStatusErr("");
+                }}
+                disabled={statusSaving}
+                className="w-full text-xs text-gray-400"
+              />
+              <ErrMsg msg={statusErr} />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-700 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setServePromptCase(null);
+                  setServeAbstractFile(null);
+                  setStatusErr("");
+                }}
+                disabled={statusSaving}
+                className="rounded bg-gray-700 px-3 py-2 text-xs font-medium text-white hover:bg-gray-600 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => serveCaseWithAbstract(servePromptCase)}
+                disabled={statusSaving || !serveAbstractFile}
+                className="rounded bg-purple-600 px-3 py-2 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {statusSaving ? "Serving..." : "Serve Case"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {acknowledgementPromptCase && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !unitWorkflowSaving) {
+              setAcknowledgementPromptCase(null);
+              setAcknowledgementFile(null);
+              setUnitWorkflowErr("");
+            }
+          }}
+        >
+          <div className="w-full max-w-md rounded-xl bg-gray-800 p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-white">Attach Acknowledgement Sheet</h3>
+                <p className="mt-1 font-mono text-xs text-gray-400">{acknowledgementPromptCase.case_number}</p>
+              </div>
+              <button type="button" onClick={() => { setAcknowledgementPromptCase(null); setAcknowledgementFile(null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="text-gray-500 hover:text-white disabled:opacity-40">✕</button>
+            </div>
+            <div className="space-y-3 py-4">
+              <p className="text-sm text-gray-300">Upload the signed acknowledgement sheet to confirm receipt of the abstract. The case will then move to Served.</p>
+              <input type="file" accept="application/pdf,.pdf" onChange={(event) => { setAcknowledgementFile(event.target.files[0] || null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="w-full text-xs text-gray-400" />
+              <ErrMsg msg={unitWorkflowErr} />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-700 pt-3">
+              <button type="button" onClick={() => { setAcknowledgementPromptCase(null); setAcknowledgementFile(null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="rounded bg-gray-700 px-3 py-2 text-xs font-medium text-white hover:bg-gray-600 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={() => acknowledgeServedCase(acknowledgementPromptCase)} disabled={unitWorkflowSaving || !acknowledgementFile} className="rounded bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50">{unitWorkflowSaving ? "Uploading..." : "Attach and Mark Served"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closurePromptCase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-xl bg-gray-800 p-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-700 pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-white">Request Case Closure</h3>
+                <p className="mt-1 font-mono text-xs text-gray-400">{closurePromptCase.case_number}</p>
+              </div>
+              <button type="button" onClick={() => { setClosurePromptCase(null); setClosureChargesheetFile(null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="text-gray-500 hover:text-white disabled:opacity-40">✕</button>
+            </div>
+            <div className="space-y-3 py-4">
+              <p className="text-sm text-gray-300">Attach the charge sheet before sending this closure request to Admin HQs.</p>
+              <input type="file" accept="application/pdf,.pdf" onChange={(event) => { setClosureChargesheetFile(event.target.files[0] || null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="w-full text-xs text-gray-400" />
+              <ErrMsg msg={unitWorkflowErr} />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-700 pt-3">
+              <button type="button" onClick={() => { setClosurePromptCase(null); setClosureChargesheetFile(null); setUnitWorkflowErr(""); }} disabled={unitWorkflowSaving} className="rounded bg-gray-700 px-3 py-2 text-xs font-medium text-white hover:bg-gray-600 disabled:opacity-50">Cancel</button>
+              <button type="button" onClick={() => requestUnitClosure(closurePromptCase)} disabled={unitWorkflowSaving || !closureChargesheetFile} className="rounded bg-amber-600 px-3 py-2 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">{unitWorkflowSaving ? "Sending..." : "Attach and Request Closure"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ══════════════ CLOSE COURT MARTIAL MODAL ══════════════ */}
       {showCourtCloseModal && activeCloseCase && (

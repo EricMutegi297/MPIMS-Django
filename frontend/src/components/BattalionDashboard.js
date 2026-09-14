@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { caseService, incidentService, formationService, guardroomService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
-import { RTA_CASE_TYPE } from "../utils/caseTypes";
+import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -782,13 +782,14 @@ export default function BattalionDashboard({ user }) {
             <p className="p-5 text-gray-500 text-sm">No cases assigned to this battalion.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="sticky-head w-full min-w-[1100px] text-sm">
+              <table className="sticky-head w-full min-w-[1240px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Service No</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Rank</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Accused</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Unit</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Status</th>
@@ -805,17 +806,20 @@ export default function BattalionDashboard({ user }) {
                   >
                     <td
                       className="px-3 md:px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap cursor-pointer"
-                      onClick={() => navigate("/dashboard/cases")}
+                      onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}
                     >
                       {c.case_number || "--"}
                     </td>
-                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_service_number || "--"}</td>
-                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_rank || "--"}</td>
-                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.accused_name || "--"}</td>
-                    <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap cursor-pointer" onClick={() => navigate("/dashboard/cases")}>{c.offence_name || c.offence || "--"}</td>
-                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px] cursor-pointer" onClick={() => navigate("/dashboard/cases")}>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>{c.accused_service_number || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>{c.accused_rank || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>{c.accused_name || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[150px] max-w-[240px] cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>
+                      <p className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</p>
+                    </td>
+                    <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>{c.offence_name || c.offence || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px] cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>
                       {(() => {
-                        const desc = c.description || "--";
+                        const desc = caseDisplayDescription(c) || "--";
                         const expanded = !!expandedDesc[c.id];
                         const longDesc = desc.length > descLimit;
                         const shown = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;
@@ -838,7 +842,7 @@ export default function BattalionDashboard({ user }) {
                         );
                       })()}
                     </td>
-                    <td className="px-3 md:px-5 py-3 cursor-pointer" onClick={() => navigate("/dashboard/cases")}>
+                    <td className="px-3 md:px-5 py-3 cursor-pointer" onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}>
                       <Badge
                         label={c.status}
                         style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}

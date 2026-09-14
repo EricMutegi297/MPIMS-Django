@@ -4,7 +4,7 @@ import { attachmentService, caseService, guardroomService, incidentService } fro
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
-import { RTA_CASE_TYPE, isRoadTrafficAccidentCase } from "../utils/caseTypes";
+import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription, isRoadTrafficAccidentCase } from "../utils/caseTypes";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toArray(data) {
@@ -838,13 +838,14 @@ export default function HQDashboard({ user }) {
             <p className="p-5 text-gray-500 text-sm">No cases found.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="sticky-head w-full min-w-[1340px] text-sm">
+              <table className="sticky-head w-full min-w-[1480px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Service No</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Rank</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Accused</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Unit</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
                   {isTaskedFilter ? (
@@ -866,7 +867,8 @@ export default function HQDashboard({ user }) {
                 {cases.map((c) => (
                   <tr
                     key={c.id}
-                    className="border-b border-gray-700/40 hover:bg-gray-700/30 transition-colors"
+                    onClick={() => navigate(`/dashboard/cases?case=${c.id}`)}
+                    className="border-b border-gray-700/40 hover:bg-gray-700/30 transition-colors cursor-pointer"
                   >
                     <td className="px-3 md:px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap">
                       {c.case_number || "--"}
@@ -874,10 +876,13 @@ export default function HQDashboard({ user }) {
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_service_number || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_rank || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_name || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[150px] max-w-[240px]">
+                      <p className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</p>
+                    </td>
                     <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px]">
                       {(() => {
-                        const desc = c.description || "--";
+                        const desc = caseDisplayDescription(c) || "--";
                         const expanded = !!expandedDesc[c.id];
                         const longDesc = desc.length > descLimit;
                         const shown = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;

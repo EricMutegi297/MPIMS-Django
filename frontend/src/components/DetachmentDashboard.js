@@ -4,7 +4,7 @@ import { caseService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
-import { RTA_CASE_TYPE } from "../utils/caseTypes";
+import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -409,13 +409,14 @@ export default function DetachmentDashboard({ user }) {
             <p className="p-5 text-gray-500 text-sm">No cases awaiting team assignment.</p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-              <table className="sticky-head w-full min-w-[1380px] text-sm">
+              <table className="sticky-head w-full min-w-[1520px] text-sm">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Case #</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Service No</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Rank</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Accused</th>
+                  <th className="text-left px-3 md:px-5 py-3 font-medium">Unit</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Offence</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Description</th>
                   <th className="text-left px-3 md:px-5 py-3 font-medium">Tasking Letter</th>
@@ -433,10 +434,13 @@ export default function DetachmentDashboard({ user }) {
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_service_number || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_rank || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">{c.accused_name || "--"}</td>
+                    <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[150px] max-w-[240px]">
+                      <p className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</p>
+                    </td>
                     <td className="px-3 md:px-5 py-3 text-gray-200 whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 min-w-[260px] max-w-[420px]">
                       {(() => {
-                        const desc = c.description || "--";
+                        const desc = caseDisplayDescription(c) || "--";
                         const expanded = !!expandedDesc[c.id];
                         const longDesc = desc.length > descLimit;
                         const shown = expanded || !longDesc ? desc : `${desc.slice(0, descLimit)}...`;

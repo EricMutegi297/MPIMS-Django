@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { notificationService } from "../services/api";
 
 function fmtTime(ts) {
@@ -13,6 +14,7 @@ function fmtTime(ts) {
 }
 
 export default function Notifications({ onRead }) {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyAll, setBusyAll] = useState(false);
@@ -134,7 +136,7 @@ export default function Notifications({ onRead }) {
               </div>
               <ul>
                 {unread.map((n) => (
-                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} />
+                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} onNavigate={navigate} />
                 ))}
               </ul>
             </>
@@ -150,7 +152,7 @@ export default function Notifications({ onRead }) {
               </div>
               <ul>
                 {read.map((n) => (
-                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} />
+                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} onNavigate={navigate} />
                 ))}
               </ul>
             </>
@@ -161,7 +163,8 @@ export default function Notifications({ onRead }) {
   );
 }
 
-function NotifRow({ n, onRead, onDelete }) {
+function NotifRow({ n, onRead, onDelete, onNavigate }) {
+  const acknowledgementNotice = n.related_model === "case" && /acknowledgement sheet/i.test(n.message || "");
   return (
     <li
       onClick={() => onRead(n)}
@@ -179,6 +182,19 @@ function NotifRow({ n, onRead, onDelete }) {
         <p className={`text-sm leading-relaxed break-words ${n.is_read ? "text-gray-400" : "text-gray-100 font-medium"}`}>
           {n.message}
         </p>
+        {acknowledgementNotice && n.related_id && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRead(n);
+              onNavigate(`/dashboard/cases?case=${n.related_id}&action=acknowledge`);
+            }}
+            className="mt-2 text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
+          >
+            Click here to attach acknowledgement
+          </button>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           {!n.is_read && (
             <span className="text-[10px] font-bold uppercase tracking-wide text-blue-400">Unread</span>

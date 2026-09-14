@@ -1,11 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { exhibitService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import useDebouncedValue from "../hooks/useDebouncedValue";
+import PaginationControls from "./common/PaginationControls";
 
 function toArray(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.results)) return payload.results;
   return [];
+}
+
+function resultCount(payload) {
+  if (typeof payload?.count === "number") return payload.count;
+  return toArray(payload).length;
 }
 
 function displayDate(value) {
@@ -229,13 +236,19 @@ function allRowsHaveOwnerIdentity(rows) {
 
 export default function Exhibits({ user }) {
   const [requests, setRequests] = useState([]);
+  const [requestCount, setRequestCount] = useState(0);
   const [eligibleCases, setEligibleCases] = useState([]);
   const [storageDestinations, setStorageDestinations] = useState({ detachment: null, battalions: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [form, setForm] = useState({
     case: "",
     parent_request: "",
@@ -288,6 +301,8 @@ export default function Exhibits({ user }) {
   const canCreate = user?.role === "investigator";
   const userBattalionId = String(user?.battalion_id ?? user?.battalion ?? "");
   const destinationOptions = useMemo(() => makeDestinationOptions(storageDestinations), [storageDestinations]);
+  const dateRangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo);
+  const hasActiveFilters = Boolean(search.trim() || statusFilter !== "all" || dateFrom || dateTo);
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
   useAutoDismiss(lifecycleNotice, setLifecycleNotice);
@@ -313,17 +328,33 @@ export default function Exhibits({ user }) {
     exhibits.forEach((item) => revokePhotoPreview(item.photoPreviewUrl));
   }, [revokePhotoPreview]);
 
+  const listParams = useMemo(() => {
+    const params = {
+      page,
+      page_size: pageSize,
+      ordering: "-created_at",
+    };
+    if (debouncedSearch.trim()) params.search = debouncedSearch.trim();
+    if (statusFilter !== "all") params.status = statusFilter;
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+    return params;
+  }, [dateFrom, dateTo, debouncedSearch, page, pageSize, statusFilter]);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const fetches = [exhibitService.list()];
+      const fetches = [exhibitService.list(listParams)];
       if (canCreate) {
         fetches.push(exhibitService.eligibleCases());
         fetches.push(exhibitService.storageDestinations());
       }
       const [requestsRes, casesRes, destinationsRes] = await Promise.all(fetches);
-      setRequests(toArray(requestsRes.data));
+      const requestRows = toArray(requestsRes.data);
+      setRequests(requestRows);
+      setRequestCount(resultCount(requestsRes.data));
+      setSelectedLifecycleIds((prev) => new Set([...prev].filter((id) => requestRows.some((row) => row.id === id))));
       if (canCreate) {
         const cases = toArray(casesRes.data);
         const destinations = destinationsRes?.data || { detachment: null, battalions: [] };
@@ -347,15 +378,24 @@ export default function Exhibits({ user }) {
         setStorageDestinations({ detachment: null, battalions: [] });
       }
     } catch (err) {
+      if (err?.response?.status === 404 && page > 1) {
+        setPage(1);
+        return;
+      }
       setError(errorText(err, "Failed to load exhibits."));
     } finally {
       setLoading(false);
     }
-  }, [canCreate, userBattalionId]);
+  }, [canCreate, listParams, page, userBattalionId]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    setPage(1);
+    setSelectedLifecycleIds(new Set());
+  }, [dateFrom, dateTo, debouncedSearch, statusFilter]);
 
   useEffect(() => () => {
     stopCameraStream();
@@ -370,31 +410,7 @@ export default function Exhibits({ user }) {
     if (playPromise?.catch) playPromise.catch(() => {});
   }, [camera.open, camera.loading]);
 
-  const filteredRequests = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return requests.filter((row) => {
-      const matchesStatus = statusFilter === "all" || row.status === statusFilter;
-      const haystack = [
-        row.case_number,
-        row.case_offence,
-        row.case_accused,
-        row.exhibit_name,
-        row.description,
-        destinationLabel(row),
-        row.requested_by_name,
-        statusLabel(row.status),
-        row.physical_location,
-        lifecycleActionLabel(row.lifecycle_action),
-        row.lifecycle_reason,
-        row.lifecycle_recipient_name,
-        row.lifecycle_recipient_identifier,
-        row.lifecycle_authority,
-        row.lifecycle_disposal_mode,
-        row.lifecycle_decline_reason,
-      ].join(" ").toLowerCase();
-      return matchesStatus && (!q || haystack.includes(q));
-    });
-  }, [requests, search, statusFilter]);
+  const filteredRequests = useMemo(() => (dateRangeInvalid ? [] : requests), [dateRangeInvalid, requests]);
 
   const lifecycleSelectableRows = useMemo(
     () => filteredRequests.filter((row) => canRequestLifecycle(user, row)),
@@ -1055,19 +1071,19 @@ export default function Exhibits({ user }) {
         <div className="border-b border-slate-200 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-800">Exhibit Storage Register</h3>
-            <span className="text-xs font-medium text-slate-500">{filteredRequests.length} of {requests.length} total</span>
+            <span className="text-xs font-medium text-slate-500">{filteredRequests.length} shown of {requestCount} total</span>
           </div>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_220px]">
+          <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(260px,1fr)_220px_160px_160px_auto] xl:items-end">
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search exhibits"
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="self-end rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <select
               value={statusFilter}
               onChange={(event) => setStatusFilter(event.target.value)}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="self-end rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="all">All statuses</option>
               <option value="pending">Pending</option>
@@ -1079,7 +1095,45 @@ export default function Exhibits({ user }) {
               <option value="returned">Returned</option>
               <option value="disposed">Disposed</option>
             </select>
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Date From
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(event) => setDateFrom(event.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </label>
+            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Date To
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(event) => setDateTo(event.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium normal-case tracking-normal text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setStatusFilter("all");
+                setDateFrom("");
+                setDateTo("");
+                setPage(1);
+              }}
+              disabled={!hasActiveFilters}
+              className="self-end rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear
+            </button>
           </div>
+          {dateRangeInvalid && (
+            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              Date From cannot be later than Date To.
+            </div>
+          )}
           {canCreate && selectedLifecycleRows.length > 0 && (
             <div className="mt-3 flex flex-col gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 sm:flex-row sm:items-center sm:justify-between">
               <span>{selectedLifecycleRows.length} stored exhibit{selectedLifecycleRows.length === 1 ? "" : "s"} selected for release.</span>
@@ -1250,6 +1304,18 @@ export default function Exhibits({ user }) {
             </table>
           </div>
         )}
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          totalCount={requestCount}
+          itemLabel="exhibits"
+          loading={loading}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+        />
       </section>
 
       {camera.open && (

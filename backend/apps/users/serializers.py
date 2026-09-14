@@ -10,6 +10,7 @@ from .models import User
 
 
 class UserSerializer(serializers.ModelSerializer):
+    unit_name = serializers.SerializerMethodField()
     battalion_name = serializers.SerializerMethodField()
     battalion_type = serializers.SerializerMethodField()
     detachment_name = serializers.SerializerMethodField()
@@ -22,13 +23,16 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
-            "battalion_name", "battalion_type", "detachment_name",
+            "unit_name", "battalion_name", "battalion_type", "detachment_name",
             "is_active", "is_superuser", "must_change_password",
             "mfa_exempt", "email_otp_enabled",
             "totp_configured", "totp_required",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
+
+    def get_unit_name(self, obj):
+        return obj.unit.name if obj.unit else None
 
     def get_battalion_name(self, obj):
         return obj.battalion.name if obj.battalion else None
@@ -86,20 +90,39 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         exempt_roles = {"corps_cmd", "cop"}
+        unit_roles = {"docus_clerk", "commandant", "ci", "si"}
+        docus_managed_roles = {"adj", "co", "2ic", "commandant", "ci", "si"}
         role = data.get("role", "")
+        unit = data.get("unit")
         battalion = data.get("battalion")
         detachment = data.get("detachment")
+        request = self.context.get("request")
+        actor = getattr(request, "user", None)
+
+        if battalion and unit and unit.battalion_id and unit.battalion_id != battalion.id:
+            raise serializers.ValidationError(
+                {"unit": "Unit must belong to the selected battalion."}
+            )
         if battalion and detachment and detachment.battalion_id != battalion.id:
             raise serializers.ValidationError(
                 {"detachment": "Company must belong to the selected battalion."}
             )
-        if role not in exempt_roles and not battalion and not detachment:
-            request = self.context.get("request")
-            actor = getattr(request, "user", None)
+
+        if role in unit_roles and not unit:
+            raise serializers.ValidationError(
+                {"unit": "Unit is required for this role."}
+            )
+
+        if getattr(actor, "role", None) == User.Role.DOCUS_CLERK and role in docus_managed_roles and not unit:
+            raise serializers.ValidationError(
+                {"unit": "Unit is required for accounts created by a Docus Clerk."}
+            )
+
+        if role not in exempt_roles and not battalion and not detachment and not unit:
             if is_battalion_admin(actor):
                 return data
             raise serializers.ValidationError(
-                {"battalion": "Battalion or Company is required for this role."}
+                {"battalion": "Battalion, Company, or Unit is required for this role."}
             )
         return data
 

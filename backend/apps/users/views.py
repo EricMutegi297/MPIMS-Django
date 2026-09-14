@@ -26,7 +26,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.notifications.models import Notification
 
 from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
-from .access import has_global_read_access, is_admin_hqs, is_battalion_admin, is_detachment_ic, is_hqs_admin
+from .access import has_global_read_access, is_admin_hqs, is_battalion_admin, is_detachment_ic, is_docus_clerk, is_hqs_admin
 from .serializers import (
     ChangePasswordSerializer,
     LoginSerializer,
@@ -39,9 +39,22 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 # Roles a battalion admin can assign
-BATTALION_ADMIN_ROLES = {"co", "oc", "detachment", "personnel", "investigator", "hod", "adj", "2ic", "order_nco"}
+BATTALION_ADMIN_ROLES = {
+    "co",
+    "oc",
+    "detachment",
+    "personnel",
+    "investigator",
+    "hod",
+    "adj",
+    "2ic",
+    "order_nco",
+    "docus_clerk",
+}
 # Roles an IC Cases user can assign.
 DET_IC_ROLES = {"personnel", "investigator"}
+DOCUS_CLERK_ROLES = {"adj", "co", "2ic", "commandant", "ci", "si"}
+DOCUS_CLERK_PER_UNIT_LIMIT = 2
 CORPS_COMMANDER_MANAGEMENT_ERROR = (
     "Corps Commander accounts can only be managed by a superuser or HQS Admin."
 )
@@ -49,6 +62,33 @@ CORPS_COMMANDER_MANAGEMENT_ERROR = (
 
 def can_manage_corps_commander_account(user):
     return bool(user and user.is_authenticated and (user.is_superuser or is_admin_hqs(user)))
+
+
+def enforce_docus_clerk_unit_limit(unit, actor=None, exclude_user_id=None):
+    if not unit:
+        raise PermissionDenied("Select the accused unit for the Docus Clerk account.")
+    qs = User.objects.filter(role=User.Role.DOCUS_CLERK, unit=unit)
+    if exclude_user_id:
+        qs = qs.exclude(pk=exclude_user_id)
+    if qs.count() >= DOCUS_CLERK_PER_UNIT_LIMIT and not getattr(actor, "is_superuser", False):
+        raise PermissionDenied(
+            f"{unit.name} already has {DOCUS_CLERK_PER_UNIT_LIMIT} Docus Clerk accounts. A third account requires superuser approval."
+        )
+
+
+def battalion_admin_can_assign_unit(actor, unit):
+    if not unit:
+        return True
+    if unit.battalion_id and unit.battalion_id == actor.battalion_id:
+        return True
+
+    from apps.cases.models import Case
+
+    return Case.objects.filter(
+        Q(tasked_battalion_id=actor.battalion_id) | Q(tasked_detachment__battalion_id=actor.battalion_id),
+    ).filter(
+        Q(accused_unit=unit) | Q(accused_entries__unit=unit)
+    ).exists()
 
 
 def password_setup_url(user):
@@ -1097,6 +1137,8 @@ class UserListCreateView(generics.ListCreateAPIView):
             pass  # full access
         elif is_battalion_admin(actor):
             qs = qs.filter(battalion=actor.battalion)
+        elif getattr(actor, "role", None) == User.Role.DOCUS_CLERK:
+            qs = qs.filter(unit_id=actor.unit_id) if actor.unit_id else qs.none()
         elif is_detachment_ic(actor):
             qs = qs.filter(detachment=actor.detachment)
         else:
@@ -1104,17 +1146,25 @@ class UserListCreateView(generics.ListCreateAPIView):
 
         # Additional filters from query params
         role = self.request.query_params.get("role")
+        unit = self.request.query_params.get("unit")
         battalion = self.request.query_params.get("battalion")
         detachment = self.request.query_params.get("detachment")
         search = self.request.query_params.get("search")
         if role:
             qs = qs.filter(role=role)
+        if unit:
+            qs = qs.filter(unit_id=unit)
         if battalion:
             qs = qs.filter(battalion_id=battalion)
         if detachment:
             qs = qs.filter(detachment_id=detachment)
         if search:
-            qs = qs.filter(name__icontains=search) | qs.filter(service_number__icontains=search)
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(service_number__icontains=search)
+                | Q(unit__name__icontains=search)
+                | Q(unit__code__icontains=search)
+            )
         return qs.order_by("name")
 
     def get_serializer_class(self):
@@ -1137,10 +1187,12 @@ class UserListCreateView(generics.ListCreateAPIView):
         payload["activation_email_sent"] = activation_email_sent
         payload["activation_delivery"] = delivery_mode
         if delivery_mode == "console":
+            payload["activation_setup_url"] = password_setup_url(user)
             payload["detail"] = f"Account created. Activation link printed in the backend terminal for {user.email}."
         elif delivery_mode == "email":
             payload["detail"] = f"Account created. Activation email sent to {user.email}."
         else:
+            payload["activation_setup_url"] = password_setup_url(user)
             payload["detail"] = f"Account created, but activation email could not be sent to {user.email}."
         headers = self.get_success_headers(payload)
         return Response(payload, status=status.HTTP_201_CREATED, headers=headers)
@@ -1153,14 +1205,29 @@ class UserListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(CORPS_COMMANDER_MANAGEMENT_ERROR)
 
         if actor.is_superuser or is_hqs_admin(actor):
+            if new_role == User.Role.DOCUS_CLERK:
+                enforce_docus_clerk_unit_limit(serializer.validated_data.get("unit"), actor)
             return serializer.save()
         if is_battalion_admin(actor):
             if new_role not in BATTALION_ADMIN_ROLES:
                 raise PermissionDenied(f"Battalion admin cannot create users with role '{new_role}'.")
+            unit = serializer.validated_data.get("unit")
+            if new_role == User.Role.DOCUS_CLERK:
+                enforce_docus_clerk_unit_limit(unit, actor)
+            if unit and not battalion_admin_can_assign_unit(actor, unit):
+                raise PermissionDenied("Battalion admin can only assign users to their battalion units or accused units in tasked cases.")
             detachment = serializer.validated_data.get("detachment")
             if detachment and detachment.battalion_id != actor.battalion_id:
                 raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
             return serializer.save(battalion=actor.battalion)
+        if is_docus_clerk(actor):
+            if new_role not in DOCUS_CLERK_ROLES:
+                raise PermissionDenied("Docus Clerk can only create unit command accounts.")
+            unit = serializer.validated_data.get("unit")
+            if unit and unit.id != actor.unit_id:
+                raise PermissionDenied("Docus Clerk can only create users for their assigned unit.")
+            battalion = actor.unit.battalion if actor.unit_id and actor.unit.battalion_id else actor.battalion
+            return serializer.save(unit=actor.unit, battalion=battalion)
         if is_detachment_ic(actor):
             raise PermissionDenied("IC Cases users cannot add users. Ask the battalion admin to create company users.")
         raise PermissionDenied("You do not have permission to create users.")
@@ -1185,14 +1252,36 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         if mfa_policy_fields.intersection(serializer.validated_data) and not actor.is_superuser:
             raise PermissionDenied("Only the superuser can change MFA exemption or email OTP settings.")
 
+        if actor.is_superuser or is_hqs_admin(actor):
+            if new_role == User.Role.DOCUS_CLERK:
+                unit = serializer.validated_data.get("unit", serializer.instance.unit)
+                enforce_docus_clerk_unit_limit(unit, actor, exclude_user_id=serializer.instance.pk)
+            serializer.save()
+            return
+
         if is_battalion_admin(actor):
             detachment = serializer.validated_data.get("detachment", serializer.instance.detachment)
             battalion = serializer.validated_data.get("battalion", serializer.instance.battalion)
+            unit = serializer.validated_data.get("unit", serializer.instance.unit)
+            if new_role == User.Role.DOCUS_CLERK:
+                enforce_docus_clerk_unit_limit(unit, actor, exclude_user_id=serializer.instance.pk)
             if battalion and battalion != actor.battalion:
                 raise PermissionDenied("Cannot move users outside your battalion.")
+            if unit and not battalion_admin_can_assign_unit(actor, unit):
+                raise PermissionDenied("Cannot move users outside your battalion units or accused units in tasked cases.")
             if detachment and detachment.battalion_id != actor.battalion_id:
                 raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
             serializer.save(battalion=actor.battalion)
+            return
+
+        if is_docus_clerk(actor):
+            if new_role not in DOCUS_CLERK_ROLES:
+                raise PermissionDenied("Docus Clerk can only manage unit command accounts.")
+            unit = serializer.validated_data.get("unit", serializer.instance.unit)
+            if unit and unit.id != actor.unit_id:
+                raise PermissionDenied("Docus Clerk can only manage users in their assigned unit.")
+            battalion = actor.unit.battalion if actor.unit_id and actor.unit.battalion_id else actor.battalion
+            serializer.save(unit=actor.unit, battalion=battalion)
             return
 
         if is_detachment_ic(actor):
@@ -1224,6 +1313,11 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             if obj.battalion != actor.battalion:
                 raise PermissionDenied("Cannot manage users outside your battalion.")
             if request.method in ("PUT", "PATCH", "DELETE") and obj.role not in BATTALION_ADMIN_ROLES:
+                raise PermissionDenied(f"Cannot manage users with role '{obj.role}'.")
+        elif getattr(actor, "role", None) == User.Role.DOCUS_CLERK:
+            if not actor.unit_id or obj.unit_id != actor.unit_id:
+                raise PermissionDenied("Cannot manage users outside your unit.")
+            if request.method in ("PUT", "PATCH", "DELETE") and obj.role not in DOCUS_CLERK_ROLES:
                 raise PermissionDenied(f"Cannot manage users with role '{obj.role}'.")
         elif is_detachment_ic(actor):
             if obj.detachment != actor.detachment:

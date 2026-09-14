@@ -57,7 +57,7 @@ class BattalionViewSet(viewsets.ModelViewSet):
 class UnitViewSet(viewsets.ModelViewSet):
     queryset = Unit.objects.all()
     serializer_class = UnitSerializer
-    filterset_fields = ["formation", "service"]
+    filterset_fields = ["formation", "service", "battalion"]
     permission_classes = [IsSuperAdminOrReadOnly]
     search_fields = ["name", "code", "formation__name", "service", "email", "mobile_no", "location_county"]
     ordering_fields = ["name", "service", "formation__name", "created_at"]
@@ -65,6 +65,8 @@ class UnitViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = Unit.objects.select_related("formation", "battalion").all()
         user = self.request.user
+        if self.request.method in permissions.SAFE_METHODS:
+            return qs
         if has_global_read_access(user):
             return qs
         if user.battalion_id:

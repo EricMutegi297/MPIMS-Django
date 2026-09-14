@@ -119,6 +119,10 @@ const ROLE_LABELS = {
   cop: "COP",
   adj: "Adjutant",
   "2ic": "2nd in Command",
+  docus_clerk: "Docus Clerk",
+  commandant: "Commandant",
+  ci: "Chief Instructor",
+  si: "SI",
 };
 
 // Navigation items in sidebar order
@@ -128,6 +132,8 @@ function getNavItems(user) {
   const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
   const isBattalionCommand = ["admin", "co", "hod", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
+  const isUnitCommandRole = ["co", "adj", "2ic", "commandant", "ci", "si"].includes(user?.role) && !!user?.unit;
+  const caseViewerRoles = ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
@@ -138,7 +144,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "cases", label: "Cases", path: "/dashboard/cases", show: ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
+      key: "cases", label: "Cases", path: "/dashboard/cases", show: caseViewerRoles.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
@@ -146,7 +152,16 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: ["admin", "co", "corps_cmd", "duty_officer", "detachment", "mpc_hqs", "cop", "adj"].includes(user?.role),
+      key: "clearance", label: "Clearance", path: "/dashboard/clearance",
+      show: Boolean(user?.unit || user?.unit_id) && ["co", "adj", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 00-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622C17.176 19.29 21 14.591 21 9a12.02 12.02 0 00-.382-3.016z" />
+        </svg>
+      ),
+    },
+    {
+      key: "incidents", label: "Incidents", path: "/dashboard/incidents", show: true,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -202,7 +217,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "users", label: "Users", path: "/dashboard/users", show: isSuperuser || ["admin", "mpc_hqs", "personnel", "detachment"].includes(user?.role),
+      key: "users", label: "Users", path: "/dashboard/users", show: isSuperuser || ["admin", "mpc_hqs", "personnel", "detachment", "docus_clerk"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -213,7 +228,7 @@ function getNavItems(user) {
       key: "battalion-detachments",
       label: "Companies",
       path: "/dashboard/battalion-detachments",
-      show: (isBattalionCommand || isSuperuser) && !isHqsBnAdmin,
+      show: (isBattalionCommand || isSuperuser) && !isHqsBnAdmin && !isUnitCommandRole,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -276,7 +291,7 @@ function getNavItems(user) {
       key: "court-martial",
       label: "Court Martial",
       path: "/dashboard/court-martial",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
+      show: isSuperuser || caseViewerRoles.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
@@ -287,7 +302,7 @@ function getNavItems(user) {
       key: "dci-civ-police",
       label: "DCI/Civ Police",
       path: "/dashboard/dci-civ-police",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj"].includes(user?.role),
+      show: isSuperuser || caseViewerRoles.includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -330,7 +345,7 @@ function getNavItems(user) {
       key: "statistics",
       label: "Statistics",
       path: "/dashboard/statistics",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer", "adj"].includes(user?.role),
+      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -620,7 +635,9 @@ export default function Dashboard() {
 
   // Roles that are scoped to either a company or a battalion
   const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const UNIT_LEVEL_ROLES = ["docus_clerk", "commandant", "ci", "si"];
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
+  const isUnitLevelRole = UNIT_LEVEL_ROLES.includes(user?.role) || (["co", "adj", "2ic"].includes(user?.role) && !!user?.unit);
   const hasDetachment = !!user?.detachment;
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
 
@@ -637,6 +654,8 @@ export default function Dashboard() {
       : "Investigator Dashboard"
     : isDetachmentLevelRole && hasDetachment && user?.detachment_name
     ? `${user.detachment_name} Company Dashboard`
+    : isUnitLevelRole && user?.unit_name
+    ? `${user.unit_name} Unit Dashboard`
     : isCorpsCommander
     ? "Corps Command Dashboard"
     : user?.battalion_name && String(user?.battalion_type || "").toLowerCase() === "hqs"
@@ -848,6 +867,7 @@ export default function Dashboard() {
               <Overview user={user} />
             } />
             <Route path="/cases/*" element={<Cases user={user} />} />
+            <Route path="/clearance" element={<Cases user={user} clearanceOnly />} />
             <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
             <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />
             <Route path="/incidents/*" element={<Incidents user={user} />} />

@@ -10,6 +10,13 @@ const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
   detachment:   "IC Cases",
+  docus_clerk:  "Docus Clerk",
+  commandant:   "Commandant",
+  ci:           "Chief Instructor",
+  si:           "SI",
+  adj:          "Adjutant",
+  co:           "Commanding Officer",
+  "2ic":        "2nd in Command",
 };
 
 function displayUser(u) {

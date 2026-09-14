@@ -13,6 +13,15 @@ BATTALION_COMMAND_ROLES = {
     User.Role.ADJ,
     User.Role.TWO_IC,
 }
+UNIT_COMMAND_ROLES = {
+    User.Role.ADJ,
+    User.Role.CO,
+    User.Role.TWO_IC,
+    User.Role.COMMANDANT,
+    User.Role.CI,
+    User.Role.SI,
+}
+UNIT_LEVEL_ROLES = UNIT_COMMAND_ROLES | {User.Role.DOCUS_CLERK}
 
 
 def is_corps_commander(user):
@@ -63,12 +72,21 @@ def is_battalion_command(user):
         and user.is_authenticated
         and user.battalion_id
         and user.role in BATTALION_COMMAND_ROLES
+        and not (user.role in UNIT_COMMAND_ROLES and user.unit_id)
         and not is_hqs_admin(user)
     )
 
 
 def is_detachment_ic(user):
     return bool(user and user.is_authenticated and user.role == User.Role.DETACHMENT)
+
+
+def is_docus_clerk(user):
+    return bool(user and user.is_authenticated and user.role == User.Role.DOCUS_CLERK and user.unit_id)
+
+
+def is_unit_level_case_viewer(user):
+    return bool(user and user.is_authenticated and user.role in UNIT_LEVEL_ROLES and user.unit_id)
 
 
 def is_command_read_only(user):
@@ -102,3 +120,10 @@ def battalion_scope_q(user, battalion_field=None, unit_field=None, detachment_fi
     for term in terms[1:]:
         query |= term
     return query
+
+
+def unit_case_scope_q(user):
+    unit_id = getattr(user, "unit_id", None)
+    if not unit_id:
+        return Q(pk__in=[])
+    return Q(accused_unit_id=unit_id) | Q(accused_entries__unit_id=unit_id)

@@ -4,7 +4,7 @@ import { caseService, caseBriefService, teamService, attachmentService } from ".
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
-import { RTA_CASE_TYPE, isRoadTrafficAccidentCase } from "../utils/caseTypes";
+import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription, isRoadTrafficAccidentCase } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
@@ -738,7 +738,7 @@ function AbstractCell({ c, onAttach }) {
   return (
     <div className="flex items-center gap-2">
       <button
-        onClick={() => onAttach(c)}
+        onClick={onAttach ? () => onAttach(c) : undefined}
         title="View attachments"
         className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full cursor-pointer transition-colors ${
           totalCount > 0
@@ -750,7 +750,7 @@ function AbstractCell({ c, onAttach }) {
       </button>
       {isLocked ? (
         <button
-          onClick={() => onAttach(c)}
+          onClick={onAttach ? () => onAttach(c) : undefined}
           title="View documents (locked — case is served/closed)"
           className="text-gray-500 hover:text-gray-400 transition-colors"
         >
@@ -760,7 +760,7 @@ function AbstractCell({ c, onAttach }) {
         </button>
       ) : (
         <button
-          onClick={() => onAttach(c)}
+          onClick={onAttach ? () => onAttach(c) : undefined}
           title="Manage attachments"
           className="text-gray-500 hover:text-blue-400 transition-colors"
         >
@@ -1606,8 +1606,11 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[140px] max-w-[220px]">
+        <span className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</span>
+      </td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3"><DescriptionCell text={caseDisplayDescription(c)} /></td>
       <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
       <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
         <span className="line-clamp-3 block">{latestUpdateText}</span>
@@ -1637,7 +1640,9 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
                   </>
                 ) : (
                   <>
-                    <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Mark as Served">Serve</button>
+                    {onServe && (
+                      <button onClick={() => onServe(c)} className="text-[10px] px-2 py-0.5 rounded bg-purple-700/80 hover:bg-purple-600 text-white transition-colors whitespace-nowrap" title="Mark as Served">Serve</button>
+                    )}
                     <button onClick={() => onMarkPending(c)} className="text-[10px] px-2 py-0.5 rounded bg-orange-700/80 hover:bg-orange-600 text-white transition-colors whitespace-nowrap" title="Mark as Pending">Pending</button>
                   </>
                 )
@@ -1656,13 +1661,14 @@ function UnderInvestigationRow({ c, onAttach, onServe, onMarkPending, onGuardroo
 function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, onMarkPending, onGuardroom, onCaseUpdate }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1080px] text-sm">
+      <table className="min-w-[1220px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
             <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Unit</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
@@ -1673,9 +1679,9 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => <UnderInvestigationRow key={c.id} c={c} onAttach={onAttach} onServe={onServe} onMarkPending={onMarkPending} onGuardroom={onGuardroom} onCaseUpdate={onCaseUpdate} />)
           )}
@@ -1695,8 +1701,11 @@ function PendingRow({ c, onAttach, onResume }) {
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[140px] max-w-[220px]">
+        <span className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</span>
+      </td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3"><DescriptionCell text={caseDisplayDescription(c)} /></td>
       <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
       <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
         <span className="line-clamp-3 block">{latestUpdateText}</span>
@@ -1723,13 +1732,14 @@ function PendingRow({ c, onAttach, onResume }) {
 function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1200px] text-sm">
+      <table className="min-w-[1340px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
             <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Unit</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
@@ -1741,9 +1751,9 @@ function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={12} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => <PendingRow key={c.id} c={c} onAttach={onAttach} onResume={onResume} />)
           )}
@@ -1764,8 +1774,11 @@ function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[140px] max-w-[220px]">
+        <span className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</span>
+      </td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3"><DescriptionCell text={caseDisplayDescription(c)} /></td>
       <td className="px-3 py-3 text-gray-400 text-xs whitespace-nowrap">{latestUpdateDate}</td>
       <td className="px-3 py-3 text-gray-300 text-xs max-w-[220px]">
         <span className="line-clamp-3 block">{latestUpdateText}</span>
@@ -1797,13 +1810,14 @@ function ServedRow({ c, onAttach, onCloseCase, isHQAdmin }) {
 function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmin }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1260px] text-sm">
+      <table className="min-w-[1400px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
             <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Unit</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
@@ -1816,9 +1830,9 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={13} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={13} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => <ServedRow key={c.id} c={c} onAttach={onAttach} onCloseCase={onCloseCase} isHQAdmin={isHQAdmin} />)
           )}
@@ -1842,8 +1856,11 @@ function ClosedRow({ c, onAttach }) {
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
       <td className="px-3 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-3 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-3 py-3 text-gray-300 text-xs min-w-[140px] max-w-[220px]">
+        <span className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</span>
+      </td>
       <td className="px-3 py-3 text-gray-300 text-xs">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-3 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-3 py-3"><DescriptionCell text={caseDisplayDescription(c)} /></td>
       <td className="px-3 py-3">
         <AbstractCell c={c} onAttach={onAttach} />
       </td>
@@ -1858,13 +1875,14 @@ function ClosedRow({ c, onAttach }) {
 function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1280px] text-sm">
+      <table className="min-w-[1420px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-3 py-3 whitespace-nowrap">Case #</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Service No</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Rank</th>
             <th className="text-left px-3 py-3">Accused</th>
+            <th className="text-left px-3 py-3">Unit</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3">Abstract</th>
@@ -1874,9 +1892,9 @@ function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={9} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => <ClosedRow key={c.id} c={c} onAttach={onAttach} />)
           )}
@@ -1976,8 +1994,11 @@ function GenericCaseRow({ c, onAttach, onServe, onMarkPending, onGuardroom, onRe
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_service_number || "--"}</td>
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.accused_rank || "--"}</td>
       <td className="px-4 py-3 text-white font-medium text-xs">{c.accused_name || "--"}</td>
+      <td className="px-4 py-3 text-gray-300 text-xs min-w-[140px] max-w-[220px]">
+        <span className="line-clamp-2 break-words">{caseAccusedUnitLabel(c) || "--"}</span>
+      </td>
       <td className="px-4 py-3 text-gray-300 text-xs whitespace-nowrap">{c.offence_name || c.offence || "--"}</td>
-      <td className="px-4 py-3"><DescriptionCell text={c.description} /></td>
+      <td className="px-4 py-3"><DescriptionCell text={caseDisplayDescription(c)} /></td>
       <td className="px-4 py-3">
         <span className={`text-xs px-2 py-0.5 rounded-full ${STATUS_COLORS[c.status] || "bg-gray-600 text-gray-300"}`}>
           {c.status?.replace(/_/g, " ")}
@@ -2007,13 +2028,14 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
   }
   return (
     <div className="bg-gray-800 rounded-lg overflow-x-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
-      <table className="min-w-[1220px] text-sm">
+      <table className="min-w-[1360px] text-sm">
         <thead className="bg-gray-700/60 text-gray-400 text-xs uppercase">
           <tr>
             <th className="text-left px-4 py-3 whitespace-nowrap">Case #</th>
             <th className="text-left px-4 py-3 whitespace-nowrap">Service No</th>
             <th className="text-left px-4 py-3">Rank</th>
             <th className="text-left px-4 py-3">Accused</th>
+            <th className="text-left px-4 py-3">Unit</th>
             <th className="text-left px-4 py-3">Offence</th>
             <th className="text-left px-4 py-3">Description</th>
             <th className="text-left px-4 py-3">Status</th>
@@ -2024,9 +2046,9 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
         </thead>
         <tbody>
           {loading ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
+            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">Loading...</td></tr>
           ) : cases.length === 0 ? (
-            <tr><td colSpan={10} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
+            <tr><td colSpan={11} className="px-4 py-10 text-center text-gray-500">{emptyMsg}</td></tr>
           ) : (
             cases.map((c) => (
               <GenericCaseRow
@@ -2264,20 +2286,6 @@ export default function InvestigatorDashboard({ user }) {
     loadCounts();
   };
 
-  const handleOpenCase = (c) => {
-    const needsMentioningDate =
-      c?.criminal_offence_type === "court_martial" &&
-      c?.status === "served" &&
-      !c?.mentioning_date;
-
-    if (needsMentioningDate) {
-      setMentioningPromptCase(c);
-      return;
-    }
-
-    setAttachingCase(c);
-  };
-
   return (
     <div className="p-4 sm:p-6 space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -2383,12 +2391,12 @@ export default function InvestigatorDashboard({ user }) {
         <CasesTable
           cases={cases}
           loading={loadingCases}
-          onAttach={handleOpenCase}
+          onAttach={undefined}
           isUnderInvestigation={activeFilter === "under_investigation"}
           isPending={activeFilter === "pending"}
           isServed={activeFilter === "served"}
           isClosed={activeFilter === "closed"}
-          onServe={(c) => setServingCase(c)}
+          onServe={undefined}
           onMarkPending={(c) => setPendingCase(c)}
           onGuardroom={(c) => navigate(`/dashboard/guardrooms?case=${c.id}`)}
           onCaseUpdate={(c) => setUpdatingCase(c)}

@@ -1,11 +1,18 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import useAutoDismiss from "../hooks/useAutoDismiss";
+import useDebouncedValue from "../hooks/useDebouncedValue";
 import { formationService, incidentService, morningBriefService } from "../services/api";
 import ActionModal from "./common/ActionModal";
-import { isRoadTrafficAccidentIncident, ROAD_TRAFFIC_ACCIDENT_LABELS } from "../utils/caseTypes";
+import PaginationControls from "./common/PaginationControls";
+import { ROAD_TRAFFIC_ACCIDENT_LABELS } from "../utils/caseTypes";
 
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
+}
+
+function resultCount(data) {
+  if (typeof data?.count === "number") return data.count;
+  return toArray(data).length;
 }
 
 function pad(value) {
@@ -48,24 +55,6 @@ function formatTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function dateTimeValue(value) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function startOfLocalDate(value) {
-  if (!value) return null;
-  const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function endOfLocalDate(value) {
-  if (!value) return null;
-  const date = new Date(`${value}T23:59:59.999`);
-  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function formatError(err, fallback) {
@@ -306,6 +295,10 @@ function exportColumns(mode) {
     ["History Of the Incident", (incident) => textOrDash(incident.history || incident.description)],
     ["OB (if any)", (incident) => textOrDash(incident.police_ob_reference || incident.source_ob_number)],
   ];
+}
+
+function isMorningBriefSelectable(incident) {
+  return Boolean(incident?.requires_investigation && !incident?.morning_brief);
 }
 
 function detachmentOptionLabel(detachment) {
@@ -703,29 +696,6 @@ function validateIncidentForm(form, mode) {
     return "Enter how the accident occurred.";
   }
   return "";
-}
-
-function incidentMatchesSearch(incident, search) {
-  const q = search.trim().toLowerCase();
-  if (!q) return true;
-  return [
-    incident.incident_number,
-    incident.incident_type,
-    incident.location,
-    incident.description,
-    incident.service_vehicle,
-    incident.civilian,
-    incident.injuries,
-    incident.unit_involved,
-    incident.originating_unit,
-    incident.service_member,
-    incident.history,
-    incident.how_occurred,
-    incident.police_ob_reference,
-    incident.source_ob_number,
-  ]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(q));
 }
 
 function SourceChoiceModal({ onChoose, onClose }) {
@@ -1491,13 +1461,21 @@ function CreateIncidentModal({
 
 export default function Incidents({ user }) {
   const [incidents, setIncidents] = useState([]);
+  const [incidentCount, setIncidentCount] = useState(0);
+  const [tabCounts, setTabCounts] = useState({ incident: 0, rta: 0 });
+  const [statusCounts, setStatusCounts] = useState({});
+  const [severityCounts, setSeverityCounts] = useState({});
   const [loading, setLoading] = useState(true);
+  const [countLoading, setCountLoading] = useState(false);
   const [viewMode, setViewMode] = useState(VIEW_INCIDENT);
   const [statusFilter, setStatusFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [selectedIncidents, setSelectedIncidents] = useState([]);
   const [briefDate, setBriefDate] = useState(todayIso());
   const [remarks, setRemarks] = useState("");
@@ -1514,6 +1492,10 @@ export default function Incidents({ user }) {
   const [createError, setCreateError] = useState("");
   const [units, setUnits] = useState([]);
   const [detachments, setDetachments] = useState([]);
+  const isHqsIncidentAdmin = ["admin", "mpc_hqs"].includes(user?.role)
+    && String(user?.battalion_type || "").toLowerCase() === "hqs";
+  const canManageIncidents = Boolean(user?.is_superuser || isHqsIncidentAdmin);
+  const canAddIncident = canManageIncidents;
 
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
@@ -1521,31 +1503,125 @@ export default function Incidents({ user }) {
 
   const canCompileMorningBrief = Boolean(compilerStatus?.can_compile);
 
-  function loadData() {
+  const buildIncidentParams = useCallback(({
+    includePage = true,
+    includeStatus = true,
+    includeSeverity = true,
+    kindOverride,
+    statusOverride,
+    severityOverride,
+  } = {}) => {
+    const params = {
+      ordering: "-date_occurred",
+      kind: kindOverride || (viewMode === VIEW_RTA ? "rta" : "incident"),
+    };
+    if (includePage) {
+      params.page = page;
+      params.page_size = pageSize;
+    }
+    const statusValue = statusOverride || (includeStatus && statusFilter !== "all" ? statusFilter : "");
+    if (statusValue && statusValue !== "all") params.status = statusValue;
+    const severityValue = severityOverride || (includeSeverity && severityFilter !== "all" ? severityFilter : "");
+    if (severityValue && severityValue !== "all") params.severity = severityValue;
+    if (debouncedSearch.trim()) params.search = debouncedSearch.trim();
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+    return params;
+  }, [
+    dateFrom,
+    dateTo,
+    debouncedSearch,
+    page,
+    pageSize,
+    severityFilter,
+    statusFilter,
+    viewMode,
+  ]);
+
+  const loadData = useCallback(() => {
     setLoading(true);
-    morningBriefService
-      .compilerStatus()
-      .then((statusRes) => {
-        const status = statusRes.data || {};
-        setCompilerStatus(status);
-        const params = status.can_compile
-          ? { page_size: 200, requires_investigation: true, pending_morning_brief: true }
-          : { page_size: 200 };
-        return incidentService.list(params);
-      })
+    incidentService
+      .list(buildIncidentParams())
       .then((res) => {
         const items = toArray(res.data);
         setIncidents(items);
+        setIncidentCount(resultCount(res.data));
         setSelectedIncidents((prev) => prev.filter((id) => items.some((incident) => incident.id === id)));
       })
-      .catch((err) => setError(formatError(err, "Failed to load incidents.")))
+      .catch((err) => {
+        if (err?.response?.status === 404 && page > 1) {
+          setPage(1);
+          return;
+        }
+        setError(formatError(err, "Failed to load incidents."));
+      })
       .finally(() => setLoading(false));
-  }
+  }, [buildIncidentParams, page]);
+
+  useEffect(() => {
+    let cancelled = false;
+    morningBriefService
+      .compilerStatus()
+      .then((statusRes) => {
+        if (!cancelled) setCompilerStatus(statusRes.data || { can_compile: false, post: null, message: "" });
+      })
+      .catch(() => {
+        if (!cancelled) setCompilerStatus({ can_compile: false, post: null, message: "" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    setPage(1);
+    setSelectedIncidents([]);
+  }, [dateFrom, dateTo, debouncedSearch, severityFilter, statusFilter, viewMode]);
 
   useEffect(() => {
     loadData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [loadData, user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCountLoading(true);
+    const activeKind = viewMode === VIEW_RTA ? "rta" : "incident";
+    const baseParams = buildIncidentParams({
+      includePage: false,
+      includeStatus: false,
+      includeSeverity: false,
+    });
+    Promise.all([
+      incidentService.list({ ...baseParams, kind: "incident", page_size: 1 }),
+      incidentService.list({ ...baseParams, kind: "rta", page_size: 1 }),
+      ...ALL_STATUSES.map((status) => incidentService.list({ ...baseParams, kind: activeKind, status, page_size: 1 })),
+      ...ALL_SEVERITIES.map((severity) => incidentService.list({ ...baseParams, kind: activeKind, severity, page_size: 1 })),
+    ])
+      .then(([incidentRes, rtaRes, ...countResults]) => {
+        if (cancelled) return;
+        setTabCounts({
+          incident: resultCount(incidentRes.data),
+          rta: resultCount(rtaRes.data),
+        });
+        const nextStatusCounts = {};
+        ALL_STATUSES.forEach((status, index) => {
+          nextStatusCounts[status] = resultCount(countResults[index].data);
+        });
+        const nextSeverityCounts = {};
+        ALL_SEVERITIES.forEach((severity, index) => {
+          nextSeverityCounts[severity] = resultCount(countResults[ALL_STATUSES.length + index].data);
+        });
+        setStatusCounts(nextStatusCounts);
+        setSeverityCounts(nextSeverityCounts);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setCountLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [buildIncidentParams, viewMode]);
 
   useEffect(() => {
     Promise.all([
@@ -1557,38 +1633,22 @@ export default function Incidents({ user }) {
     });
   }, []);
 
-  const incidentRows = useMemo(
-    () => incidents.filter((incident) => !isRoadTrafficAccidentIncident(incident)),
-    [incidents]
-  );
-  const rtaRows = useMemo(
-    () => incidents.filter(isRoadTrafficAccidentIncident),
-    [incidents]
-  );
-  const activeRows = viewMode === VIEW_RTA ? rtaRows : incidentRows;
+  const activeRows = incidents;
   const dateRangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo);
+  const activeRegisterCount = viewMode === VIEW_RTA ? tabCounts.rta : tabCounts.incident;
 
-  const filtered = useMemo(() => activeRows.filter((incident) => {
-    if (dateRangeInvalid) return false;
-    const matchStatus = statusFilter === "all" || incident.status === statusFilter;
-    const matchSeverity = severityFilter === "all" || incident.severity === severityFilter;
-    const occurredAt = dateTimeValue(incident.date_occurred);
-    const fromDate = startOfLocalDate(dateFrom);
-    const toDate = endOfLocalDate(dateTo);
-    const matchFrom = !fromDate || (occurredAt && occurredAt >= fromDate);
-    const matchTo = !toDate || (occurredAt && occurredAt <= toDate);
-    return matchStatus && matchSeverity && matchFrom && matchTo && incidentMatchesSearch(incident, search);
-  }), [activeRows, dateFrom, dateRangeInvalid, dateTo, search, severityFilter, statusFilter]);
+  const filtered = useMemo(() => (dateRangeInvalid ? [] : activeRows), [activeRows, dateRangeInvalid]);
 
   const selectedIncidentRows = useMemo(
     () => incidents.filter((incident) => selectedIncidents.includes(incident.id)),
     [incidents, selectedIncidents]
   );
 
-  const selectableIds = useMemo(() => filtered.map((incident) => incident.id), [filtered]);
+  const selectableIds = useMemo(
+    () => (canCompileMorningBrief ? filtered.filter(isMorningBriefSelectable).map((incident) => incident.id) : []),
+    [canCompileMorningBrief, filtered]
+  );
   const allFilteredSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIncidents.includes(id));
-  const statusCounts = ALL_STATUSES.reduce((acc, status) => ({ ...acc, [status]: activeRows.filter((incident) => incident.status === status).length }), {});
-  const severityCounts = ALL_SEVERITIES.reduce((acc, severity) => ({ ...acc, [severity]: activeRows.filter((incident) => incident.severity === severity).length }), {});
   const unitOptions = useMemo(
     () => uniqueSorted(units.flatMap((unit) => [unit.name, unit.code])),
     [units]
@@ -1601,7 +1661,9 @@ export default function Incidents({ user }) {
     search.trim() || dateFrom || dateTo || statusFilter !== "all" || severityFilter !== "all"
   );
 
-  function toggleIncident(id) {
+  function toggleIncident(incident) {
+    if (!isMorningBriefSelectable(incident)) return;
+    const id = incident.id;
     setSelectedIncidents((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     ));
@@ -1623,6 +1685,7 @@ export default function Incidents({ user }) {
     setSearch("");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
     setSelectedIncidents([]);
   }
 
@@ -1632,6 +1695,7 @@ export default function Incidents({ user }) {
     setSearch("");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
   }
 
   function filterSummary() {
@@ -1715,6 +1779,10 @@ export default function Incidents({ user }) {
   }
 
   function openCreateChoice() {
+    if (!canAddIncident) {
+      setError("Only Superuser or HQ Admin can add new incidents.");
+      return;
+    }
     setError("");
     setCreateError("");
     setSourceChoiceOpen(true);
@@ -1749,6 +1817,7 @@ export default function Incidents({ user }) {
       setNotice(`${sourceLabel(createMode)} saved successfully.`);
       setCreateOpen(false);
       setIncidentForm(resetForm());
+      setPage(1);
       setViewMode(createMode === VIEW_RTA ? VIEW_RTA : VIEW_INCIDENT);
       loadData();
     } catch (err) {
@@ -1794,30 +1863,23 @@ export default function Incidents({ user }) {
         <div>
           <h2 className="text-2xl font-bold text-white">Incidents</h2>
           <p className="mt-0.5 text-sm text-gray-500">
-            {canCompileMorningBrief
-              ? `${incidents.length} investigation-required incident${incidents.length !== 1 ? "s" : ""} pending morning brief`
-              : `${incidentRows.length} incident${incidentRows.length !== 1 ? "s" : ""} and ${rtaRows.length} RTA incident${rtaRows.length !== 1 ? "s" : ""}`}
+            {tabCounts.incident} incident{tabCounts.incident !== 1 ? "s" : ""} and {tabCounts.rta} RTA incident{tabCounts.rta !== 1 ? "s" : ""}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openCreateChoice}
-          className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
-        >
-          + Add New Incident
-        </button>
+        {canAddIncident && (
+          <button
+            type="button"
+            onClick={openCreateChoice}
+            className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700"
+          >
+            + Add New Incident
+          </button>
+        )}
       </div>
 
       {(notice || error) && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
           {error || notice}
-        </div>
-      )}
-
-      {!canCompileMorningBrief && compilerStatus?.message && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          <p className="font-semibold">Morning brief compilation restricted</p>
-          <p className="mt-1">{compilerStatus.message}</p>
         </div>
       )}
 
@@ -1877,14 +1939,14 @@ export default function Incidents({ user }) {
             onClick={() => switchView(VIEW_INCIDENT)}
             className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${viewMode === VIEW_INCIDENT ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"}`}
           >
-            Incidents ({incidentRows.length})
+            Incidents ({tabCounts.incident})
           </button>
           <button
             type="button"
             onClick={() => switchView(VIEW_RTA)}
             className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${viewMode === VIEW_RTA ? "bg-amber-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"}`}
           >
-            RTA ({rtaRows.length})
+            RTA ({tabCounts.rta})
           </button>
         </div>
       </div>
@@ -1938,7 +2000,7 @@ export default function Incidents({ user }) {
                 disabled={dateRangeInvalid || filtered.length === 0}
                 className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Print
+                Print Page
               </button>
               <button
                 type="button"
@@ -1946,7 +2008,7 @@ export default function Incidents({ user }) {
                 disabled={dateRangeInvalid || filtered.length === 0}
                 className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Export CSV
+                Export Page CSV
               </button>
             </div>
           </div>
@@ -1964,7 +2026,7 @@ export default function Incidents({ user }) {
               onClick={() => setStatusFilter("all")}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${statusFilter === "all" ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"}`}
             >
-              All ({activeRows.length})
+              All ({activeRegisterCount})
             </button>
             {ALL_STATUSES.map((status) =>
               statusCounts[status] > 0 ? (
@@ -1987,7 +2049,7 @@ export default function Incidents({ user }) {
               onClick={() => setSeverityFilter("all")}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${severityFilter === "all" ? "bg-purple-600 text-white" : "bg-gray-700 text-gray-300 hover:bg-gray-600"}`}
             >
-              All ({activeRows.length})
+              All ({activeRegisterCount})
             </button>
             {ALL_SEVERITIES.map((severity) =>
               severityCounts[severity] > 0 ? (
@@ -2004,7 +2066,8 @@ export default function Incidents({ user }) {
           </div>
 
           <p className="text-xs font-medium text-gray-400">
-            Showing {filtered.length} of {activeRows.length} {registerLabel(viewMode).toLowerCase()}.
+            Showing {filtered.length} of {incidentCount} {registerLabel(viewMode).toLowerCase()}
+            {countLoading ? " (updating counts...)" : ""}.
           </p>
         </div>
       </section>
@@ -2016,7 +2079,7 @@ export default function Incidents({ user }) {
           </div>
         ) : filtered.length === 0 ? (
           <p className="p-6 text-sm text-gray-500">
-            {viewMode === VIEW_RTA ? "No RTA incidents found." : canCompileMorningBrief ? "No investigation-required incidents pending morning brief." : "No incidents found."}
+            {viewMode === VIEW_RTA ? "No RTA incidents found." : "No incidents found."}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -2030,6 +2093,7 @@ export default function Incidents({ user }) {
                           type="checkbox"
                           checked={allFilteredSelected}
                           onChange={toggleAllFiltered}
+                          disabled={selectableIds.length === 0}
                           className="h-4 w-4 rounded border-slate-300 text-blue-600"
                           aria-label="Select all visible RTA incidents"
                         />
@@ -2052,17 +2116,22 @@ export default function Incidents({ user }) {
                 <tbody>
                   {filtered.map((incident) => (
                     <tr key={incident.id} className="border-b border-gray-700/40 align-top transition-colors hover:bg-gray-700/30">
-                      {canCompileMorningBrief && (
+                      {canCompileMorningBrief && (() => {
+                        const canSelectForBrief = isMorningBriefSelectable(incident);
+                        return (
                         <td className="px-4 py-3">
                           <input
                             type="checkbox"
                             checked={selectedIncidents.includes(incident.id)}
-                            onChange={() => toggleIncident(incident.id)}
-                            className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                            onChange={() => toggleIncident(incident)}
+                            disabled={!canSelectForBrief}
+                            title={canSelectForBrief ? "Select for morning brief" : "Not eligible for morning brief compilation"}
+                            className="h-4 w-4 rounded border-slate-300 text-blue-600 disabled:opacity-30"
                             aria-label={`Select ${incident.incident_number || "RTA incident"}`}
                           />
                         </td>
-                      )}
+                        );
+                      })()}
                       <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-400">{textOrDash(incident.incident_number)}</td>
                       <td className="max-w-[190px] px-4 py-3 text-gray-200">
                         <p>{textOrDash(incident.incident_type)}</p>
@@ -2091,6 +2160,7 @@ export default function Incidents({ user }) {
                           type="checkbox"
                           checked={allFilteredSelected}
                           onChange={toggleAllFiltered}
+                          disabled={selectableIds.length === 0}
                           className="h-4 w-4 rounded border-slate-300 text-blue-600"
                           aria-label="Select all visible incidents"
                         />
@@ -2111,17 +2181,22 @@ export default function Incidents({ user }) {
                 <tbody>
                   {filtered.map((incident) => (
                     <tr key={incident.id} className="border-b border-gray-700/40 align-top transition-colors hover:bg-gray-700/30">
-                      {canCompileMorningBrief && (
+                      {canCompileMorningBrief && (() => {
+                        const canSelectForBrief = isMorningBriefSelectable(incident);
+                        return (
                         <td className="px-4 py-3">
                           <input
                             type="checkbox"
                             checked={selectedIncidents.includes(incident.id)}
-                            onChange={() => toggleIncident(incident.id)}
-                            className="h-4 w-4 rounded border-slate-300 text-blue-600"
+                            onChange={() => toggleIncident(incident)}
+                            disabled={!canSelectForBrief}
+                            title={canSelectForBrief ? "Select for morning brief" : "Not eligible for morning brief compilation"}
+                            className="h-4 w-4 rounded border-slate-300 text-blue-600 disabled:opacity-30"
                             aria-label={`Select ${incident.incident_number || "incident"}`}
                           />
                         </td>
-                      )}
+                        );
+                      })()}
                       <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-400">
                         {textOrDash(incident.incident_number)}
                         {canCompileMorningBrief && incident.requires_investigation && (
@@ -2151,6 +2226,19 @@ export default function Incidents({ user }) {
             )}
           </div>
         )}
+        <PaginationControls
+          page={page}
+          pageSize={pageSize}
+          totalCount={incidentCount}
+          itemLabel={registerLabel(viewMode).toLowerCase()}
+          loading={loading}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size);
+            setPage(1);
+          }}
+          variant="dark"
+        />
       </div>
 
       {sourceChoiceOpen && (
