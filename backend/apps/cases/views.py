@@ -1348,7 +1348,6 @@ class CaseViewSet(viewsets.ModelViewSet):
             is_unit_level_case_viewer(user)
             and case_obj.criminal_offence_type not in {
                 Case.CriminalOffenceType.DCI_CIV,
-                Case.CriminalOffenceType.COURT_MARTIAL,
             }
             and (
                 case_obj.accused_unit_id == user.unit_id
@@ -1481,7 +1480,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         case = self.get_object()
         if not self._can_manage_unit_service(request.user, case):
             raise PermissionDenied("Only the accused unit can acknowledge service on this case.")
-        if case.status != Case.Status.UNDER_INVESTIGATION or not case.served_abstract:
+        if case.status not in {Case.Status.UNDER_INVESTIGATION, Case.Status.SERVED} or not case.served_abstract:
             raise ValidationError({"detail": "The case must have a served abstract before acknowledgement."})
         if case.abstract_acknowledged_at:
             raise ValidationError({"detail": "This abstract has already been acknowledged."})
