@@ -1153,7 +1153,6 @@ class CaseSerializer(serializers.ModelSerializer):
         if (
             assignment_target
             and assignment_requested
-            and not is_court_martial
             and not status_in_payload
             and target_status in {Case.Status.NEW, Case.Status.OPEN, Case.Status.TASKED}
         ):
@@ -1226,6 +1225,18 @@ class CaseSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"action_taken": "Verdict is required before closing this case."}
                 )
+
+            # For Court Martial cases, require that a Judgment milestone action has been recorded.
+            if is_court_martial:
+                has_judgment_action = CaseCourtMartialMilestone.objects.filter(
+                    case_id=instance.id,
+                    milestone_type=CaseCourtMartialMilestone.MilestoneType.JUDGMENT,
+                    action_recorded_at__isnull=False,
+                ).exists()
+                if not has_judgment_action:
+                    raise serializers.ValidationError(
+                        {"status": "Court Martial cases cannot be closed: record action on a Judgment milestone first."}
+                    )
 
             if (
                 closure_basis != Case.ClosureBasis.PART_II_ORDERS

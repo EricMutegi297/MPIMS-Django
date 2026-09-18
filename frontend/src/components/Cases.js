@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, formationService, offenceService, teamService, attachmentService, userService, incidentService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import useDebouncedValue from "../hooks/useDebouncedValue";
@@ -355,6 +355,13 @@ const STATUS_CHIP_META = {
   tasked: { label: "Tasked", dot: "bg-yellow-400" },
   referred: { label: "Referred", dot: "bg-cyan-400" },
 };
+
+const CRIMINAL_CASE_TYPE_LABELS = {
+  court_martial: "Court Martial",
+  dci_civ_police: "DCI / Civ Police",
+};
+
+const CRIMINAL_ASSIGNMENT_TYPES = Object.keys(CRIMINAL_CASE_TYPE_LABELS);
 
 const COURT_MILESTONE_TYPES = [
   { value: "mentioning", label: "Mentioning" },
@@ -1963,6 +1970,7 @@ function getBriefForwardOptions(user, caseObj) {
 export default function Cases({ user, criminalTypeFilter, clearanceOnly = false }) {
   const detailPanelRef = useRef(null);
   const actionSaveInFlightRef = useRef(new Set());
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const caseQueryId = searchParams.get("case");
   const caseAction = searchParams.get("action");
@@ -2010,6 +2018,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const [createErr, setCreateErr]     = useState("");
   const [postCreateTaskPrompt, setPostCreateTaskPrompt] = useState(null);
   const [discardCreateConfirmOpen, setDiscardCreateConfirmOpen] = useState(false);
+  const [criminalAssignOpen, setCriminalAssignOpen] = useState(false);
+  const [criminalAssignCases, setCriminalAssignCases] = useState([]);
+  const [criminalAssignSelectedIds, setCriminalAssignSelectedIds] = useState(() => new Set());
+  const [criminalAssignSearch, setCriminalAssignSearch] = useState("");
+  const [criminalAssignLoading, setCriminalAssignLoading] = useState(false);
+  const [criminalAssignSaving, setCriminalAssignSaving] = useState(false);
+  const [criminalAssignErr, setCriminalAssignErr] = useState("");
 
   // Task form
   const [showTask, setShowTask]       = useState(false);
@@ -2129,12 +2144,16 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const canEditTrafficDamageStatus = isHqsAdmin
     || isSuperuser
     || (user?.role === "mpc_hqs" && String(user?.battalion_type || "").toLowerCase() === "hqs");
+  const isCriminalAssignmentView = CRIMINAL_ASSIGNMENT_TYPES.includes(activeCriminalTypeFilter);
+  const criminalAssignmentLabel = CRIMINAL_CASE_TYPE_LABELS[activeCriminalTypeFilter] || "Criminal Offence";
   // Battalion admin/CO who is NOT HQS can assign teams
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
     (user?.role === "admin" || user?.role === "co");
   const isInvestigator = user?.role === "investigator";
   const isAccusedUnitUser = Boolean(user?.unit_id || user?.unit) && ["adj", "co", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role);
-  const supportsUnitServiceWorkflow = !["dci_civ_police", "court_martial"].includes(String(selected?.criminal_offence_type || activeCriminalTypeFilter || "").toLowerCase());
+  const selectedCriminalWorkflowType = String(selected?.criminal_offence_type || activeCriminalTypeFilter || "").toLowerCase();
+  const supportsUnitServiceAcknowledgement = selectedCriminalWorkflowType !== "dci_civ_police";
+  const supportsUnitClosureWorkflow = !["dci_civ_police", "court_martial"].includes(selectedCriminalWorkflowType);
   const briefForwardOptions = getBriefForwardOptions(user, selected);
   const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
   const sortedInvestigators = [...investigators].sort(sortUsersByWorkload(workloadMap));
@@ -2144,6 +2163,29 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     .sort((a, b) => String(a).localeCompare(String(b)));
   const offenceNames = [...new Set(offences.map((offence) => offence.name).filter(Boolean))]
     .sort((a, b) => String(a).localeCompare(String(b)));
+  const criminalAssignVisibleCases = useMemo(() => {
+    const query = criminalAssignSearch.trim().toLowerCase();
+    return criminalAssignCases.filter((caseObj) => {
+      const status = String(caseObj?.status || "").toLowerCase();
+      if (status === "closed" || status === "actioned") return false;
+      if (String(caseObj?.criminal_offence_type || "") === activeCriminalTypeFilter) return false;
+      if (!query) return true;
+      const haystack = [
+        caseObj.case_number,
+        caseObj.accused_service_number,
+        caseObj.accused_rank,
+        caseObj.accused_name,
+        accusedUnitLabel(caseObj),
+        caseObj.offence_name,
+        caseObj.offence,
+        caseDisplayDescription(caseObj),
+        STATUS_CHIP_META[caseObj.status]?.label || caseObj.status,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [activeCriminalTypeFilter, criminalAssignCases, criminalAssignSearch]);
+  const allCriminalAssignVisibleSelected = criminalAssignVisibleCases.length > 0
+    && criminalAssignVisibleCases.every((caseObj) => criminalAssignSelectedIds.has(caseObj.id));
   const activeCaseSource = caseFormMode === "edit" ? CASE_SOURCE_RFI : caseSource;
   const creatingFromRfi = activeCaseSource === CASE_SOURCE_RFI;
   const creatingFromIncident = activeCaseSource === CASE_SOURCE_INCIDENT;
@@ -2258,24 +2300,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
 
   useEffect(() => { loadCases(); }, [loadCases]);
 
-  useEffect(() => {
-    if (!caseQueryId || loading) return;
-    const caseFromQuery = cases.find((caseObj) => String(caseObj.id) === String(caseQueryId));
-    if (caseFromQuery) {
-      if (caseAction === "acknowledge" && caseFromQuery.served_abstract && !caseFromQuery.abstract_acknowledged_at) {
-        setAcknowledgementFile(null);
-        setUnitWorkflowErr("");
-        setAcknowledgementPromptCase(caseFromQuery);
-      } else {
-        setSelected(caseFromQuery);
-      }
-    }
-  }, [caseAction, caseQueryId, cases, loading]);
-
-  useEffect(() => {
+  const loadCaseCounts = useCallback(() => {
     setCountLoading(true);
     const baseParams = buildCaseListParams({ includePage: false, includeStatus: false });
-    Promise.all([
+    return Promise.all([
       caseService.list({ ...baseParams, page_size: 1 }),
       ...ALL_STATUSES.map((status) => caseService.list({ ...baseParams, status, page_size: 1 })),
     ])
@@ -2290,6 +2318,24 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       .catch(() => {})
       .finally(() => setCountLoading(false));
   }, [buildCaseListParams]);
+
+  useEffect(() => {
+    loadCaseCounts();
+  }, [loadCaseCounts]);
+
+  useEffect(() => {
+    if (!caseQueryId || loading) return;
+    const caseFromQuery = cases.find((caseObj) => String(caseObj.id) === String(caseQueryId));
+    if (caseFromQuery) {
+      if (caseAction === "acknowledge" && caseFromQuery.served_abstract && !caseFromQuery.abstract_acknowledged_at) {
+        setAcknowledgementFile(null);
+        setUnitWorkflowErr("");
+        setAcknowledgementPromptCase(caseFromQuery);
+      } else {
+        setSelected(caseFromQuery);
+      }
+    }
+  }, [caseAction, caseQueryId, cases, loading]);
 
   // Load offences for dropdown
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2433,7 +2479,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       showToast("Abstract uploaded. Case is awaiting unit acknowledgement.", "success");
     } catch (err) {
       const data = err?.response?.data;
-      setStatusErr(data?.detail || data?.abstract_acknowledgement_form?.[0] || data?.status?.[0] || "Failed to serve case.");
+      setStatusErr(data?.detail || data?.served_abstract?.[0] || data?.status?.[0] || "Failed to serve case.");
     } finally {
       setStatusSaving(false);
     }
@@ -2487,6 +2533,132 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     setCaseSource("");
     setSourceCaseForm(emptyIncidentCaseForm());
     setCreateErr("");
+  }
+
+  function resetCriminalAssignment() {
+    setCriminalAssignOpen(false);
+    setCriminalAssignCases([]);
+    setCriminalAssignSelectedIds(new Set());
+    setCriminalAssignSearch("");
+    setCriminalAssignErr("");
+  }
+
+  async function loadCriminalAssignmentCandidates() {
+    setCriminalAssignLoading(true);
+    setCriminalAssignErr("");
+    try {
+      const pageSizeLimit = 1000;
+      let nextPage = 1;
+      let rows = [];
+      let total = null;
+      while (nextPage <= 20) {
+        const res = await caseService.list({
+          ordering: "-created_at",
+          page: nextPage,
+          page_size: pageSizeLimit,
+        });
+        const pageRows = toArray(res.data);
+        rows = rows.concat(pageRows);
+        total = resultCount(res.data);
+        if (!Array.isArray(res.data?.results) || rows.length >= total || pageRows.length === 0) break;
+        nextPage += 1;
+      }
+      setCriminalAssignCases(
+        rows.filter((caseObj) => {
+          const status = String(caseObj?.status || "").toLowerCase();
+          return status !== "closed"
+            && status !== "actioned"
+            && String(caseObj?.criminal_offence_type || "") !== activeCriminalTypeFilter;
+        })
+      );
+    } catch (err) {
+      setCriminalAssignCases([]);
+      setCriminalAssignErr(err?.response?.data?.detail || "Failed to load eligible cases.");
+    } finally {
+      setCriminalAssignLoading(false);
+    }
+  }
+
+  function openCriminalAssignmentModal() {
+    setPostCreateTaskPrompt(null);
+    setTaskModalMode(false);
+    setShowTask(false);
+    setShowTeam(false);
+    setCreateErr("");
+    setCriminalAssignOpen(true);
+    setCriminalAssignSelectedIds(new Set());
+    setCriminalAssignSearch("");
+    loadCriminalAssignmentCandidates();
+  }
+
+  function closeCriminalAssignmentModal() {
+    if (criminalAssignSaving) return;
+    resetCriminalAssignment();
+  }
+
+  function toggleCriminalAssignmentCase(caseId) {
+    setCriminalAssignSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(caseId)) {
+        next.delete(caseId);
+      } else {
+        next.add(caseId);
+      }
+      return next;
+    });
+    setCriminalAssignErr("");
+  }
+
+  function toggleAllVisibleCriminalAssignmentCases() {
+    setCriminalAssignSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allCriminalAssignVisibleSelected) {
+        criminalAssignVisibleCases.forEach((caseObj) => next.delete(caseObj.id));
+      } else {
+        criminalAssignVisibleCases.forEach((caseObj) => next.add(caseObj.id));
+      }
+      return next;
+    });
+    setCriminalAssignErr("");
+  }
+
+  async function assignSelectedCasesToCriminalType() {
+    const ids = [...criminalAssignSelectedIds];
+    if (!ids.length) {
+      setCriminalAssignErr(`Select at least one case to add to ${criminalAssignmentLabel}.`);
+      return;
+    }
+    setCriminalAssignSaving(true);
+    setCriminalAssignErr("");
+    try {
+      await Promise.all(
+        ids.map((caseId) =>
+          caseService.update(caseId, {
+            offence_type: "criminal_offence",
+            criminal_offence_type: activeCriminalTypeFilter,
+          })
+        )
+      );
+      resetCriminalAssignment();
+      loadCases();
+      loadCaseCounts();
+      showToast(`${ids.length} case${ids.length !== 1 ? "s" : ""} added to ${criminalAssignmentLabel}.`, "success");
+    } catch (err) {
+      const data = err?.response?.data;
+      if (data?.detail) {
+        setCriminalAssignErr(String(data.detail));
+      } else if (data && typeof data === "object") {
+        setCriminalAssignErr(
+          Object.entries(data)
+            .map(([field, value]) => `${field}: ${Array.isArray(value) ? value.join(", ") : value}`)
+            .join(" | ")
+        );
+      } else {
+        setCriminalAssignErr(`Failed to add selected cases to ${criminalAssignmentLabel}.`);
+      }
+    } finally {
+      setCriminalAssignSaving(false);
+    }
   }
 
   function updateSourceCaseField(field, value) {
@@ -2655,6 +2827,8 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const selectedIsCourtMartial = selected?.criminal_offence_type === "court_martial";
   const selectedIsDci = selected?.criminal_offence_type === "dci_civ_police";
   const selectedIsRta = isRoadTrafficAccidentCase(selected);
+  const canManageSelectedCourtMartialProgress = selectedIsCourtMartial && (isHqsAdmin || isSuperuser || isInvestigator);
+  const courtMartialProgressUnlocked = selectedIsCourtMartial && selected?.status === "served" && Boolean(selected?.abstract_acknowledged_at);
   const activeCloseCase = courtCloseCase || selected;
   const activeCloseCaseIsCourtMartial = activeCloseCase?.criminal_offence_type === "court_martial";
   const activeCloseCaseIsDci = activeCloseCase?.criminal_offence_type === "dci_civ_police";
@@ -2776,8 +2950,21 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
         planning_comment: milestoneComment,
       });
       const row = res.data;
-      setCourtMilestones((prev) => [...prev, row].sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date))));
+      setCourtMilestones((prev) => [...prev, row].sort((a, b) => String(a.scheduled_date || "") > String(b.scheduled_date || "") ? 1 : -1));
       setActionDrafts((prev) => ({ ...prev, [row.id]: row.action_remarks || "" }));
+
+      // Refresh the authoritative case data so the cases list and selected case reflect
+      // any server-side changes (e.g. milestone-derived flags) and allow the UI to flip
+      // the per-row action to Close when appropriate.
+      try {
+        const caseRes = await caseService.get(selected.id);
+        refreshSelected(caseRes.data);
+        setCases((prev) => prev.map((r) => (r.id === caseRes.data.id ? caseRes.data : r)));
+      } catch (fetchErr) {
+        // Non-fatal: preserve milestone success even if fetching the case failed.
+        console.warn("Failed to refresh case after adding court milestone", fetchErr);
+      }
+
       setMilestoneType("mentioning");
       setMilestoneDate("");
       setMilestoneComment("");
@@ -2826,6 +3013,16 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       setActionDrafts((prev) => ({ ...prev, [milestoneId]: res.data.action_remarks || "" }));
       setEditingActionMilestoneId(null);
       setCourtMilestoneSuccess("Court action remarks saved successfully.");
+
+      // Refresh the authoritative case data so the UI flips the per-row action to Close
+      // when a Judgment milestone with action_recorded_at has been recorded.
+      try {
+        const caseRes = await caseService.get(selected.id);
+        refreshSelected(caseRes.data);
+        setCases((prev) => prev.map((r) => (r.id === caseRes.data.id ? caseRes.data : r)));
+      } catch (fetchErr) {
+        console.warn("Failed to refresh case after saving milestone action", fetchErr);
+      }
     } catch (err) {
       const d = err.response?.data;
       if (d?.detail) {
@@ -3522,6 +3719,32 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     }, 0);
   }
 
+  // Open the selected case detail and focus the Court Martial milestones section
+  function openCourtMartialProgressFromRow(caseObj, event) {
+    event?.stopPropagation?.();
+    setRowActionErr("");
+    if (!caseObj?.id) return;
+    // Select the case (opens the detail modal)
+    setSelected(caseObj);
+
+    // Wait for the detail panel to render then scroll the milestones into view
+    window.setTimeout(() => {
+      try {
+        const panel = detailPanelRef.current;
+        if (!panel) return;
+        const target = panel.querySelector('#court-milestones');
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          // Fallback: scroll the panel itself
+          panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } catch (e) {
+        console.warn('Failed to focus Court Martial milestones', e);
+      }
+    }, 50);
+  }
+
   async function handleTrafficAccidentReportUpload(e) {
     e.preventDefault();
     if (!selected) return;
@@ -3823,7 +4046,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
   const canCloseServedCases = isHqsAdmin || isSuperuser;
-  const showServedActionColumn = isServedFilter && (canCloseServedCases || (isAccusedUnitUser && supportsUnitServiceWorkflow));
+  const showServedActionColumn = isServedFilter && (canCloseServedCases || (isAccusedUnitUser && supportsUnitServiceAcknowledgement));
   const defaultCaseExportColumns = [
     "Case #",
     "Status",
@@ -4040,6 +4263,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   }
 
   function openCreateModal() {
+    if (isCriminalAssignmentView) {
+      openCriminalAssignmentModal();
+      return;
+    }
     setPostCreateTaskPrompt(null);
     setTaskModalMode(false);
     setShowTask(false);
@@ -4174,7 +4401,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            New Case
+            {isCriminalAssignmentView ? "Add Case" : "New Case"}
           </button>
         )}
       </div>
@@ -4791,13 +5018,44 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     {!isDciFilter && showServedActionColumn && (
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         {canCloseServedCases ? (
-                          <button type="button" onClick={(e) => { e.stopPropagation(); openCourtCloseModal(c); }} className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors">Close Case</button>
+                          // For Court Martial cases: if abstract is not yet acknowledged, keep Close disabled with tooltip.
+                          // If abstract is acknowledged, offer a 'Court Martial update' action that opens the case detail so the user can manage milestones.
+                          c.criminal_offence_type === "court_martial" ? (
+                            c.abstract_acknowledged_at ? (
+                              <button
+                                type="button"
+                                onClick={(e) => openCourtMartialProgressFromRow(c, e)}
+                                className="px-2.5 py-1 rounded text-xs font-medium bg-blue-700/80 hover:bg-blue-600 text-white transition-colors"
+                                title="Open Court Martial progress to add or edit milestones"
+                              >
+                                Court Martial update
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); /* keep existing behaviour: do not open */ }}
+                                disabled
+                                className="px-2.5 py-1 rounded text-xs font-medium bg-gray-700 disabled:text-gray-400 disabled:cursor-not-allowed text-white transition-colors"
+                                title="Court Martial cases can be closed after abstract acknowledgement."
+                              >
+                                Close Case
+                              </button>
+                            )
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); openCourtCloseModal(c); }}
+                              className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors"
+                            >
+                              Close Case
+                            </button>
+                          )
                         ) : (
                           <div className="flex flex-wrap gap-1.5">
-                            {!c.abstract_acknowledged_at && c.served_abstract && (
+                            {!c.abstract_acknowledged_at && c.served_abstract && String(c.criminal_offence_type || "").toLowerCase() !== "dci_civ_police" && (
                               <button type="button" onClick={(e) => openAcknowledgementFromRow(c, e)} disabled={rowActionSavingId === c.id || unitWorkflowSaving} className="px-2.5 py-1 rounded text-xs font-medium bg-sky-700/80 hover:bg-sky-600 disabled:opacity-50 text-white transition-colors">Attach Acknowledgement</button>
                             )}
-                            {c.abstract_acknowledged_at && !["pending", "approved"].includes(c.unit_closure_status) && (
+                            {c.abstract_acknowledged_at && !["dci_civ_police", "court_martial"].includes(String(c.criminal_offence_type || "").toLowerCase()) && !["pending", "approved"].includes(c.unit_closure_status) && (
                               <button type="button" onClick={(e) => openClosurePrompt(c, e)} disabled={rowActionSavingId === c.id || unitWorkflowSaving} className="px-2.5 py-1 rounded text-xs font-medium bg-amber-700/80 hover:bg-amber-600 disabled:opacity-50 text-white transition-colors">Request Closure</button>
                             )}
                             <button type="button" onClick={(e) => { e.stopPropagation(); selectCase(c); }} className="px-2.5 py-1 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-white transition-colors">Details</button>
@@ -4884,7 +5142,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
               )}
             </div>
 
-            {supportsUnitServiceWorkflow && (isAccusedUnitUser || ((isHqsAdmin || isSuperuser) && selected.unit_closure_status === "pending")) && (
+            {supportsUnitServiceAcknowledgement && (isAccusedUnitUser || ((isHqsAdmin || isSuperuser) && supportsUnitClosureWorkflow && selected.unit_closure_status === "pending")) && (
               <div className="rounded-lg border border-sky-500/30 bg-sky-950/20 p-4 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <SectionLabel>Unit service workflow</SectionLabel>
@@ -4899,7 +5157,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     View abstract of evidence
                   </ProtectedDocumentButton>
                 )}
-                {isAccusedUnitUser && selected.status === "under_investigation" && selected.served_abstract && !selected.abstract_acknowledged_at && (
+                {isAccusedUnitUser && ["under_investigation", "served"].includes(selected.status) && selected.served_abstract && !selected.abstract_acknowledged_at && (
                   <div className="space-y-2">
                     <p className="text-xs text-gray-300">The abstract has been served. Attach the signed acknowledgement sheet to confirm receipt and complete service.</p>
                     <input type="file" accept="application/pdf,.pdf" onChange={(event) => setAcknowledgementFile(event.target.files[0] || null)} className="w-full text-xs text-gray-400" />
@@ -4918,12 +5176,12 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     )}
                   </div>
                 )}
-                {isAccusedUnitUser && selected.status === "served" && selected.abstract_acknowledged_at && selected.unit_closure_status !== "pending" && selected.unit_closure_status !== "approved" && (
+                {supportsUnitClosureWorkflow && isAccusedUnitUser && selected.status === "served" && selected.abstract_acknowledged_at && selected.unit_closure_status !== "pending" && selected.unit_closure_status !== "approved" && (
                   <button type="button" onClick={() => openClosurePrompt(selected)} disabled={unitWorkflowSaving} className="px-3 py-2 rounded bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-medium">
                     {unitWorkflowSaving ? "Sending..." : "Request Closure from Admin HQs"}
                   </button>
                 )}
-                {isAccusedUnitUser && selected.status !== "closed" && (
+                {supportsUnitClosureWorkflow && isAccusedUnitUser && selected.status !== "closed" && (
                   <div className="space-y-2 border-t border-sky-500/20 pt-3">
                     <p className="text-xs text-gray-300">Clearance certificate</p>
                     <div className="flex flex-wrap items-center gap-2">
@@ -4935,7 +5193,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     {selected.clearance_certificate && <ProtectedDocumentButton url={selected.clearance_certificate} label="clearance certificate" className="text-xs text-blue-300 hover:underline">View current certificate</ProtectedDocumentButton>}
                   </div>
                 )}
-                {(isHqsAdmin || isSuperuser) && selected.unit_closure_status === "pending" && (
+                {supportsUnitClosureWorkflow && (isHqsAdmin || isSuperuser) && selected.unit_closure_status === "pending" && (
                   <div className="space-y-2 border-t border-sky-500/20 pt-3">
                     <textarea value={closureReviewComment} onChange={(event) => setClosureReviewComment(event.target.value)} rows={2} placeholder="Comment or rejection reason" className="w-full rounded bg-gray-700 border border-gray-600 px-3 py-2 text-sm text-white" />
                     <div className="flex flex-wrap gap-2">
@@ -5232,8 +5490,17 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
               )}
             </div>
 
-            {selectedIsCourtMartial && (
-              <div className="border-t border-gray-700 pt-4 space-y-3">
+            {selectedIsCourtMartial && !courtMartialProgressUnlocked && (
+              <div className="border-t border-gray-700 pt-4">
+                <SectionLabel>Court Martial Progress</SectionLabel>
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                  Court Martial progress becomes available after the case is served and the abstract is acknowledged.
+                </div>
+              </div>
+            )}
+
+            {canManageSelectedCourtMartialProgress && courtMartialProgressUnlocked && (
+              <div id="court-milestones" className="border-t border-gray-700 pt-4 space-y-3">
                 <SectionLabel>Court Martial Progress</SectionLabel>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-gray-700/30 rounded-lg p-3">
                   <div>
@@ -5571,6 +5838,15 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                   >
                     {showDocumentUpload ? "Cancel Document Upload" : "Upload Document"}
                   </button>
+                  {isInvestigator && ["under_investigation", "pending"].includes(selected.status) && (
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/dashboard/guardrooms?case=${selected.id}`)}
+                      className="px-3 py-2 bg-red-700 hover:bg-red-800 text-white rounded text-xs font-medium"
+                    >
+                      Request Guardroom
+                    </button>
+                  )}
                   {!selected.brief ? (
                     <button
                       type="button"
@@ -5711,13 +5987,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
             )}
 
             {/* Investigator / Admin: Status transitions */}
-            {(isInvestigator || canTask || canServeCase(selected)) &&
+            {(canTask || canServeCase(selected)) &&
               ["under_investigation", "pending", "served", "referred"].includes(selected.status) && (
               <div className="border-t border-gray-700 pt-4">
                 <SectionLabel>Update Status</SectionLabel>
                 <ErrMsg msg={statusErr} />
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {selected.status === "under_investigation" && !selectedIsDci && canServeCase(selected) && !serveFormOpen && (
+                  {["under_investigation", "pending"].includes(selected.status) && !selectedIsDci && canServeCase(selected) && !serveFormOpen && (
                     <button
                       onClick={() => { setServeFormOpen(true); setStatusErr(""); }}
                       disabled={statusSaving}
@@ -5766,7 +6042,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                       Close Case
                     </button>
                   )}
-                  {selected.status === "served" && (isHqsAdmin || isSuperuser) && (
+                  {selected.status === "served" && (isHqsAdmin || isSuperuser) && (!selectedIsCourtMartial || selected.abstract_acknowledged_at) && (
                     <button
                       onClick={() => openCourtCloseModal(selected)}
                       disabled={statusSaving}
@@ -5793,7 +6069,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     </button>
                   )}
                 </div>
-                {serveFormOpen && selected.status === "under_investigation" && canServeCase(selected) && (
+                {serveFormOpen && ["under_investigation", "pending"].includes(selected.status) && canServeCase(selected) && (
                   <div className="mt-3 rounded-lg border border-purple-500/30 bg-purple-950/20 p-4 space-y-3">
                     <p className="text-xs text-gray-300">Attach the abstract PDF to serve this case. Serving cannot be completed without it.</p>
                     <input
@@ -6354,6 +6630,149 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       )}
 
       {/* ══════════════ CREATE CASE MODAL ══════════════ */}
+      {criminalAssignOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4">
+          <div className="w-full max-w-5xl rounded-2xl bg-white p-6 text-slate-900 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wide text-blue-700">Add existing cases</p>
+                <h3 className="mt-1 text-xl font-bold text-slate-950">{criminalAssignmentLabel}</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Select one or more non-actioned cases. The selected cases will be moved to {criminalAssignmentLabel}.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCriminalAssignmentModal}
+                disabled={criminalAssignSaving}
+                className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50"
+                aria-label="Close"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-[minmax(240px,1fr)_auto_auto]">
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Search cases</span>
+                <input
+                  type="text"
+                  value={criminalAssignSearch}
+                  onChange={(event) => setCriminalAssignSearch(event.target.value)}
+                  placeholder="Case #, service no, accused, unit, offence, description..."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={toggleAllVisibleCriminalAssignmentCases}
+                disabled={criminalAssignLoading || criminalAssignSaving || criminalAssignVisibleCases.length === 0}
+                className="self-end rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {allCriminalAssignVisibleSelected ? "Clear Shown" : "Select Shown"}
+              </button>
+              <button
+                type="button"
+                onClick={loadCriminalAssignmentCandidates}
+                disabled={criminalAssignLoading || criminalAssignSaving}
+                className="self-end rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Refresh
+              </button>
+            </div>
+
+            <ErrMsg msg={criminalAssignErr} />
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+              {criminalAssignLoading ? (
+                <div className="px-4 py-8 text-center text-sm text-slate-500">Loading eligible cases...</div>
+              ) : criminalAssignVisibleCases.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-slate-500">
+                  No eligible non-actioned cases found.
+                </div>
+              ) : (
+                <div className="max-h-[55vh] overflow-auto">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="sticky top-0 bg-slate-100 text-xs uppercase tracking-wide text-slate-600">
+                      <tr>
+                        <th className="w-12 px-3 py-3">Select</th>
+                        <th className="px-3 py-3">Case #</th>
+                        <th className="px-3 py-3">Service No</th>
+                        <th className="px-3 py-3">Rank</th>
+                        <th className="px-3 py-3">Accused</th>
+                        <th className="px-3 py-3">Unit</th>
+                        <th className="px-3 py-3">Offence</th>
+                        <th className="px-3 py-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {criminalAssignVisibleCases.map((caseObj) => {
+                        const checked = criminalAssignSelectedIds.has(caseObj.id);
+                        return (
+                          <tr
+                            key={caseObj.id}
+                            className={`cursor-pointer transition-colors ${checked ? "bg-blue-50" : "bg-white hover:bg-slate-50"}`}
+                            onClick={() => !criminalAssignSaving && toggleCriminalAssignmentCase(caseObj.id)}
+                          >
+                            <td className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={criminalAssignSaving}
+                                onChange={() => toggleCriminalAssignmentCase(caseObj.id)}
+                                onClick={(event) => event.stopPropagation()}
+                                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                              />
+                            </td>
+                            <td className="px-3 py-3 font-mono text-xs text-blue-700">{caseObj.case_number || "--"}</td>
+                            <td className="px-3 py-3">{caseObj.accused_service_number || "--"}</td>
+                            <td className="px-3 py-3">{caseObj.accused_rank || "--"}</td>
+                            <td className="px-3 py-3">{caseObj.accused_name || "--"}</td>
+                            <td className="px-3 py-3">{accusedUnitLabel(caseObj) || "--"}</td>
+                            <td className="px-3 py-3">{caseObj.offence_name || caseObj.offence || "--"}</td>
+                            <td className="px-3 py-3">
+                              <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                                {STATUS_CHIP_META[caseObj.status]?.label || caseObj.status || "--"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-slate-600">
+                {criminalAssignSelectedIds.size} selected
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={closeCriminalAssignmentModal}
+                  disabled={criminalAssignSaving}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={assignSelectedCasesToCriminalType}
+                  disabled={criminalAssignSaving || criminalAssignLoading || criminalAssignSelectedIds.size === 0}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {criminalAssignSaving ? "Adding..." : `Add to ${criminalAssignmentLabel}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCreate && (
         <div
           className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center overflow-y-auto py-8 px-4"

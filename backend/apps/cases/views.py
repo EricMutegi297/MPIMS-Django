@@ -1326,10 +1326,15 @@ class CaseViewSet(viewsets.ModelViewSet):
     def _can_edit_court_action_remarks(self, user, case_obj):
         if not user or not user.is_authenticated:
             return False
+        # Team IC or team members can edit court action remarks
         team = getattr(case_obj, "assigned_team", None)
         if team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()):
             return True
+        # Assigned investigator can edit
         if case_obj.assigned_to_id and case_obj.assigned_to_id == user.id:
+            return True
+        # Allow HQ Admins and superusers to edit action remarks
+        if user.is_superuser or is_hqs_admin(user):
             return True
         return False
 
