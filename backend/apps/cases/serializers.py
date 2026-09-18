@@ -648,6 +648,9 @@ class CaseSerializer(serializers.ModelSerializer):
             "clearance_certificate",
             "clearance_certificate_uploaded_by",
             "clearance_certificate_uploaded_at",
+            # Server-authoritative flag indicating a case is ready for an HQ explicit close action.
+            # Exposed read-only so clients can render a "Close Case" button but cannot set it.
+            "can_be_closed",
         ]
 
     def to_internal_value(self, data):
@@ -1307,6 +1310,14 @@ class CaseSerializer(serializers.ModelSerializer):
         if validated_data.get("rta_damage_authority"):
             validated_data["rta_damage_authority_uploaded_at"] = timezone.now()
         case = super().update(instance, validated_data)
+        # If the case was closed as part of this update, clear the can_be_closed flag
+        try:
+            if case.status == Case.Status.CLOSED and getattr(case, "can_be_closed", False):
+                case.can_be_closed = False
+                case.save(update_fields=["can_be_closed", "updated_at"])
+        except Exception:
+            # Defensive: if for any reason the model does not have can_be_closed, ignore
+            pass
         if accused_entries is not None:
             self._create_or_update_accused_entries(case, accused_entries)
         return case

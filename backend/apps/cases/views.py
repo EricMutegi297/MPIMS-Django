@@ -3500,6 +3500,24 @@ class CaseViewSet(viewsets.ModelViewSet):
             updated.action_recorded_by = request.user
             updated.action_recorded_at = timezone.now()
             updated.save(update_fields=["action_recorded_by", "action_recorded_at", "updated_at"])
+
+            # If this is a JUDGMENT milestone and the case is not already closed,
+            # mark the case as ready to be explicitly closed by HQ (can_be_closed=True).
+            try:
+                from apps.cases.models import CaseCourtMartialMilestone
+            except Exception:
+                CaseCourtMartialMilestone = None
+
+            if (
+                CaseCourtMartialMilestone
+                and getattr(updated, "milestone_type", None) == CaseCourtMartialMilestone.MilestoneType.JUDGMENT
+                and updated.action_recorded_at
+                and case.status != Case.Status.CLOSED
+            ):
+                # Set the flag without touching other fields
+                case.can_be_closed = True
+                case.save(update_fields=["can_be_closed", "updated_at"])
+
         self._log_action(
             case,
             request.user,

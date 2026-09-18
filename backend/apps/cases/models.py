@@ -193,6 +193,11 @@ class Case(models.Model):
     close_requested_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
+    # Indicates that a Court Martial Judgment milestone has an action recorded
+    # and the case is ready to be explicitly closed by an HQ admin. This is
+    # server-controlled and should only be set when a Judgment milestone action
+    # is recorded. It is cleared when the case is actually closed.
+    can_be_closed = models.BooleanField(default=False)
     served_abstract = models.FileField(upload_to=case_attachment_path, null=True, blank=True)
     abstract_acknowledged_at = models.DateTimeField(null=True, blank=True)
     abstract_acknowledged_by = models.ForeignKey(

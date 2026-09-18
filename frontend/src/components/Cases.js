@@ -5029,17 +5029,30 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                       <td className="px-4 py-2.5 whitespace-nowrap">
                         {canCloseServedCases ? (
                           // For Court Martial cases: if abstract is not yet acknowledged, keep Close disabled with tooltip.
-                          // If abstract is acknowledged, offer a 'Court Martial update' action that opens the case detail so the user can manage milestones.
+                          // If abstract is acknowledged, show a Close button to HQ when the server has marked the case can_be_closed.
+                          // Otherwise offer a 'Court Martial update' action that opens the case detail so the user can manage milestones.
                           c.criminal_offence_type === "court_martial" ? (
                             c.abstract_acknowledged_at ? (
-                              <button
-                                type="button"
-                                onClick={(e) => openCourtMartialProgressFromRow(c, e)}
-                                className="px-2.5 py-1 rounded text-xs font-medium bg-blue-700/80 hover:bg-blue-600 text-white transition-colors"
-                                title="Open Court Martial progress to add or edit milestones"
-                              >
-                                Court Martial update
-                              </button>
+                              // If the server indicates this case can be closed, HQ users see a Close button that opens the close modal.
+                              (c.can_be_closed && (isHqsAdmin || isSuperuser)) ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); openCourtCloseModal(c); }}
+                                  className="px-2.5 py-1 rounded text-xs font-medium bg-green-700/80 hover:bg-green-600 text-white transition-colors"
+                                  title="Close this Court Martial case"
+                                >
+                                  Close Case
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => openCourtMartialProgressFromRow(c, e)}
+                                  className="px-2.5 py-1 rounded text-xs font-medium bg-blue-700/80 hover:bg-blue-600 text-white transition-colors"
+                                  title="Open Court Martial progress to add or edit milestones"
+                                >
+                                  Court Martial update
+                                </button>
+                              )
                             ) : (
                               <button
                                 type="button"
