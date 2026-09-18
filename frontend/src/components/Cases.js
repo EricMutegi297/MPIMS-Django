@@ -2958,8 +2958,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       // the per-row action to Close when appropriate.
       try {
         const caseRes = await caseService.get(selected.id);
-        refreshSelected(caseRes.data);
-        setCases((prev) => prev.map((r) => (r.id === caseRes.data.id ? caseRes.data : r)));
+        const caseData = caseRes.data;
+        // Preserve current client-side status if server unexpectedly returned 'closed'
+        if (selected && selected.status && selected.status !== "closed" && caseData.status === "closed") {
+          caseData.status = selected.status;
+        }
+        refreshSelected(caseData);
+        setCases((prev) => prev.map((r) => (r.id === caseData.id ? caseData : r)));
       } catch (fetchErr) {
         // Non-fatal: preserve milestone success even if fetching the case failed.
         console.warn("Failed to refresh case after adding court milestone", fetchErr);
@@ -3018,8 +3023,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       // when a Judgment milestone with action_recorded_at has been recorded.
       try {
         const caseRes = await caseService.get(selected.id);
-        refreshSelected(caseRes.data);
-        setCases((prev) => prev.map((r) => (r.id === caseRes.data.id ? caseRes.data : r)));
+        const caseData = caseRes.data;
+        // Preserve current client-side status if server unexpectedly returned 'closed'
+        if (selected && selected.status && selected.status !== "closed" && caseData.status === "closed") {
+          caseData.status = selected.status;
+        }
+        refreshSelected(caseData);
+        setCases((prev) => prev.map((r) => (r.id === caseData.id ? caseData : r)));
       } catch (fetchErr) {
         console.warn("Failed to refresh case after saving milestone action", fetchErr);
       }
