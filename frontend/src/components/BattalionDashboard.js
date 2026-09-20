@@ -518,12 +518,19 @@ export default function BattalionDashboard({ user }) {
     setTaskingCase(true);
     setTaskError("");
     try {
-      await caseService.update(taskModal.id, { tasked_detachment: selDetachment });
+      await caseService.update(taskModal.id, { tasked_company: selDetachment });
       setTaskModal(null);
       loadCases();
       loadCounts();
     } catch (e) {
-      setTaskError(e?.response?.data?.detail || "Failed to task case to company.");
+      const responseData = e?.response?.data;
+      const validationMessage = responseData && typeof responseData === "object"
+        ? Object.values(responseData)
+          .flat()
+          .filter(Boolean)
+          .join(" ")
+        : "";
+      setTaskError(validationMessage || "Failed to task case to company.");
     } finally {
       setTaskingCase(false);
     }
@@ -850,7 +857,7 @@ export default function BattalionDashboard({ user }) {
                     </td>
                     {isNormalAdmin && (
                       <td className="px-3 md:px-5 py-3">
-                        {c.status === "tasked" && !c.tasked_detachment && (
+                        {c.status === "tasked" && !c.tasked_company && !c.tasked_detachment && (
                           <button
                             onClick={() => openTaskModal(c)}
                             className="px-3 py-1 text-xs rounded bg-yellow-600 hover:bg-yellow-500 text-white transition-colors"
@@ -858,7 +865,7 @@ export default function BattalionDashboard({ user }) {
                             Task to Coy
                           </button>
                         )}
-                        {c.tasked_detachment && (
+                        {(c.tasked_company || c.tasked_detachment) && (
                           <span className="text-xs text-gray-500 italic">
                             Coy tasked
                           </span>

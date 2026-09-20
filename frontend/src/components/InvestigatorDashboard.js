@@ -1673,7 +1673,7 @@ function UnderInvestigationTable({ cases, loading, emptyMsg, onAttach, onServe, 
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
             <th className="text-left px-3 py-3">Latest Update</th>
-            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Attachments</th>
             <th className="text-left px-3 py-3">Action</th>
           </tr>
         </thead>
@@ -1744,7 +1744,7 @@ function PendingTable({ cases, loading, emptyMsg, onAttach, onResume }) {
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
             <th className="text-left px-3 py-3">Latest Update</th>
-            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Attachments</th>
             <th className="text-left px-3 py-3">Reason for Pending</th>
             <th className="text-left px-3 py-3">Action</th>
           </tr>
@@ -1822,7 +1822,7 @@ function ServedTable({ cases, loading, emptyMsg, onAttach, onCloseCase, isHQAdmi
             <th className="text-left px-3 py-3">Description</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Update Date</th>
             <th className="text-left px-3 py-3">Latest Update</th>
-            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Attachments</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Date Served</th>
             <th className="text-left px-3 py-3">Remarks</th>
             <th className="text-left px-3 py-3">Action</th>
@@ -1885,7 +1885,7 @@ function ClosedTable({ cases, loading, emptyMsg, onAttach }) {
             <th className="text-left px-3 py-3">Unit</th>
             <th className="text-left px-3 py-3">Offence</th>
             <th className="text-left px-3 py-3">Description</th>
-            <th className="text-left px-3 py-3">Abstract</th>
+            <th className="text-left px-3 py-3">Attachments</th>
             <th className="text-left px-3 py-3 whitespace-nowrap">Date Closed</th>
             <th className="text-left px-3 py-3">Verdict</th>
           </tr>
@@ -2039,7 +2039,7 @@ function CasesTable({ cases, loading, emptyMsg, onAttach, isUnderInvestigation, 
             <th className="text-left px-4 py-3">Offence</th>
             <th className="text-left px-4 py-3">Description</th>
             <th className="text-left px-4 py-3">Status</th>
-            <th className="text-left px-4 py-3">Abstract</th>
+            <th className="text-left px-4 py-3">Attachments</th>
             <th className="text-left px-4 py-3">Date</th>
             <th className="text-left px-4 py-3">Actions</th>
           </tr>

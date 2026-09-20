@@ -18,7 +18,7 @@ from .models import (
     InvestigationTeam,
 )
 from apps.formations.models import Battalion, Unit
-from apps.users.access import is_hqs_admin
+from apps.users.access import is_hqs_admin, is_battalion_admin, is_detachment_ic
 from apps.users.models import User
 
 
@@ -385,7 +385,11 @@ class ExhibitStorageRequestSerializer(serializers.ModelSerializer):
         return obj.target_detachment.name if obj.target_detachment else None
 
     def get_target_detachment_battalion(self, obj):
-        return obj.target_detachment.battalion_id if obj.target_detachment else None
+        return (
+            obj.target_detachment.company.battalion_id
+            if obj.target_detachment and obj.target_detachment.company_id
+            else None
+        )
 
     def get_target_battalion_name(self, obj):
         return obj.target_battalion.name if obj.target_battalion else None
@@ -588,6 +592,7 @@ class CaseSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     tasked_battalion_name = serializers.SerializerMethodField()
+    tasked_company_name = serializers.SerializerMethodField()
     tasked_battalion_type = serializers.SerializerMethodField()
     offence_name = serializers.SerializerMethodField()
     accused_unit_name = serializers.SerializerMethodField()
@@ -693,11 +698,13 @@ class CaseSerializer(serializers.ModelSerializer):
             None,
         )
 
-    def _validate_assignment_scope(self, assigned_team, assigned_to, tasked_battalion, tasked_detachment):
+    def _validate_assignment_scope(self, assigned_team, assigned_to, tasked_battalion, tasked_company, tasked_detachment):
         errors = {}
 
         if assigned_team:
             if tasked_detachment and assigned_team.detachment_id != tasked_detachment.id:
+                errors["assigned_team"] = "Selected team must belong to the tasked detachment."
+            elif tasked_company and assigned_team.detachment_id and assigned_team.detachment.company_id != tasked_company.id:
                 errors["assigned_team"] = "Selected team must belong to the tasked company."
             elif tasked_battalion and self._team_battalion_id(assigned_team) != tasked_battalion.id:
                 errors["assigned_team"] = "Selected team must belong to the tasked battalion."
@@ -706,6 +713,8 @@ class CaseSerializer(serializers.ModelSerializer):
             if assigned_to.role != User.Role.INVESTIGATOR:
                 errors["assigned_to"] = "Select an active investigator as the IO."
             elif tasked_detachment and assigned_to.detachment_id != tasked_detachment.id:
+                errors["assigned_to"] = "Selected IO must belong to the tasked detachment."
+            elif tasked_company and assigned_to.detachment_id and assigned_to.detachment.company_id != tasked_company.id:
                 errors["assigned_to"] = "Selected IO must belong to the tasked company."
             elif tasked_battalion and self._user_battalion_id(assigned_to) != tasked_battalion.id:
                 errors["assigned_to"] = "Selected IO must belong to the tasked battalion."
@@ -870,6 +879,10 @@ class CaseSerializer(serializers.ModelSerializer):
             "tasked_battalion",
             getattr(instance, "tasked_battalion", None),
         )
+        tasked_company = attrs.get(
+            "tasked_company",
+            getattr(instance, "tasked_company", None),
+        )
         tasking_letter = attrs.get(
             "tasking_letter",
             getattr(instance, "tasking_letter", None),
@@ -947,9 +960,9 @@ class CaseSerializer(serializers.ModelSerializer):
             getattr(instance, "rta_damage_authority", None),
         )
         is_rta_case = self._is_rta_case(attrs, instance, offence_ref, offence_text)
-        tasking_requested = any(
+        battalion_task_requested = any(
             field in attrs
-            for field in ("tasked_battalion", "tasked_detachment", "tasking_letter", "tasking_date")
+            for field in ("tasked_battalion", "tasking_letter", "tasking_date", "tasking_no")
         )
 
         if instance and instance.status == Case.Status.CLOSED:
@@ -986,12 +999,12 @@ class CaseSerializer(serializers.ModelSerializer):
             attrs["status"] = Case.Status.NEW
             if not user or not user.is_authenticated:
                 raise serializers.ValidationError("Authentication is required.")
-            is_hqs_admin = (
+            hqs_admin_user = (
                 user.role == "admin"
                 and user.battalion
                 and user.battalion.battalion_type == Battalion.BattalionType.HQS
             )
-            if not (user.is_superuser or is_hqs_admin):
+            if not (user.is_superuser or hqs_admin_user):
                 raise serializers.ValidationError(
                     "Only a superuser or HQ battalion admin can create a new case."
                 )
@@ -1046,6 +1059,34 @@ class CaseSerializer(serializers.ModelSerializer):
                 {"tasked_battalion": "Cases can only be tasked to Special or Normal battalions."}
             )
 
+        if tasked_company and tasked_company.battalion_id != getattr(tasked_battalion, "id", getattr(instance, "tasked_battalion_id", None)):
+            raise serializers.ValidationError({"tasked_company": "The company must belong to the tasked battalion."})
+        if tasked_detachment and tasked_company and tasked_detachment.company_id != tasked_company.id:
+            raise serializers.ValidationError({"tasked_detachment": "The detachment must belong to the tasked company."})
+
+        if battalion_task_requested and user and user.is_authenticated:
+            if not (user.is_superuser or is_hqs_admin(user)):
+                raise serializers.ValidationError({"tasking": "Only HQS Admin can task a case to a battalion."})
+
+        company_task_requested = "tasked_company" in attrs
+        detachment_task_requested = "tasked_detachment" in attrs
+        if (company_task_requested or detachment_task_requested) and user and user.is_authenticated:
+            if user.is_superuser:
+                pass
+            elif is_battalion_admin(user):
+                if user.battalion_id != getattr(tasked_battalion, "id", None):
+                    raise serializers.ValidationError({"tasking": "You can only task cases within your battalion."})
+            elif is_detachment_ic(user):
+                detachment_company_id = getattr(getattr(user, "detachment", None), "company_id", None)
+                if not detachment_company_id:
+                    raise serializers.ValidationError({"tasking": "Detachment commanders must belong to a company before tasking a case to a detachment."})
+                if tasked_company and tasked_company.id != detachment_company_id:
+                    raise serializers.ValidationError({"tasking": "You can only task a case to a detachment within your company."})
+                if tasked_detachment and tasked_detachment.company_id != detachment_company_id:
+                    raise serializers.ValidationError({"tasking": "You can only task a case to a detachment within your company."})
+            else:
+                raise serializers.ValidationError({"tasking": "Only a Battalion Admin or Detachment Commander can task a case to a company or detachment."})
+
         if rfi_document:
             rfi_errors = {}
             if self._blank(rfi_no):
@@ -1089,7 +1130,9 @@ class CaseSerializer(serializers.ModelSerializer):
                 attrs["close_requested_at"] = timezone.now()
                 close_requested = True
 
-        tasking_validation_requested = tasking_requested or (status_in_payload and target_status == Case.Status.TASKED)
+        tasking_validation_requested = battalion_task_requested or (
+            status_in_payload and target_status == Case.Status.TASKED
+        )
         if tasking_validation_requested and not tasked_battalion:
             raise serializers.ValidationError(
                 {"tasked_battalion": "Select a battalion before completing tasking."}
@@ -1111,7 +1154,7 @@ class CaseSerializer(serializers.ModelSerializer):
             )
 
         if (
-            tasking_requested
+            battalion_task_requested
             and tasked_battalion
             and tasking_letter
             and tasking_date
@@ -1136,16 +1179,19 @@ class CaseSerializer(serializers.ModelSerializer):
             assigned_team = None
 
         if assignment_requested and user and user.is_authenticated:
-            can_assign_case = (
-                user.is_superuser
-                or user.role in {User.Role.ADMIN, User.Role.CO, User.Role.DETACHMENT}
-            )
+            can_assign_case = user.is_superuser or is_battalion_admin(user) or is_detachment_ic(user)
             if not can_assign_case:
                 raise serializers.ValidationError({"assignment": "You are not allowed to assign cases for investigation."})
+            if is_detachment_ic(user):
+                if not tasked_detachment or user.detachment_id != tasked_detachment.id:
+                    raise serializers.ValidationError({"assignment": "Detachment commanders can only assign cases within their own detachment."})
+            elif is_battalion_admin(user) and tasked_company and tasked_company.battalion_id != user.battalion_id:
+                raise serializers.ValidationError({"assignment": "You can only assign cases within your battalion."})
             self._validate_assignment_scope(
                 assigned_team,
                 assigned_to,
                 tasked_battalion,
+                tasked_company,
                 tasked_detachment,
             )
 
@@ -1342,6 +1388,9 @@ class CaseSerializer(serializers.ModelSerializer):
 
     def get_tasked_battalion_name(self, obj):
         return obj.tasked_battalion.name if obj.tasked_battalion else None
+
+    def get_tasked_company_name(self, obj):
+        return obj.tasked_company.name if obj.tasked_company else None
 
     def get_tasked_battalion_type(self, obj):
         return obj.tasked_battalion.battalion_type if obj.tasked_battalion else None

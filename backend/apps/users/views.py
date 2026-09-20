@@ -85,7 +85,7 @@ def battalion_admin_can_assign_unit(actor, unit):
     from apps.cases.models import Case
 
     return Case.objects.filter(
-        Q(tasked_battalion_id=actor.battalion_id) | Q(tasked_detachment__battalion_id=actor.battalion_id),
+        Q(tasked_battalion_id=actor.battalion_id) | Q(tasked_detachment__company__battalion_id=actor.battalion_id),
     ).filter(
         Q(accused_unit=unit) | Q(accused_entries__unit=unit)
     ).exists()
@@ -1200,6 +1200,16 @@ class UserListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         actor = self.request.user
         new_role = serializer.validated_data.get("role", "")
+        detachment = serializer.validated_data.get("detachment")
+
+        if detachment and not is_battalion_admin(actor):
+            raise PermissionDenied(
+                "Detachment Commander and detachment user accounts can only be created by the admin of the owning battalion."
+            )
+        if new_role == User.Role.DETACHMENT and not is_battalion_admin(actor):
+            raise PermissionDenied(
+                "Detachment Commander accounts can only be created by the admin of the owning battalion."
+            )
 
         if new_role == User.Role.CORPS_CMD and not can_manage_corps_commander_account(actor):
             raise PermissionDenied(CORPS_COMMANDER_MANAGEMENT_ERROR)
@@ -1216,9 +1226,8 @@ class UserListCreateView(generics.ListCreateAPIView):
                 enforce_docus_clerk_unit_limit(unit, actor)
             if unit and not battalion_admin_can_assign_unit(actor, unit):
                 raise PermissionDenied("Battalion admin can only assign users to their battalion units or accused units in tasked cases.")
-            detachment = serializer.validated_data.get("detachment")
-            if detachment and detachment.battalion_id != actor.battalion_id:
-                raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
+            if detachment and detachment.company.battalion_id != actor.battalion_id:
+                raise PermissionDenied("Battalion admin can only create detachment users in their battalion.")
             return serializer.save(battalion=actor.battalion)
         if is_docus_clerk(actor):
             if new_role not in DOCUS_CLERK_ROLES:
@@ -1269,8 +1278,8 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
                 raise PermissionDenied("Cannot move users outside your battalion.")
             if unit and not battalion_admin_can_assign_unit(actor, unit):
                 raise PermissionDenied("Cannot move users outside your battalion units or accused units in tasked cases.")
-            if detachment and detachment.battalion_id != actor.battalion_id:
-                raise PermissionDenied("Battalion admin can only assign users to companies in their battalion.")
+            if detachment and detachment.company.battalion_id != actor.battalion_id:
+                raise PermissionDenied("Battalion admin can only manage detachment users in their battalion.")
             serializer.save(battalion=actor.battalion)
             return
 
@@ -1328,4 +1337,3 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             return
         else:
             raise PermissionDenied("You do not have permission to manage users.")
-

@@ -208,10 +208,15 @@ export const formationService = {
   createUnit: (data) => api.post("/api/formations/units/", data),
   updateUnit: (id, data) => api.patch(`/api/formations/units/${id}/`, data),
   deleteUnit: (id) => api.delete(`/api/formations/units/${id}/`),
-  detachments: (params) => api.get("/api/formations/detachments/", { params }),
+  companies: (params) => api.get("/api/formations/companies/", { params }),
+  detachments: (params) => api.get("/api/formations/companies/", { params }),
+  subDetachments: (params) => api.get("/api/formations/detachments/", { params }),
   createDetachment: (data) => api.post("/api/formations/detachments/", data),
   updateDetachment: (id, data) => api.patch(`/api/formations/detachments/${id}/`, data),
   deleteDetachment: (id) => api.delete(`/api/formations/detachments/${id}/`),
+  createCompany: (data) => api.post("/api/formations/companies/", data),
+  updateCompany: (id, data) => api.patch(`/api/formations/companies/${id}/`, data),
+  deleteCompany: (id) => api.delete(`/api/formations/companies/${id}/`),
 };
 
 export const userService = {

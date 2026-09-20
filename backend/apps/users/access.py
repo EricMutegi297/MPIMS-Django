@@ -113,7 +113,7 @@ def battalion_scope_q(user, battalion_field=None, unit_field=None, detachment_fi
     if unit_field:
         terms.append(Q(**{f"{unit_field}__battalion_id": battalion_id}))
     if detachment_field:
-        terms.append(Q(**{f"{detachment_field}__battalion_id": battalion_id}))
+        terms.append(Q(**{f"{detachment_field}__company__battalion_id": battalion_id}))
     if not terms:
         return Q(pk__in=[])
     query = terms[0]

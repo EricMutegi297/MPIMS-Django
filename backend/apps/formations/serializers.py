@@ -1,9 +1,31 @@
 from rest_framework import serializers
-from .models import Formation, Battalion, Unit, Detachment
+from .models import Formation, Battalion, Unit, Company, Detachment
 
 
 class DetachmentSerializer(serializers.ModelSerializer):
     case_count = serializers.IntegerField(read_only=True)
+    company_name = serializers.CharField(source="company.name", read_only=True)
+    company_code = serializers.CharField(source="company.company", read_only=True)
+    battalion = serializers.IntegerField(source="company.battalion_id", read_only=True)
+    battalion_name = serializers.CharField(source="company.battalion.name", read_only=True)
+
+    class Meta:
+        model = Detachment
+        fields = [
+            "id", "company", "company_name", "company_code", "battalion",
+            "battalion_name", "name", "aor", "mobile_no", "email", "case_count",
+        ]
+        extra_kwargs = {
+            "aor": {"required": False, "allow_blank": True},
+            "mobile_no": {"required": False, "allow_blank": True},
+            "email": {"required": False, "allow_blank": True},
+        }
+
+
+class CompanySerializer(serializers.ModelSerializer):
+    detachments = DetachmentSerializer(many=True, read_only=True)
+    case_count = serializers.IntegerField(read_only=True)
+    battalion_name = serializers.CharField(source="battalion.name", read_only=True)
 
     def validate_battalion(self, battalion):
         if battalion.battalion_type != Battalion.BattalionType.NORMAL:
@@ -13,8 +35,11 @@ class DetachmentSerializer(serializers.ModelSerializer):
         return battalion
 
     class Meta:
-        model = Detachment
-        fields = ["id", "battalion", "company", "name", "aor", "mobile_no", "email", "case_count"]
+        model = Company
+        fields = [
+            "id", "battalion", "battalion_name", "company", "name", "aor",
+            "mobile_no", "email", "case_count", "detachments",
+        ]
         extra_kwargs = {
             "aor": {"required": False, "allow_blank": True},
             "mobile_no": {"required": False, "allow_blank": True},
@@ -53,7 +78,8 @@ class UnitSerializer(serializers.ModelSerializer):
 
 
 class BattalionSerializer(serializers.ModelSerializer):
-    detachments = DetachmentSerializer(many=True, read_only=True)
+    companies = CompanySerializer(many=True, read_only=True)
+    detachments = CompanySerializer(source="companies", many=True, read_only=True)
     case_count = serializers.IntegerField(read_only=True)
     formation_name = serializers.SerializerMethodField()
 
@@ -64,7 +90,7 @@ class BattalionSerializer(serializers.ModelSerializer):
         model = Battalion
         fields = [
             "id", "name", "email", "phone", "aor", "code",
-            "battalion_type", "formation", "formation_name", "detachments", "case_count",
+            "battalion_type", "formation", "formation_name", "companies", "detachments", "case_count",
         ]
         extra_kwargs = {
             "formation": {"required": False, "allow_null": True},

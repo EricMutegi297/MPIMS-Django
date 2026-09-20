@@ -129,6 +129,13 @@ class Case(models.Model):
         on_delete=models.SET_NULL,
         related_name="tasked_cases",
     )
+    tasked_company = models.ForeignKey(
+        "formations.Company",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tasked_cases",
+    )
     assigned_to = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True, blank=True,

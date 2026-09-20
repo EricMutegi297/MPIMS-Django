@@ -14,6 +14,7 @@ class UserSerializer(serializers.ModelSerializer):
     battalion_name = serializers.SerializerMethodField()
     battalion_type = serializers.SerializerMethodField()
     detachment_name = serializers.SerializerMethodField()
+    company_id = serializers.SerializerMethodField()
     is_superuser = serializers.SerializerMethodField()
     totp_configured = serializers.SerializerMethodField()
     totp_required = serializers.SerializerMethodField()
@@ -24,6 +25,7 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
             "unit_name", "battalion_name", "battalion_type", "detachment_name",
+            "company_id",
             "is_active", "is_superuser", "must_change_password",
             "mfa_exempt", "email_otp_enabled",
             "totp_configured", "totp_required",
@@ -42,6 +44,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_detachment_name(self, obj):
         return obj.detachment.name if obj.detachment else None
+
+    def get_company_id(self, obj):
+        return obj.detachment.company_id if obj.detachment else None
 
     def get_is_superuser(self, obj):
         return bool(obj.is_superuser)
@@ -103,7 +108,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"unit": "Unit must belong to the selected battalion."}
             )
-        if battalion and detachment and detachment.battalion_id != battalion.id:
+        if battalion and detachment and detachment.company.battalion_id != battalion.id:
             raise serializers.ValidationError(
                 {"detachment": "Company must belong to the selected battalion."}
             )

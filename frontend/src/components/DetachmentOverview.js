@@ -1,18 +1,10 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import api from "../axiosConfig";
 import { caseService, formationService } from "../services/api";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import AddAnotherModal from "./common/AddAnotherModal";
 import { caseAccusedUnitLabel } from "../utils/caseTypes";
 
 /* ─────────────────────── constants ────────────────────────────── */
-
-const STATUS_PILL = {
-  tasked:              "bg-yellow-500/20 text-yellow-300",
-  under_investigation: "bg-indigo-500/20 text-indigo-300",
-  pending:             "bg-orange-500/20  text-orange-300",
-  closed:              "bg-green-500/20   text-green-300",
-};
 
 const STATUS_STYLE = {
   new:                 "bg-gray-500/20   text-gray-300",
@@ -54,18 +46,6 @@ function battalionAllowsCompanies(battalion) {
   return String(battalion?.battalion_type || "normal").toLowerCase() === "normal";
 }
 
-function ClickPill({ value, style, onClick, title }) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold transition-opacity hover:opacity-70 cursor-pointer ${style}`}
-    >
-      {value ?? 0}
-    </button>
-  );
-}
-
 function Badge({ label }) {
   return (
     <span
@@ -103,7 +83,10 @@ function DrilldownPanel({ drill, onClose }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = { tasked_detachment: drill.detId, page_size: 200 };
+      const params = {
+        [drill.isChild ? "tasked_detachment" : "tasked_company"]: drill.detId,
+        page_size: 200,
+      };
       if (statusFilter !== "all") params.status = statusFilter;
       const res = await caseService.list(params);
       setCases(toArray(res.data));
@@ -112,7 +95,7 @@ function DrilldownPanel({ drill, onClose }) {
     } finally {
       setLoading(false);
     }
-  }, [drill.detId, statusFilter]);
+  }, [drill.detId, drill.isChild, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -367,7 +350,6 @@ function CaseTableHead() {
 export default function DetachmentOverview({ user }) {
   const isSuperuser = Boolean(user?.is_superuser);
   const initialBattalion = String(user?.battalion ?? user?.battalion_id ?? "");
-  const [data, setData]                         = useState(null);
   const [loading, setLoading]                   = useState(true);
   const [error, setError]                       = useState("");
   const [message, setMessage]                   = useState("");
@@ -378,6 +360,12 @@ export default function DetachmentOverview({ user }) {
   const [companyModal, setCompanyModal]         = useState(null);
   const [companySaving, setCompanySaving]       = useState(false);
   const [companyDeleteId, setCompanyDeleteId]   = useState(null);
+  const [detachmentModal, setDetachmentModal]   = useState(null);
+  const [detachmentSaving, setDetachmentSaving] = useState(false);
+  const [detachmentDeleteId, setDetachmentDeleteId] = useState(null);
+  const [detachmentRows, setDetachmentRows] = useState([]);
+  const [detachmentSearch, setDetachmentSearch] = useState("");
+  const [selectedCompany, setSelectedCompany] = useState("");
   const [addAnotherPrompt, setAddAnotherPrompt] = useState(null);
   useAutoDismiss(message, setMessage);
   useAutoDismiss(error, setError);
@@ -385,6 +373,17 @@ export default function DetachmentOverview({ user }) {
   const selectedBattalionId = String(selectedBattalion || "");
   const selectedBattalionRecord = battalions.find((b) => String(b.id) === selectedBattalionId);
   const canManageCompanies = isSuperuser && selectedBattalionId && battalionAllowsCompanies(selectedBattalionRecord);
+  const canManageDetachments = Boolean(
+    selectedBattalionId
+    && battalionAllowsCompanies(selectedBattalionRecord)
+    && (
+      isSuperuser
+      || (
+        user?.role === "admin"
+        && String(user?.battalion ?? user?.battalion_id ?? "") === selectedBattalionId
+      )
+    )
+  );
 
   const loadBattalionOptions = useCallback(async () => {
     setBattalionLoading(true);
@@ -406,44 +405,33 @@ export default function DetachmentOverview({ user }) {
     }
   }, []);
 
-  useEffect(() => {
-    if (!isSuperuser) return;
-    loadBattalionOptions();
-  }, [isSuperuser, loadBattalionOptions]);
+  useEffect(() => { loadBattalionOptions(); }, [loadBattalionOptions]);
 
-  const load = useCallback(async () => {
-    if (isSuperuser && !selectedBattalionId) {
-      setData({ detachments: [] });
+  const loadDetachments = useCallback(async () => {
+    setLoading(true);
+    if (!selectedBattalionId) {
+      setDetachmentRows([]);
       setLoading(false);
       return;
     }
-    setLoading(true);
-    setError("");
     try {
-      const params = isSuperuser ? { battalion: selectedBattalionId } : undefined;
-      const res = await api.get("/api/cases/detachment-summary/", { params });
-      setData(res.data);
-    } catch (e) {
-      setError(
-        e?.response?.data?.detail ||
-        "Failed to load company summary. Check your permissions."
-      );
+      const res = await formationService.subDetachments({
+        "company__battalion": selectedBattalionId,
+        page_size: 500,
+      });
+      setDetachmentRows(toArray(res.data));
+    } catch {
+      setError("Failed to load detachments.");
+      setDetachmentRows([]);
     } finally {
       setLoading(false);
     }
-  }, [isSuperuser, selectedBattalionId]);
+  }, [selectedBattalionId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadDetachments(); }, [loadDetachments]);
 
-  const detachments = data?.detachments ?? [];
-  const totalTasked   = detachments.reduce((s, d) => s + (d.tasked || 0), 0);
-  const totalUnderInv = detachments.reduce((s, d) => s + (d.under_investigation || 0), 0);
-  const totalPending  = detachments.reduce((s, d) => s + (d.pending || 0), 0);
-  const totalClosed   = detachments.reduce((s, d) => s + (d.closed || 0), 0);
-  const grandTotal    = detachments.reduce((s, d) => s + (d.total || 0), 0);
-
-  const openDrill = (det, status) =>
-    setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status });
+  const openDrill = (det, status, isChild = false) =>
+    setDrill({ detId: det.id, detName: companyLabel(det), company: det.company, status, isChild });
 
   const confirmAddAnother = () => {
     const nextAction = addAnotherPrompt?.onAddAnother;
@@ -496,7 +484,6 @@ export default function DetachmentOverview({ user }) {
         await formationService.createDetachment(payload);
         setMessage("Company created.");
       }
-      await load();
       await loadBattalionOptions();
       if (adding) {
         setCompanyModal(null);
@@ -536,12 +523,88 @@ export default function DetachmentOverview({ user }) {
       await formationService.deleteDetachment(companyDeleteId);
       setCompanyDeleteId(null);
       setMessage("Company deleted.");
-      await load();
       await loadBattalionOptions();
     } catch {
       setError("Failed to delete company.");
     }
   };
+
+  const openDetachmentModal = (company, detachment = null) => {
+    setDetachmentModal(detachment ? {
+      mode: "edit",
+      id: detachment.id,
+      company: company.id,
+      companyName: `${company.company} Coy - ${company.name}`,
+      name: detachment.name || "",
+      aor: detachment.aor || "",
+      mobile_no: detachment.mobile_no || "",
+      email: detachment.email || "",
+    } : {
+      mode: "add",
+      company: company.id,
+      companyName: `${company.company} Coy - ${company.name}`,
+      name: "",
+      aor: "",
+      mobile_no: "",
+      email: "",
+    });
+  };
+
+  const saveDetachment = async (form) => {
+    setDetachmentSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = {
+        company: Number(form.company),
+        name: form.name.trim(),
+        aor: form.aor || "",
+        mobile_no: form.mobile_no || "",
+        email: form.email || "",
+      };
+      if (form.mode === "edit") {
+        await formationService.updateDetachment(form.id, payload);
+        setMessage("Detachment updated.");
+      } else {
+        await formationService.createDetachment(payload);
+        setMessage("Detachment created.");
+      }
+      setDetachmentModal(null);
+      await loadDetachments();
+      await loadBattalionOptions();
+    } catch (err) {
+      const d = err.response?.data;
+      setError(d?.company?.[0] || d?.name?.[0] || d?.detail || "Failed to save detachment.");
+    } finally {
+      setDetachmentSaving(false);
+    }
+  };
+
+  const deleteDetachment = async () => {
+    try {
+      await formationService.deleteDetachment(detachmentDeleteId);
+      setDetachmentDeleteId(null);
+      setMessage("Detachment deleted.");
+      await loadDetachments();
+      await loadBattalionOptions();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Failed to delete detachment.");
+    }
+  };
+
+  const availableCompanies = selectedBattalionRecord?.companies || selectedBattalionRecord?.detachments || [];
+  const visibleDetachments = detachmentRows.filter((detachment) => {
+    const matchesCompany = !selectedCompany || String(detachment.company) === String(selectedCompany);
+    const query = detachmentSearch.trim().toLowerCase();
+    const text = [
+      detachment.name,
+      detachment.aor,
+      detachment.company_name,
+      detachment.company_code,
+      detachment.battalion_name,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return matchesCompany && (!query || text.includes(query));
+  });
 
   return (
     <div className="p-4 md:p-6 min-h-screen bg-gray-900 space-y-6">
@@ -549,9 +612,9 @@ export default function DetachmentOverview({ user }) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">Companies Overview</h2>
+          <h2 className="text-2xl font-bold text-white">Detachments Directory</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            Click any count or company name to drill into the cases
+            Browse detachments by Battalion and Company, then drill into their cases
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -573,6 +636,20 @@ export default function DetachmentOverview({ user }) {
               ))}
             </select>
           )}
+          {canManageDetachments && (
+            <button
+              type="button"
+              onClick={() => {
+                const company = availableCompanies.find((item) => String(item.id) === String(selectedCompany));
+                if (company) openDetachmentModal(company);
+              }}
+              disabled={!selectedCompany}
+              className="h-9 rounded-lg bg-emerald-600 px-3 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-40"
+              title="Select a company before adding a detachment"
+            >
+              + Add Detachment
+            </button>
+          )}
           {isSuperuser && (
             <button
               type="button"
@@ -585,7 +662,7 @@ export default function DetachmentOverview({ user }) {
             </button>
           )}
           <button
-            onClick={load}
+            onClick={loadDetachments}
             disabled={loading || (isSuperuser && !selectedBattalionId)}
             className="p-2 rounded-lg bg-gray-800 border border-gray-700 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors disabled:opacity-40"
             title="Refresh"
@@ -595,46 +672,86 @@ export default function DetachmentOverview({ user }) {
         </div>
       </div>
 
-      {/* Summary cards */}
-      {!loading && !error && detachments.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <SummaryCard
-            label="Companies"
-            value={detachments.length}
-            accent="bg-blue-500/10"
-            textColor="text-blue-400"
-            icon={BuildingIcon}
-          />
-          <SummaryCard
-            label="Tasked"
-            value={totalTasked}
-            accent="bg-yellow-500/10"
-            textColor="text-yellow-400"
-            icon={TaskedIcon}
-          />
-          <SummaryCard
-            label="Under Investigation"
-            value={totalUnderInv}
-            accent="bg-indigo-500/10"
-            textColor="text-indigo-400"
-            icon={MagnifyIcon}
-          />
-          <SummaryCard
-            label="Pending"
-            value={totalPending}
-            accent="bg-orange-500/10"
-            textColor="text-orange-400"
-            icon={ClockIcon}
-          />
-          <SummaryCard
-            label="Closed"
-            value={totalClosed}
-            accent="bg-green-500/10"
-            textColor="text-green-400"
-            icon={CheckIcon}
-          />
+      {/* Detachment directory */}
+      <div className="overflow-hidden rounded-xl bg-gray-800">
+        <div className="border-b border-gray-700/60 px-4 py-4 sm:px-5">
+          <div className="flex flex-col gap-1">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-300">Available Detachments</h3>
+            <p className="text-xs text-gray-500">{visibleDetachments.length} of {detachmentRows.length} detachments</p>
+          </div>
+          <div className="mt-4 grid w-full grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
+            <input
+              type="search"
+              value={detachmentSearch}
+              onChange={(event) => setDetachmentSearch(event.target.value)}
+              placeholder="Search name, AOR, company..."
+              className="h-10 min-w-0 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 text-sm text-white outline-none focus:border-blue-500"
+            />
+            <select
+              value={selectedCompany}
+              onChange={(event) => setSelectedCompany(event.target.value)}
+              className="h-10 min-w-0 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 text-sm text-gray-200 outline-none focus:border-blue-500"
+            >
+              <option value="">All Companies</option>
+              {availableCompanies.map((company) => (
+                <option key={company.id} value={String(company.id)}>
+                  {company.company} Coy - {company.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      )}
+          {visibleDetachments.length === 0 ? (
+            <p className="p-8 text-center text-sm text-gray-500">
+              {detachmentRows.length ? "No detachments match the selected filters." : "No detachments available under this Battalion."}
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full table-fixed text-sm">
+                <thead>
+                  <tr className="border-b border-gray-700 text-left text-xs uppercase tracking-wider text-gray-500">
+                    <th className="w-[20%] px-3 py-3 sm:px-5">Detachment</th>
+                    <th className="w-[25%] px-3 py-3 sm:px-5">Company</th>
+                    <th className="w-[18%] px-3 py-3 sm:px-5">Battalion</th>
+                    <th className="w-[17%] px-3 py-3 sm:px-5">AOR</th>
+                    <th className="w-[10%] px-3 py-3 text-center sm:px-5">Cases</th>
+                    <th className="w-[10%] px-3 py-3 text-right sm:px-5">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleDetachments.map((detachment) => {
+                    const company = availableCompanies.find((item) => String(item.id) === String(detachment.company)) || {
+                      id: detachment.company,
+                      company: detachment.company_code,
+                      name: detachment.company_name,
+                    };
+                    return (
+                      <tr key={detachment.id} className="border-b border-gray-700/40 hover:bg-gray-700/20">
+                        <td className="break-words px-3 py-3 font-medium text-white sm:px-5">{detachment.name}</td>
+                        <td className="break-words px-3 py-3 text-gray-300 sm:px-5">{detachment.company_code} Coy - {detachment.company_name}</td>
+                        <td className="break-words px-3 py-3 text-gray-400 sm:px-5">{detachment.battalion_name}</td>
+                        <td className="break-words px-3 py-3 text-gray-400 sm:px-5">{detachment.aor || "--"}</td>
+                        <td className="px-3 py-3 text-center sm:px-5">
+                          <button type="button" onClick={() => openDrill({ ...detachment, name: detachment.name }, "all", true)} className="text-blue-400 hover:text-blue-300">
+                            {detachment.case_count || 0}
+                          </button>
+                        </td>
+                        <td className="px-3 py-3 text-right sm:px-5">
+                          {canManageDetachments && (
+                            <span className="inline-flex gap-3">
+                              <button type="button" onClick={() => openDetachmentModal(company, detachment)} className="text-blue-400 hover:text-blue-300">Edit</button>
+                              <button type="button" onClick={() => setDetachmentDeleteId(detachment.id)} className="text-red-400 hover:text-red-300">Delete</button>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
 
       {/* Error */}
       {error && (
@@ -646,175 +763,6 @@ export default function DetachmentOverview({ user }) {
         <div className="bg-green-900/30 border border-green-700/50 rounded-xl p-5 text-green-300 text-sm">
           {message}
         </div>
-      )}
-
-      {/* Summary table */}
-      <div className="bg-gray-800 rounded-xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700/60">
-          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-            Company Case Summary
-          </h3>
-          {!loading && (
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-gray-700 text-gray-400">
-              {detachments.length} compan{detachments.length !== 1 ? "ies" : "y"}
-            </span>
-          )}
-        </div>
-
-        {loading ? (
-          <table className="w-full text-sm">
-            <SummaryTableHead showActions={canManageCompanies} />
-            <tbody>
-              {[1, 2, 3, 4].map((i) => (
-                <SkeletonRow key={i} cols={canManageCompanies ? 8 : 7} />
-              ))}
-            </tbody>
-          </table>
-        ) : !error && detachments.length === 0 ? (
-          <p className="p-6 text-gray-500 text-sm text-center">
-            No companies found under your battalion.
-          </p>
-        ) : !error ? (
-          <table className="w-full text-sm">
-            <SummaryTableHead showActions={canManageCompanies} />
-            <tbody>
-              {detachments.map((det) => (
-                <tr
-                  key={det.id}
-                  className="border-b border-gray-700/40 hover:bg-gray-700/20 transition-colors"
-                >
-                  {/* name → all cases */}
-                  <td className="px-5 py-3">
-                    <button
-                      onClick={() => openDrill(det, "all")}
-                      className="text-gray-200 font-medium hover:text-blue-400 transition-colors text-left"
-                    >
-                      {det.company ? `${det.company} Coy` : "Coy"}
-                    </button>
-                  </td>
-
-                  {/* company badge */}
-                  <td className="px-5 py-3 text-gray-400 text-center">
-                    <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-300 text-xs">
-                      {det.name || "--"}
-                    </span>
-                  </td>
-
-                  {/* under investigation */}
-                  <td className="px-5 py-3 text-center">
-                    <ClickPill
-                      value={det.tasked}
-                      style={STATUS_PILL.tasked}
-                      title={`${det.tasked} tasked — click to view`}
-                      onClick={() => openDrill(det, "tasked")}
-                    />
-                  </td>
-
-                  {/* under investigation */}
-                  <td className="px-5 py-3 text-center">
-                    <ClickPill
-                      value={det.under_investigation}
-                      style={STATUS_PILL.under_investigation}
-                      title={`${det.under_investigation} under investigation — click to view`}
-                      onClick={() => openDrill(det, "under_investigation")}
-                    />
-                  </td>
-
-                  {/* pending */}
-                  <td className="px-5 py-3 text-center">
-                    <ClickPill
-                      value={det.pending}
-                      style={STATUS_PILL.pending}
-                      title={`${det.pending} pending — click to view`}
-                      onClick={() => openDrill(det, "pending")}
-                    />
-                  </td>
-
-                  {/* closed */}
-                  <td className="px-5 py-3 text-center">
-                    <ClickPill
-                      value={det.closed}
-                      style={STATUS_PILL.closed}
-                      title={`${det.closed} closed — click to view`}
-                      onClick={() => openDrill(det, "closed")}
-                    />
-                  </td>
-
-                  {/* total → all */}
-                  <td className="px-5 py-3 text-center">
-                    <button
-                      onClick={() => openDrill(det, "all")}
-                      className="text-white font-semibold hover:text-blue-400 transition-colors"
-                      title="View all cases for this company"
-                    >
-                      {det.total ?? 0}
-                    </button>
-                  </td>
-                  {canManageCompanies && (
-                    <td className="px-5 py-3">
-                      <div className="flex items-center justify-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => openCompanyModal(det)}
-                          className="text-xs font-medium text-blue-400 transition-colors hover:text-blue-300"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setCompanyDeleteId(det.id)}
-                          className="text-xs font-medium text-red-400 transition-colors hover:text-red-300"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  )}
-                </tr>
-              ))}
-
-              {/* totals footer */}
-              <tr className="border-t-2 border-gray-600 bg-gray-700/40">
-                <td
-                  className="px-5 py-3 text-gray-400 font-semibold text-xs uppercase tracking-wider"
-                  colSpan={2}
-                >
-                  Total
-                </td>
-                <td className="px-5 py-3 text-center">
-                  <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_PILL.tasked}`}>
-                    {totalTasked}
-                  </span>
-                </td>
-                <td className="px-5 py-3 text-center">
-                  <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_PILL.under_investigation}`}>
-                    {totalUnderInv}
-                  </span>
-                </td>
-                <td className="px-5 py-3 text-center">
-                  <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_PILL.pending}`}>
-                    {totalPending}
-                  </span>
-                </td>
-                <td className="px-5 py-3 text-center">
-                  <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_PILL.closed}`}>
-                    {totalClosed}
-                  </span>
-                </td>
-                <td className="px-5 py-3 text-center">
-                  <span className="text-white font-bold">{grandTotal}</span>
-                </td>
-                {canManageCompanies && <td className="px-5 py-3" />}
-              </tr>
-            </tbody>
-          </table>
-        ) : null}
-      </div>
-
-      {!loading && !error && detachments.length > 0 && (
-        <p className="text-xs text-gray-600 text-center">
-          Click any count or company name to drill down. Use the Print button inside the panel to export.
-        </p>
       )}
 
       {/* Drilldown panel */}
@@ -837,6 +785,24 @@ export default function DetachmentOverview({ user }) {
           label="company"
           onConfirm={deleteCompany}
           onCancel={() => setCompanyDeleteId(null)}
+        />
+      )}
+      {detachmentModal && (
+        <DetachmentCreateModal
+          key={`${detachmentModal.mode}-${detachmentModal.id || "new"}`}
+          mode={detachmentModal.mode}
+          companyName={detachmentModal.companyName}
+          initial={detachmentModal}
+          saving={detachmentSaving}
+          onSave={saveDetachment}
+          onClose={() => setDetachmentModal(null)}
+        />
+      )}
+      {detachmentDeleteId && (
+        <ConfirmDelete
+          label="detachment"
+          onConfirm={deleteDetachment}
+          onCancel={() => setDetachmentDeleteId(null)}
         />
       )}
       {addAnotherPrompt && (
@@ -905,6 +871,46 @@ function CompanyCreateModal({ mode = "add", battalionName, initial, saving, onSa
   );
 }
 
+function DetachmentCreateModal({ mode = "add", companyName, initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md rounded-xl bg-gray-800 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-gray-700 px-6 py-4">
+          <h3 className="text-base font-semibold text-white">
+            {mode === "add" ? "Add Detachment" : "Edit Detachment"}
+          </h3>
+          <button type="button" onClick={onClose} className="text-lg text-gray-400 hover:text-white">x</button>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3 px-6 py-4">
+          <div>
+            <label className="text-xs text-gray-400">Company</label>
+            <div className="mt-1 rounded border border-gray-700 bg-gray-900/50 px-3 py-2 text-sm text-gray-200">
+              {companyName}
+            </div>
+          </div>
+          <CompanyInput label="Detachment Name *" value={form.name || ""} onChange={s("name")} required />
+          <CompanyInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
+          <CompanyInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+          <CompanyInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+            <button
+              type="submit"
+              disabled={saving || !form.company || !form.name?.trim()}
+              className="rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {saving ? "Saving..." : mode === "add" ? "Create" : "Save Changes"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ConfirmDelete({ label, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -935,80 +941,13 @@ function CompanyInput({ label, type = "text", value, onChange, required }) {
   );
 }
 
-function SummaryTableHead({ showActions = false }) {
-  return (
-    <thead>
-      <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-700">
-        <th className="text-left   px-5 py-3 font-medium">Company</th>
-        <th className="text-center px-5 py-3 font-medium">Name</th>
-        <th className="text-center px-5 py-3 font-medium">Tasked</th>
-        <th className="text-center px-5 py-3 font-medium">Under Investigation</th>
-        <th className="text-center px-5 py-3 font-medium">Pending</th>
-        <th className="text-center px-5 py-3 font-medium">Closed</th>
-        <th className="text-center px-5 py-3 font-medium">Total Cases</th>
-        {showActions && <th className="text-center px-5 py-3 font-medium">Actions</th>}
-      </tr>
-    </thead>
-  );
-}
-
-function SummaryCard({ label, value, accent, textColor, icon: Icon }) {
-  return (
-    <div className="bg-gray-800 rounded-xl p-4 flex items-start gap-4">
-      <div className={`p-2.5 rounded-lg ${accent} shrink-0`}>
-        <Icon className={`w-5 h-5 ${textColor}`} />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xs text-gray-500 truncate">{label}</p>
-        <p className={`text-2xl font-bold mt-0.5 ${textColor}`}>{value}</p>
-      </div>
-    </div>
-  );
-}
-
 /* ─────────────────────── icons ─────────────────────────────────── */
-
-function BuildingIcon({ className }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-        d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-    </svg>
-  );
-}
 
 function MagnifyIcon({ className }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
         d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-    </svg>
-  );
-}
-
-function ClockIcon({ className }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-        d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}
-
-function TaskedIcon({ className }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-        d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z" />
-    </svg>
-  );
-}
-
-function CheckIcon({ className }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-        d="M5 13l4 4L19 7" />
     </svg>
   );
 }

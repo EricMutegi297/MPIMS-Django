@@ -53,10 +53,11 @@ function accusedUnitLabel(caseObj) {
 }
 
 function taskedBattalionCompanyLabel(caseObj) {
-  if (caseObj?.tasked_detachment_name) {
-    return [caseObj?.tasked_battalion_name, caseObj.tasked_detachment_name].filter(Boolean).join(" / ");
-  }
-  return caseObj?.tasked_battalion_name || "";
+  return [
+    caseObj?.tasked_battalion_name,
+    caseObj?.tasked_company_name,
+    caseObj?.tasked_detachment_name,
+  ].filter(Boolean).join(" / ");
 }
 
 function latestCaseUpdateText(caseObj) {
@@ -108,7 +109,11 @@ function caseUnitLabel(caseObj) {
   const accusedEntryUnits = toArray(caseObj?.accused_entries)
     .map((entry) => entry?.unit_name || entry?.unit)
     .filter(Boolean);
-  const taskedTo = [caseObj?.tasked_battalion_name, caseObj?.tasked_detachment_name].filter(Boolean).join(" / ");
+  const taskedTo = [
+    caseObj?.tasked_battalion_name,
+    caseObj?.tasked_company_name,
+    caseObj?.tasked_detachment_name,
+  ].filter(Boolean).join(" / ");
   return [
     caseObj?.accused_unit_name,
     ...accusedEntryUnits,
@@ -332,7 +337,7 @@ const STATUS_STYLE = {
   tasked:              "bg-yellow-500/20 text-yellow-400",
   under_investigation: "bg-indigo-500/20 text-indigo-400",
   pending:             "bg-orange-500/20 text-orange-400",
-  served:              "bg-purple-500/20 text-purple-400",
+  served:              "bg-orange-500/20 text-orange-400",
   closed:              "bg-green-500/20 text-green-400",
   referred:            "bg-cyan-500/20 text-cyan-400",
 };
@@ -349,8 +354,8 @@ const STATUS_CHIP_META = {
   new: { label: "New", dot: "bg-gray-400" },
   under_investigation: { label: "Under Investigation", dot: "bg-indigo-400" },
   pending: { label: "Pending", dot: "bg-orange-400" },
-  served: { label: "Served", dot: "bg-purple-400" },
-  closed: { label: "Close", dot: "bg-green-400" },
+  served: { label: "Unactioned", dot: "bg-orange-400" },
+  closed: { label: "Actioned", dot: "bg-green-400" },
   open: { label: "Open", dot: "bg-blue-400" },
   tasked: { label: "Tasked", dot: "bg-yellow-400" },
   referred: { label: "Referred", dot: "bg-cyan-400" },
@@ -1703,7 +1708,7 @@ function ActionLabel({ action }) {
     attachment_deleted: "Attachment Deleted",
     team_assigned: "Investigation Assigned",
     battalion_tasked: "Battalion Tasked",
-    detachment_tasked: "Company Tasked",
+    detachment_tasked: "Detachment Tasked",
     case_updated: "Case Updated",
   };
   return labels[action] || (action || "Update").replace(/_/g, " ");
@@ -1986,6 +1991,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const createdToFilter = searchParams.get("created_to") || "";
   const taskedBattalionFilter = searchParams.get("tasked_battalion") || "";
   const taskedDetachmentFilter = searchParams.get("tasked_detachment") || "";
+  const userDetachmentId = entityId(user?.detachment_id || user?.detachment);
   const activeCriminalTypeFilter = criminalTypeFilter || criminalTypeQueryFilter;
   const activeCaseTypeFilter = String(caseTypeQueryFilter || "").toLowerCase();
   const isRtaCaseFilter = activeCaseTypeFilter === RTA_CASE_TYPE;
@@ -2257,7 +2263,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     if (offenceFilter) params.offence = offenceFilter;
     if (accusedServiceFilter) params.accused_service = accusedServiceFilter;
     if (activeCriminalTypeFilter) params.criminal_offence_type = activeCriminalTypeFilter;
-    if (taskedDetachmentFilter) {
+    if (user?.role === "detachment") {
+      // A Detachment user must never fall back to the unscoped Cases list.
+      params.tasked_detachment = userDetachmentId || -1;
+    } else if (taskedDetachmentFilter) {
       params.tasked_detachment = taskedDetachmentFilter;
     } else if (taskedBattalionFilter) {
       params.tasked_battalion = taskedBattalionFilter;
@@ -2279,6 +2288,8 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     placeOfOffenceFilter,
     taskedBattalionFilter,
     taskedDetachmentFilter,
+    user?.role,
+    userDetachmentId,
   ]);
 
   const loadCases = useCallback(() => {
@@ -2834,7 +2845,6 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const activeCloseCaseIsDci = activeCloseCase?.criminal_offence_type === "dci_civ_police";
   const activeCloseCaseIsRta = isRoadTrafficAccidentCase(activeCloseCase);
   const userBattalionId = entityId(user?.battalion_id || user?.battalion);
-  const userDetachmentId = entityId(user?.detachment_id || user?.detachment);
   const userBattalionType = String(user?.battalion_type || user?.battalion?.battalion_type || "").toLowerCase();
   const isSpecialBattalionAdmin = user?.role === "admin" && userBattalionType === "special";
 
@@ -4098,7 +4108,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     "Offence",
     "Description",
     "Police Station",
-    "Battalion/Coy",
+    "Battalion/Company/Detachment",
     "Update",
     "Status",
   ];
@@ -4145,7 +4155,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       Time: "",
       Assignment: caseAssignmentLabel(caseObj),
       "Police Station": caseObj.police_station || "",
-      "Battalion/Coy": taskedBattalionCompanyLabel(caseObj),
+      "Battalion/Company/Detachment": taskedBattalionCompanyLabel(caseObj),
       Update: formatUpdateFlowDetail(latestCaseUpdateText(caseObj)),
       "Date of Offence": normalizeDateForDisplay(caseObj.date_of_offence),
       Created: formatDateTimeForReport(caseObj.created_at),
@@ -4733,7 +4743,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <th className="text-left px-4 py-3 font-medium">Police Station</th>
                   )}
                   {isDciFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Battalion/Coy</th>
+                    <th className="text-left px-4 py-3 font-medium">Battalion/Company/Detachment</th>
                   )}
                   {isDciFilter && (
                     <th className="text-left px-4 py-3 font-medium">Update</th>
@@ -4751,10 +4761,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <th className="text-left px-4 py-3 font-medium">Tasking Letter</th>
                   )}
                   {!isDciFilter && isTaskedFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Tasked Battalion/Company</th>
+                    <th className="text-left px-4 py-3 font-medium">Tasked Battalion/Company/Detachment</th>
                   )}
                   {!isDciFilter && isUnderInvestigationFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Abstract</th>
+                    <th className="text-left px-4 py-3 font-medium">Attachments</th>
                   )}
                   {showUnderInvestigationActionColumn && (
                     <th className="text-left px-4 py-3 font-medium">Action</th>
@@ -4769,13 +4779,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
                   {!isDciFilter && isPendingFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Abstract</th>
+                    <th className="text-left px-4 py-3 font-medium">Attachments</th>
                   )}
                   {!isDciFilter && isPendingFilter && (
                     <th className="text-left px-4 py-3 font-medium">Reason For Pending</th>
                   )}
                   {!isDciFilter && isServedFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Abstract</th>
+                    <th className="text-left px-4 py-3 font-medium">Attachments</th>
                   )}
                   {!isDciFilter && isServedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Date Served</th>
@@ -4787,7 +4797,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <th className="text-left px-4 py-3 font-medium">Action</th>
                   )}
                   {!isDciFilter && isClosedFilter && (
-                    <th className="text-left px-4 py-3 font-medium">Abstract</th>
+                    <th className="text-left px-4 py-3 font-medium">Attachments</th>
                   )}
                   {!isDciFilter && isClosedFilter && (
                     <th className="text-left px-4 py-3 font-medium">Date Closed</th>
@@ -4915,8 +4925,8 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     )}
                     {!isDciFilter && isTaskedFilter && (
                       <td className="px-4 py-2.5 text-gray-300 whitespace-nowrap">
-                        {c.tasked_detachment_name
-                          ? `${c.tasked_battalion_name || "--"} / ${c.tasked_detachment_name}`
+                        {(c.tasked_company_name || c.tasked_detachment_name)
+                          ? `${c.tasked_battalion_name || "--"} / ${c.tasked_company_name || c.tasked_detachment_name}`
                           : c.tasked_battalion_name || "--"}
                         </td>
                     )}

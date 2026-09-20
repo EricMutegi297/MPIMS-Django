@@ -254,7 +254,7 @@ export default function Users({ user }) {
 
   const loadDetachments = useCallback((battalionId) => {
     if (!battalionId) { setDetachments([]); return; }
-    formationService.detachments({ battalion: battalionId, page_size: 200 })
+    formationService.subDetachments({ "company__battalion": battalionId, page_size: 200 })
       .then((r) => setDetachments(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
       .catch(() => setDetachments([]));
   }, []);
@@ -857,7 +857,7 @@ export default function Users({ user }) {
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Company <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
+                    Detachment <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
                   </label>
                   <select
                     value={form.detachment}
@@ -867,7 +867,7 @@ export default function Users({ user }) {
                     <option value="">— Battalion level (no company) —</option>
                     {detachments.map((d) => (
                       <option key={d.id} value={d.id}>
-                        {d.company ? `${d.company} Coy` : "Coy"}{d.name ? ` - ${d.name}` : ""}
+                        {d.company_code ? `${d.company_code} Coy` : "Coy"}{d.company_name ? ` - ${d.company_name}` : ""} — {d.name}
                       </option>
                     ))}
                   </select>

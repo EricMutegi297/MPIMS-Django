@@ -66,15 +66,31 @@ class Unit(models.Model):
         return self.name
 
 
-class Detachment(models.Model):
+class Company(models.Model):
     class Company(models.TextChoices):
         A = "A", "A"
         B = "B", "B"
         C = "C", "C"
         D = "D", "D"
 
-    battalion = models.ForeignKey(Battalion, on_delete=models.CASCADE, related_name="detachments")
+    battalion = models.ForeignKey(Battalion, on_delete=models.CASCADE, related_name="companies")
     company = models.CharField(max_length=1, choices=Company.choices)
+    name = models.CharField(max_length=100)
+    aor = models.CharField(max_length=200, blank=True)
+    mobile_no = models.CharField(max_length=30, blank=True)
+    email = models.EmailField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "companies"
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class Detachment(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="detachments")
     name = models.CharField(max_length=100)
     aor = models.CharField(max_length=200, blank=True)
     mobile_no = models.CharField(max_length=30, blank=True)

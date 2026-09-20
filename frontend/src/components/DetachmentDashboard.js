@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { caseService, teamService, userService } from "../services/api";
+import { caseService, formationService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
@@ -58,7 +58,7 @@ function scheduleAfterPaint(callback) {
   };
 }
 
-function StatCard({ icon, label, value, accent, loading, onClick }) {
+function StatCard({ icon, label, value, accent, loading, onClick, action }) {
   return (
     <div
       className={`min-h-[82px] bg-gray-800 rounded-xl p-4 flex items-start gap-4 ${onClick ? "cursor-pointer hover:bg-gray-700 transition-colors" : ""}`}
@@ -74,6 +74,11 @@ function StatCard({ icon, label, value, accent, loading, onClick }) {
             <p className="text-2xl font-bold text-white">{value ?? 0}</p>
           )}
         </div>
+        {action && (
+          <div className="mt-1" onClick={(event) => event.stopPropagation()}>
+            {action}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -103,13 +108,14 @@ function Footer() {
 export default function DetachmentDashboard({ user }) {
   const navigate = useNavigate();
   const detachmentId = user?.detachment_id ?? user?.detachment;
+  const companyId = user?.company_id ?? user?.detachment?.company_id ?? user?.detachment_company_id ?? user?.company;
   const canManageDetachmentTeams = user?.role === "detachment";
 
   // Cases
   const [cases, setCases]               = useState([]);
   const [loadingCases, setLoadingCases] = useState(true);
   const [statusCounts, setStatusCounts] = useState({
-    total: 0, new: 0, tasked: 0, under_investigation: 0, pending: 0, served: 0, closed: 0,
+    total: 0, new: 0, tasked: 0, detCases: 0, under_investigation: 0, pending: 0, served: 0, closed: 0,
   });
   const [rtaCaseCount, setRtaCaseCount] = useState(0);
   const [loadingCounts, setLoadingCounts] = useState(true);
@@ -133,6 +139,21 @@ export default function DetachmentDashboard({ user }) {
   const [assigning, setAssigning]       = useState(false);
   const [assignError, setAssignError]   = useState("");
 
+  // Task to detachment modal
+  const [taskDetachmentModal, setTaskDetachmentModal] = useState(null);
+  const [selDetachment, setSelDetachment] = useState("");
+  const [companyDetachments, setCompanyDetachments] = useState([]);
+  const [taskingDetachment, setTaskingDetachment] = useState(false);
+  const [taskDetachmentError, setTaskDetachmentError] = useState("");
+  const [caseListMode, setCaseListMode] = useState("recent");
+  const [showBulkTaskModal, setShowBulkTaskModal] = useState(false);
+  const [selectedCaseIds, setSelectedCaseIds] = useState([]);
+  const [bulkDetachment, setBulkDetachment] = useState("");
+  const [bulkTasking, setBulkTasking] = useState(false);
+  const [bulkTaskError, setBulkTaskError] = useState("");
+  const [taskableCaseSearch, setTaskableCaseSearch] = useState("");
+  const [detCaseStatusFilter, setDetCaseStatusFilter] = useState("all");
+
   // Create team modal
   const [showCreateTeam, setShowCreateTeam] = useState(false);
   const [newTeamName, setNewTeamName]       = useState("");
@@ -146,22 +167,99 @@ export default function DetachmentDashboard({ user }) {
   const workloadMap = Object.fromEntries(workload.map((w) => [w.id, w.total_engagement ?? 0]));
   const sortedDetUsers = [...detUsers].sort(sortUsersByWorkload(workloadMap));
   const investigators = sortedDetUsers.filter((u) => u.role === "investigator" && u.is_active !== false);
+  const companyCases = cases.filter((c) =>
+    String(c.tasked_company ?? c.tasked_company_id) === String(companyId)
+  );
+  const companyDetachmentIds = new Set([
+    ...companyDetachments.map((det) => String(det.id)),
+  ]);
+  const companyDetachmentNames = new Set([
+    ...companyDetachments.map((det) => String(det.name).trim().toLowerCase()),
+  ]);
+  const isOwnDetachmentCase = useCallback((c) => {
+    const taskedDetachmentId = c.tasked_detachment ?? c.tasked_detachment_id;
+    const taskedDetachmentName = c.tasked_detachment_name;
+    return (
+      (taskedDetachmentId && String(taskedDetachmentId) === String(detachmentId)) ||
+      (taskedDetachmentName &&
+        String(taskedDetachmentName).trim().toLowerCase() ===
+          String(user?.detachment_name || "").trim().toLowerCase())
+    );
+  }, [detachmentId, user?.detachment_name]);
+  const detachmentCases = cases.filter((c) => {
+    const taskedDetachmentId = c.tasked_detachment ?? c.tasked_detachment_id;
+    const taskedDetachmentName = c.tasked_detachment_name;
+    if (user?.role === "detachment") {
+      return isOwnDetachmentCase(c);
+    }
+    return (
+      (taskedDetachmentId && companyDetachmentIds.has(String(taskedDetachmentId))) ||
+      (taskedDetachmentName && companyDetachmentNames.has(String(taskedDetachmentName).trim().toLowerCase()))
+    );
+  });
+  const taskableCases = companyCases.filter((c) =>
+    c.status === "tasked" &&
+    !c.tasked_detachment &&
+    !c.tasked_detachment_name &&
+    !c.assigned_team &&
+    !c.assigned_to
+  );
+  const filteredTaskableCases = taskableCases.filter((c) => {
+    const query = taskableCaseSearch.trim().toLowerCase();
+    if (!query) return true;
+    return [
+      c.case_number,
+      c.title,
+      c.offence,
+      c.accused_name,
+      c.service_number,
+      c.description,
+    ].some((value) => String(value ?? "").toLowerCase().includes(query));
+  });
+  const canTaskToChildDetachment = user?.role !== "detachment";
+  const recentCases = user?.role === "detachment"
+    ? detachmentCases.filter((c) => c.status === "tasked")
+    : cases.filter((c) => c.status === "tasked");
+  const visibleCases = caseListMode === "det"
+    ? detachmentCases.filter((c) => detCaseStatusFilter === "all" || c.status === detCaseStatusFilter)
+    : recentCases;
 
   const loadCases = useCallback(async () => {
     setLoadingCases(true);
     try {
       const res = await caseService.list({ page_size: 100 });
-      setCases(toArray(res.data));
+      const nextCases = toArray(res.data);
+      setCases(nextCases);
+      if (user?.role === "detachment") {
+        const ownCases = nextCases.filter(isOwnDetachmentCase);
+        const countByStatus = (status) => ownCases.filter((c) => c.status === status).length;
+        setStatusCounts({
+          total: ownCases.length,
+          new: countByStatus("new"),
+          tasked: countByStatus("tasked"),
+          detCases: ownCases.length,
+          under_investigation: countByStatus("under_investigation"),
+          pending: countByStatus("pending"),
+          served: countByStatus("served"),
+          closed: countByStatus("closed"),
+        });
+        setRtaCaseCount(ownCases.filter((c) => c.case_type === RTA_CASE_TYPE).length);
+        setLoadingCounts(false);
+      }
     } catch {
       setCases([]);
     } finally {
       setLoadingCases(false);
     }
-  }, []);
+  }, [user, isOwnDetachmentCase]);
   const descLimit = 120;
 
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
+    if (user?.role === "detachment") {
+      setLoadingCounts(false);
+      return;
+    }
     try {
       const [allRes, newRes, taskedRes, uiRes, peRes, seRes, clRes, rtaCaseRes] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
@@ -173,22 +271,23 @@ export default function DetachmentDashboard({ user }) {
         caseService.list({ page_size: 1, status: "closed" }),
         caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }),
       ])).map(settledResponse);
-      setStatusCounts({
+      setStatusCounts((prev) => ({
         total:               responseCount(allRes),
         new:                 responseCount(newRes),
         tasked:              responseCount(taskedRes),
+        detCases:            prev.detCases,
         under_investigation: responseCount(uiRes),
         pending:             responseCount(peRes),
         served:              responseCount(seRes),
         closed:              responseCount(clRes),
-      });
+      }));
       setRtaCaseCount(responseCount(rtaCaseRes));
     } catch {
       // keep zeros
     } finally {
       setLoadingCounts(false);
     }
-  }, []);
+  }, [user]);
 
   const loadTeams = useCallback(async () => {
     setLoadingTeams(true);
@@ -226,6 +325,19 @@ export default function DetachmentDashboard({ user }) {
     }
   }, [canManageDetachmentTeams, detachmentId]);
 
+  useEffect(() => {
+    if (!companyId) {
+      setCompanyDetachments([]);
+      return;
+    }
+    formationService.subDetachments({ company: companyId, page_size: 200 })
+      .then((r) => {
+        const items = toArray(r.data).filter((d) => String(d.id) !== String(detachmentId));
+        setCompanyDetachments(items);
+      })
+      .catch(() => setCompanyDetachments([]));
+  }, [companyId, detachmentId]);
+
   // Assign team
   const openAssignModal = (c) => {
     if (!canManageDetachmentTeams) return;
@@ -236,6 +348,108 @@ export default function DetachmentDashboard({ user }) {
     setSelIo(c?.assigned_to ? String(c.assigned_to) : "");
     setDeadline(c.investigation_deadline || "");
     setAssignError("");
+  };
+
+  const openTaskDetachmentModal = (c) => {
+    const taskedCompanyId = c?.tasked_company ?? c?.tasked_company_id;
+    if (
+      !canTaskToChildDetachment ||
+      !companyId ||
+      String(taskedCompanyId) !== String(companyId) ||
+      companyDetachments.length === 0
+    ) {
+      return;
+    }
+    setTaskDetachmentModal(c);
+    setSelDetachment("");
+    setTaskDetachmentError("");
+  };
+
+  const handleTaskToDetachment = async () => {
+    const taskedCompanyId = taskDetachmentModal?.tasked_company ?? taskDetachmentModal?.tasked_company_id;
+    if (
+      !canTaskToChildDetachment ||
+      !companyId ||
+      String(taskedCompanyId) !== String(companyId)
+    ) {
+      setTaskDetachmentError("You can only task cases already assigned to your company.");
+      return;
+    }
+    if (!selDetachment) {
+      setTaskDetachmentError("Please select a detachment.");
+      return;
+    }
+    setTaskingDetachment(true);
+    setTaskDetachmentError("");
+    try {
+      await caseService.update(taskDetachmentModal.id, {
+        tasked_detachment: selDetachment,
+      });
+      setTaskDetachmentModal(null);
+      loadCases();
+      loadCounts();
+    } catch (e) {
+      const data = e?.response?.data;
+      const message = data && typeof data === "object"
+        ? Object.entries(data)
+            .flatMap(([field, value]) => {
+              const values = Array.isArray(value) ? value : [value];
+              return values
+                .filter(Boolean)
+                .map((item) => `${field}: ${typeof item === "object" ? JSON.stringify(item) : item}`);
+            })
+            .join(" ")
+        : "";
+      setTaskDetachmentError(message || "Failed to task case to detachment.");
+    } finally {
+      setTaskingDetachment(false);
+    }
+  };
+
+  const openBulkTaskModal = () => {
+    setSelectedCaseIds([]);
+    setTaskableCaseSearch("");
+    setBulkDetachment("");
+    setBulkTaskError("");
+    setShowBulkTaskModal(true);
+  };
+
+  const toggleCaseSelection = (caseId) => {
+    setSelectedCaseIds((prev) =>
+      prev.includes(caseId) ? prev.filter((id) => id !== caseId) : [...prev, caseId]
+    );
+  };
+
+  const handleBulkTask = async () => {
+    if (!bulkDetachment) {
+      setBulkTaskError("Select a detachment.");
+      return;
+    }
+    if (selectedCaseIds.length === 0) {
+      setBulkTaskError("Select at least one case.");
+      return;
+    }
+    setBulkTasking(true);
+    setBulkTaskError("");
+    try {
+      await Promise.all(selectedCaseIds.map((caseId) =>
+        caseService.update(caseId, { tasked_detachment: bulkDetachment })
+      ));
+      setShowBulkTaskModal(false);
+      setCaseListMode("det");
+      loadCases();
+      loadCounts();
+    } catch (e) {
+      const data = e?.response?.data;
+      setBulkTaskError(
+        data?.detail ||
+        data?.tasked_detachment?.[0] ||
+        data?.tasking?.[0] ||
+        "One or more cases could not be tasked to the detachment."
+      );
+    } finally {
+      setBulkTasking(false);
+    }
   };
 
   const handleAssignTeam = async () => {
@@ -334,15 +548,15 @@ export default function DetachmentDashboard({ user }) {
           </h2>
           <p className="text-sm text-gray-400 mt-0.5">
             {user?.detachment_name
-              ? `${user.detachment_name} — Company Dashboard`
-              : "Company Dashboard"}
+              ? `${user.detachment_name} — Detachment Dashboard`
+              : "Detachment Dashboard"}
           </p>
         </div>
         <NotificationBell />
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-3">
         <StatCard loading={loadingCounts} label="Total Cases" value={statusCounts.total}
           accent="bg-blue-500/10"
           onClick={() => navigate("/dashboard/cases")}
@@ -357,6 +571,14 @@ export default function DetachmentDashboard({ user }) {
           accent="bg-yellow-500/10"
           onClick={() => navigate("/dashboard/cases?status=tasked")}
           icon={<svg className="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>}
+        />
+        <StatCard loading={loadingCases} label="Det Cases" value={detachmentCases.length}
+          accent="bg-cyan-500/10"
+          onClick={() => {
+            setCaseListMode("det");
+            setDetCaseStatusFilter("all");
+          }}
+          icon={<svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M5 7v13h14V7M8 4h8l2 3H6l2-3zm1 7h6m-6 4h6"/></svg>}
         />
         <StatCard loading={loadingCounts} label="Under Investigation" value={statusCounts.under_investigation}
           accent="bg-indigo-500/10"
@@ -384,15 +606,54 @@ export default function DetachmentDashboard({ user }) {
       <div>
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
           <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-            Recent Cases
+            {caseListMode === "det" ? "Cases Tasked to Detachments" : "Recent Cases"}
           </h3>
-          <button
-            onClick={() => navigate("/dashboard/cases")}
-            className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
-          >
-            View All →
-          </button>
+          <div className="flex items-center gap-3">
+            {caseListMode === "det" && canTaskToChildDetachment && (
+              <button
+                onClick={openBulkTaskModal}
+                disabled={taskableCases.length === 0 || companyDetachments.length === 0}
+                className="px-3 py-1.5 text-xs rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                Task to Det
+              </button>
+            )}
+            <button
+              onClick={() => navigate("/dashboard/cases")}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors self-start sm:self-auto"
+            >
+              View All →
+            </button>
+          </div>
         </div>
+        {caseListMode === "det" && (
+          <div className="flex flex-wrap gap-2 mb-3">
+            {[
+              ["all", "All"],
+              ["under_investigation", "Under Investigation"],
+              ["pending", "Pending"],
+              ["served", "Served"],
+              ["closed", "Closed"],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setDetCaseStatusFilter(value)}
+                className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${
+                  detCaseStatusFilter === value
+                    ? "bg-cyan-600 text-white"
+                    : "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200"
+                }`}
+              >
+                {label}
+                <span className="ml-1.5 opacity-75">
+                  {value === "all"
+                    ? detachmentCases.length
+                    : detachmentCases.filter((c) => c.status === value).length}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         {documentError && (
           <p className="mb-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
             {documentError}
@@ -405,8 +666,10 @@ export default function DetachmentDashboard({ user }) {
                 <div key={i} className="h-7 bg-gray-700 rounded animate-pulse" />
               ))}
             </div>
-          ) : cases.filter((c) => c.status === "tasked").length === 0 ? (
-            <p className="p-5 text-gray-500 text-sm">No cases awaiting team assignment.</p>
+          ) : visibleCases.length === 0 ? (
+            <p className="p-5 text-gray-500 text-sm">
+              {caseListMode === "det" ? "No cases have been tasked to detachments." : "No cases awaiting team assignment."}
+            </p>
           ) : (
             <div className="max-h-[58vh] overflow-auto touch-pan-x [-webkit-overflow-scrolling:touch]">
               <table className="sticky-head w-full min-w-[1520px] text-sm">
@@ -426,7 +689,7 @@ export default function DetachmentDashboard({ user }) {
                 </tr>
               </thead>
               <tbody>
-                {cases.filter((c) => c.status === "tasked").map((c) => (
+                {visibleCases.map((c) => (
                   <tr key={c.id} className="border-b border-gray-700/40 hover:bg-gray-700/20 transition-colors">
                     <td className="px-3 md:px-5 py-3 font-mono text-xs text-gray-400 whitespace-nowrap">
                       {c.case_number || "--"}
@@ -478,15 +741,31 @@ export default function DetachmentDashboard({ user }) {
                     </td>
                     <td className="px-3 md:px-5 py-3 text-gray-300 whitespace-nowrap">
                       {c.tasked_detachment_name
-                        ? `${c.tasked_battalion_name || "--"} / ${c.tasked_detachment_name}`
-                        : c.tasked_battalion_name || "--"}
+                        ? `${c.tasked_battalion_name || "--"} / ${c.tasked_company_name || "--"} / ${c.tasked_detachment_name}`
+                        : c.tasked_company_name
+                          ? `${c.tasked_battalion_name || "--"} / ${c.tasked_company_name}`
+                          : c.tasked_battalion_name || "--"}
                     </td>
                     <td className="px-3 md:px-5 py-3 text-xs text-gray-400">
                       {c.investigation_deadline
                         ? new Date(c.investigation_deadline).toLocaleDateString("en-GB")
                         : <span className="text-gray-600">—</span>}
                     </td>
-                    <td className="px-3 md:px-5 py-3">
+                    <td className="px-3 md:px-5 py-3 space-y-2">
+                      {canTaskToChildDetachment &&
+                        companyDetachments.length > 0 &&
+                        c.status === "tasked" &&
+                        String(c.tasked_company ?? c.tasked_company_id) === String(companyId) &&
+                        !c.tasked_detachment &&
+                        !c.assigned_team &&
+                        !c.assigned_to && (
+                        <button
+                          onClick={() => openTaskDetachmentModal(c)}
+                          className="px-3 py-1 text-xs rounded bg-amber-600 hover:bg-amber-500 text-white transition-colors"
+                        >
+                          Task to Detachment
+                        </button>
+                      )}
                       {canManageDetachmentTeams && c.status === "tasked" && !c.assigned_team && !c.assigned_to && (
                         <button
                           onClick={() => openAssignModal(c)}
@@ -566,6 +845,69 @@ export default function DetachmentDashboard({ user }) {
       </div>
 
       <Footer />
+
+      {canTaskToChildDetachment && showBulkTaskModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setShowBulkTaskModal(false)}>
+          <div className="bg-gray-800 rounded-xl p-6 w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-bold text-white mb-1">Task Cases to Detachment</h2>
+            <p className="text-sm text-gray-400 mb-4">Select company cases and the detachment that will receive them.</p>
+            <div className="relative mb-3">
+              <input
+                type="search"
+                value={taskableCaseSearch}
+                onChange={(e) => setTaskableCaseSearch(e.target.value)}
+                placeholder="Search by case number, accused, offence, service number..."
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 pl-9 text-sm text-white placeholder-gray-400 focus:outline-none focus:border-amber-500"
+              />
+              <svg className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m21 21-4.35-4.35m1.35-5.15a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0z" />
+              </svg>
+            </div>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <label className="flex items-center gap-2 text-xs text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={filteredTaskableCases.length > 0 && filteredTaskableCases.every((c) => selectedCaseIds.includes(c.id))}
+                  onChange={() => {
+                    const visibleIds = filteredTaskableCases.map((c) => c.id);
+                    const allVisibleSelected = visibleIds.every((id) => selectedCaseIds.includes(id));
+                    setSelectedCaseIds((prev) => allVisibleSelected
+                      ? prev.filter((id) => !visibleIds.includes(id))
+                      : [...new Set([...prev, ...visibleIds])]
+                    );
+                  }}
+                  className="accent-amber-500"
+                />
+                Select all ({filteredTaskableCases.length})
+              </label>
+              <select value={bulkDetachment} onChange={(e) => setBulkDetachment(e.target.value)} className="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm">
+                <option value="">-- Select Detachment --</option>
+                {companyDetachments.map((det) => <option key={det.id} value={det.id}>{det.name}</option>)}
+              </select>
+            </div>
+            <div className="border border-gray-700 rounded-lg divide-y divide-gray-700 max-h-80 overflow-y-auto">
+              {taskableCases.length === 0 ? (
+                <p className="p-4 text-sm text-gray-500">There are no company cases awaiting detachment tasking.</p>
+              ) : filteredTaskableCases.length === 0 ? (
+                <p className="p-4 text-sm text-gray-500">No cases match your search.</p>
+              ) : filteredTaskableCases.map((c) => (
+                <label key={c.id} className="flex items-center gap-3 p-3 hover:bg-gray-700/50 cursor-pointer">
+                  <input type="checkbox" checked={selectedCaseIds.includes(c.id)} onChange={() => toggleCaseSelection(c.id)} className="accent-amber-500" />
+                  <span className="font-mono text-xs text-gray-300">{c.case_number}</span>
+                  <span className="text-sm text-gray-200 truncate">{c.title || c.offence || "Untitled case"}</span>
+                </label>
+              ))}
+            </div>
+            {bulkTaskError && <p className="text-xs text-red-400 mt-3">{bulkTaskError}</p>}
+            <div className="flex gap-3 justify-end mt-5">
+              <button onClick={() => setShowBulkTaskModal(false)} className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300">Cancel</button>
+              <button onClick={handleBulkTask} disabled={bulkTasking || !bulkDetachment || selectedCaseIds.length === 0} className="px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white">
+                {bulkTasking ? "Tasking..." : `Task ${selectedCaseIds.length || ""} Case${selectedCaseIds.length === 1 ? "" : "s"}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Assign IO or Team Modal */}
       {canManageDetachmentTeams && assignModal && (
@@ -676,6 +1018,61 @@ export default function DetachmentDashboard({ user }) {
                 className="px-4 py-2 text-sm rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
               >
                 {assigning ? "Assigning..." : "Assign Case"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task to Detachment Modal */}
+      {canTaskToChildDetachment && taskDetachmentModal && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setTaskDetachmentModal(null)}
+        >
+          <div
+            className="bg-gray-800 rounded-xl p-6 w-full max-w-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-white mb-1">Task Case to Detachment</h2>
+            <p className="text-sm text-gray-400 mb-5">
+              Case <span className="font-mono text-gray-300">{taskDetachmentModal.case_number}</span>: {taskDetachmentModal.title || taskDetachmentModal.offence}
+            </p>
+
+            <label className="block text-xs text-gray-400 uppercase tracking-wider mb-1">
+              Select Detachment
+            </label>
+            <select
+              value={selDetachment}
+              onChange={(e) => setSelDetachment(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 mb-4"
+            >
+              <option value="">-- Select Detachment --</option>
+              {companyDetachments.map((det) => (
+                <option key={det.id} value={det.id}>{det.name}</option>
+              ))}
+            </select>
+
+            {taskDetachmentError && (
+              <p className="text-xs text-red-400 mb-4">{taskDetachmentError}</p>
+            )}
+            {companyDetachments.length === 0 && (
+              <p className="text-xs text-orange-400 mb-4">No other detachments are available in this company.</p>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setTaskDetachmentModal(null)}
+                className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTaskToDetachment}
+                disabled={taskingDetachment || !selDetachment}
+                className="px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+              >
+                {taskingDetachment ? "Tasking..." : "Task Case"}
               </button>
             </div>
           </div>

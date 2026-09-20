@@ -226,7 +226,7 @@ function getNavItems(user) {
     },
     {
       key: "battalion-detachments",
-      label: "Companies",
+      label: "Detachments",
       path: "/dashboard/battalion-detachments",
       show: (isBattalionCommand || isSuperuser) && !isHqsBnAdmin && !isUnitCommandRole,
       icon: (
@@ -653,7 +653,7 @@ export default function Dashboard() {
       ? `${user.battalion_name} Investigator Dashboard`
       : "Investigator Dashboard"
     : isDetachmentLevelRole && hasDetachment && user?.detachment_name
-    ? `${user.detachment_name} Company Dashboard`
+    ? `${user.detachment_name} Detachment Dashboard`
     : isUnitLevelRole && user?.unit_name
     ? `${user.unit_name} Unit Dashboard`
     : isCorpsCommander
@@ -978,4 +978,3 @@ export default function Dashboard() {
     </div>
   );
 }
-

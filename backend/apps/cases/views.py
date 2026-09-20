@@ -254,13 +254,13 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             return self._apply_exhibit_query_filters(qs.filter(
                 Q(target_battalion_id=user.battalion_id)
                 | Q(case__tasked_battalion_id=user.battalion_id)
-                | Q(case__tasked_detachment__battalion_id=user.battalion_id)
+                | Q(case__tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(case__assigned_team__battalion_id=user.battalion_id)
             ).distinct())
         if user.battalion_id:
             return self._apply_exhibit_query_filters(qs.filter(
                 Q(case__tasked_battalion_id=user.battalion_id)
-                | Q(case__tasked_detachment__battalion_id=user.battalion_id)
+                | Q(case__tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(case__assigned_team__battalion_id=user.battalion_id)
             ).distinct())
         return self._apply_exhibit_query_filters(qs.filter(requested_by=user))
@@ -587,7 +587,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         if user.role in command_roles and user.battalion_id:
             battalion_ids = {exhibit.target_battalion_id}
             if exhibit.target_detachment_id and exhibit.target_detachment:
-                battalion_ids.add(exhibit.target_detachment.battalion_id)
+                battalion_ids.add(exhibit.target_detachment.company.battalion_id)
             if user.battalion_id in battalion_ids:
                 return
 
@@ -795,7 +795,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
 
         battalion_id = exhibit.target_battalion_id
         if not battalion_id and exhibit.target_detachment_id and exhibit.target_detachment:
-            battalion_id = exhibit.target_detachment.battalion_id
+            battalion_id = exhibit.target_detachment.company.battalion_id
 
         if battalion_id:
             recipients.update(User.objects.filter(
@@ -891,6 +891,7 @@ class CaseViewSet(viewsets.ModelViewSet):
     filterset_fields = {
         "status": ["exact", "in"],
         "assigned_to": ["exact"],
+        "tasked_company": ["exact"],
         "tasked_detachment": ["exact"],
         "tasked_battalion": ["exact"],
         "criminal_offence_type": ["exact"],
@@ -1179,6 +1180,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             "created_by",
             "accused_unit",
             "tasked_battalion",
+            "tasked_company",
             "tasked_detachment",
             "source_incident",
         ).prefetch_related(
@@ -1220,15 +1222,17 @@ class CaseViewSet(viewsets.ModelViewSet):
                     detachment_field="tasked_detachment",
                 )
                 | Q(assigned_to__battalion_id=user.battalion_id)
-                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
-                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
             ).distinct())
 
         # IC Cases (role=detachment) sees cases tasked to their company record.
         if user.role == "detachment" and user.detachment_id:
+            company_id = getattr(user.detachment, "company_id", None)
             return self._prepare_case_queryset(base_qs.filter(
-                Q(tasked_detachment_id=user.detachment_id)
+                Q(tasked_company_id=company_id)
+                | Q(tasked_detachment_id=user.detachment_id)
                 | Q(assigned_to__detachment_id=user.detachment_id)
                 | Q(assigned_team__detachment_id=user.detachment_id)
             ).distinct())
@@ -1236,7 +1240,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         if user.battalion_id:
             return self._prepare_case_queryset(base_qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
-                | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_to=user)
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
@@ -1688,11 +1692,11 @@ class CaseViewSet(viewsets.ModelViewSet):
                 return qs.none()
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
-                | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__battalion_id=user.battalion_id)
-                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
-                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
             ).distinct()
 
         target = self._brief_forward_target_for_role(user)
@@ -1716,11 +1720,11 @@ class CaseViewSet(viewsets.ModelViewSet):
                 return qs.none()
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
-                | Q(tasked_detachment__battalion_id=user.battalion_id)
+                | Q(tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__battalion_id=user.battalion_id)
-                | Q(assigned_to__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
-                | Q(assigned_team__detachment__battalion_id=user.battalion_id)
+                | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
             ).distinct()
 
         if has_global_read_access(user):
@@ -2583,7 +2587,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         Superusers must supply ?battalion=<id> query param.
         Returns: { battalion_id, detachments: [{id, name, company, under_investigation, pending, closed, total}] }
         """
-        from apps.formations.models import Detachment
+        from apps.formations.models import Company
 
         user = request.user
 
@@ -2604,19 +2608,22 @@ class CaseViewSet(viewsets.ModelViewSet):
                 status=http_status.HTTP_403_FORBIDDEN,
             )
 
-        detachments = Detachment.objects.filter(battalion_id=battalion_id).order_by("name")
+        companies = Company.objects.filter(battalion_id=battalion_id).order_by("name")
         summary = []
-        for det in detachments:
-            det_qs = base_qs.filter(tasked_detachment_id=det.id)
+        for company in companies:
+            company_qs = base_qs.filter(
+                Q(tasked_company_id=company.id)
+                | Q(tasked_detachment__company_id=company.id)
+            ).distinct()
             summary.append({
-                "id": det.id,
-                "name": det.name,
-                "company": det.company,
-                "tasked": det_qs.filter(status=Case.Status.TASKED).count(),
-                "under_investigation": det_qs.filter(status=Case.Status.UNDER_INVESTIGATION).count(),
-                "pending": det_qs.filter(status=Case.Status.PENDING).count(),
-                "closed": det_qs.filter(status=Case.Status.CLOSED).count(),
-                "total": det_qs.count(),
+                "id": company.id,
+                "name": company.name,
+                "company": company.company,
+                "tasked": company_qs.filter(status=Case.Status.TASKED).count(),
+                "under_investigation": company_qs.filter(status=Case.Status.UNDER_INVESTIGATION).count(),
+                "pending": company_qs.filter(status=Case.Status.PENDING).count(),
+                "closed": company_qs.filter(status=Case.Status.CLOSED).count(),
+                "total": company_qs.count(),
             })
 
         return Response({"battalion_id": battalion_id, "detachments": summary})

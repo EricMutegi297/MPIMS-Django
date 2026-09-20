@@ -312,7 +312,7 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
     def _guardroom_status_battalion_scope(self, battalion_id):
         return Q(requested_by__role=User.Role.INVESTIGATOR) & (
             Q(requested_by__battalion_id=battalion_id)
-            | Q(requested_by__detachment__battalion_id=battalion_id)
+            | Q(requested_by__detachment__company__battalion_id=battalion_id)
         )
 
     def _detachment_request_scope(self, detachment_id):
@@ -328,17 +328,17 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
     def _battalion_request_scope(self, battalion_id):
         return (
             Q(case__assigned_team__battalion_id=battalion_id)
-            | Q(case__assigned_team__detachment__battalion_id=battalion_id)
+            | Q(case__assigned_team__detachment__company__battalion_id=battalion_id)
             | Q(case__tasked_battalion_id=battalion_id)
-            | Q(case__tasked_detachment__battalion_id=battalion_id)
+            | Q(case__tasked_detachment__company__battalion_id=battalion_id)
             | Q(requested_by__battalion_id=battalion_id)
-            | Q(requested_by__detachment__battalion_id=battalion_id)
+            | Q(requested_by__detachment__company__battalion_id=battalion_id)
             | Q(case__assigned_to__battalion_id=battalion_id)
-            | Q(case__assigned_to__detachment__battalion_id=battalion_id)
+            | Q(case__assigned_to__detachment__company__battalion_id=battalion_id)
             | Q(case__assigned_team__team_ic__battalion_id=battalion_id)
-            | Q(case__assigned_team__team_ic__detachment__battalion_id=battalion_id)
+            | Q(case__assigned_team__team_ic__detachment__company__battalion_id=battalion_id)
             | Q(case__assigned_team__members__battalion_id=battalion_id)
-            | Q(case__assigned_team__members__detachment__battalion_id=battalion_id)
+            | Q(case__assigned_team__members__detachment__company__battalion_id=battalion_id)
         )
 
     def _placement_detachment_id(self, placement):

@@ -56,6 +56,13 @@ const EMPTY_DETACHMENT = {
   mobile_no: "",
   email: "",
 };
+const EMPTY_SUB_DETACHMENT = {
+  company: "",
+  name: "",
+  aor: "",
+  mobile_no: "",
+  email: "",
+};
 
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function Formations({ user, mode = "formations" }) {
@@ -85,6 +92,8 @@ export default function Formations({ user, mode = "formations" }) {
   const [detModal,     setDetModal]     = useState(null);
   const [detSaving,    setDetSaving]    = useState(false);
   const [detDeleteId,  setDetDeleteId]  = useState(null);
+  const [subDetModal, setSubDetModal] = useState(null);
+  const [subDetSaving, setSubDetSaving] = useState(false);
 
   const [unitModal,    setUnitModal]    = useState(null);
   const [unitSaving,   setUnitSaving]   = useState(false);
@@ -377,6 +386,43 @@ export default function Formations({ user, mode = "formations" }) {
     }
   };
 
+  const openSubDetachmentModal = (company, detachment = null) => {
+    setSubDetModal({
+      mode: detachment ? "edit" : "add",
+      data: detachment
+        ? { ...detachment, company: String(company.id) }
+        : { ...EMPTY_SUB_DETACHMENT, company: String(company.id), companyName: company.name || company.company },
+    });
+  };
+
+  const saveSubDetachment = async (form) => {
+    setSubDetSaving(true); setError(""); setMessage("");
+    try {
+      const payload = {
+        company: Number(form.company),
+        name: form.name.trim(),
+        aor: form.aor || "",
+        mobile_no: form.mobile_no || "",
+        email: form.email || "",
+      };
+      if (subDetModal.mode === "add") {
+        await formationService.createDetachment(payload);
+        setMessage("Detachment created.");
+      } else {
+        await formationService.updateDetachment(subDetModal.data.id, payload);
+        setMessage("Detachment updated.");
+      }
+      setSubDetModal(null);
+      const loaded = await loadAll();
+      if (loaded?.battalions) syncDetachmentView(loaded.battalions);
+    } catch (err) {
+      const d = err.response?.data;
+      setError(d?.company?.[0] || d?.name?.[0] || d?.detail || "Failed to save detachment.");
+    } finally {
+      setSubDetSaving(false);
+    }
+  };
+
   const saveUnit = async (form) => {
     setUnitSaving(true); setError(""); setMessage("");
     const adding = unitModal.mode === "add";
@@ -606,7 +652,21 @@ export default function Formations({ user, mode = "formations" }) {
                     {isSuperAdmin && (
                       <div className="mt-2 flex gap-3 border-t border-gray-700/70 pt-2">
                         <ABtn label="Edit" color="blue" onClick={() => openCompanyModal(null, d)} />
+                        <ABtn label="Add Detachment" color="green" onClick={() => openSubDetachmentModal(d)} />
                         <ABtn label="Delete" color="red" onClick={() => setDetDeleteId(d.id)} />
+                      </div>
+                    )}
+                    {Array.isArray(d.detachments) && d.detachments.length > 0 && (
+                      <div className="mt-2 border-t border-gray-700/70 pt-2">
+                        <p className="text-[11px] uppercase tracking-wide text-gray-500">Detachments</p>
+                        {d.detachments.map((child) => (
+                          <div key={child.id} className="mt-1 flex items-center justify-between text-xs text-gray-300">
+                            <span>{child.name}</span>
+                            {isSuperAdmin && (
+                              <ABtn label="Edit" color="blue" onClick={() => openSubDetachmentModal(d, child)} />
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -666,6 +726,15 @@ export default function Formations({ user, mode = "formations" }) {
             label="company"
             onConfirm={deleteDetachment}
             onCancel={() => setDetDeleteId(null)}
+          />
+        )}
+        {subDetModal && (
+          <SubDetachmentModal
+            mode={subDetModal.mode}
+            initial={subDetModal.data}
+            saving={subDetSaving}
+            onSave={saveSubDetachment}
+            onClose={() => setSubDetModal(null)}
           />
         )}
         {addAnotherPrompt && (
@@ -934,8 +1003,13 @@ export default function Formations({ user, mode = "formations" }) {
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
 function ABtn({ label, color, onClick }) {
+  const colorClass = color === "red"
+    ? "text-red-400 hover:text-red-300"
+    : color === "green"
+      ? "text-emerald-400 hover:text-emerald-300"
+      : "text-blue-400 hover:text-blue-300";
   return (
-    <button onClick={onClick} className={`text-xs font-medium transition-colors ${color === "red" ? "text-red-400 hover:text-red-300" : "text-blue-400 hover:text-blue-300"}`}>
+    <button onClick={onClick} className={`text-xs font-medium transition-colors ${colorClass}`}>
       {label}
     </button>
   );
@@ -1070,6 +1144,30 @@ function CompanyModal({ mode = "add", initial, saving, onSave, onClose }) {
   );
 }
 
+function SubDetachmentModal({ mode = "add", initial, saving, onSave, onClose }) {
+  const [form, setForm] = useState({ ...initial });
+  const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <ModalWrap title={mode === "add" ? "Add Detachment" : "Edit Detachment"} onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-3">
+        {form.companyName && (
+          <div>
+            <label className="text-xs text-gray-400">Company</label>
+            <div className="mt-1 w-full bg-gray-900/50 text-gray-200 text-sm px-3 py-2 rounded border border-gray-700">
+              {form.companyName}
+            </div>
+          </div>
+        )}
+        <FInput label="Detachment Name *" value={form.name || ""} onChange={s("name")} required />
+        <FInput label="AOR" value={form.aor || ""} onChange={s("aor")} />
+        <FInput label="Mobile No" value={form.mobile_no || ""} onChange={s("mobile_no")} />
+        <FInput label="Email" type="email" value={form.email || ""} onChange={s("email")} />
+        <SaveCancel saving={saving} canSave={!!form.company && !!form.name?.trim()} mode={mode} onClose={onClose} />
+      </form>
+    </ModalWrap>
+  );
+}
+
 function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
   const [form, setForm] = useState({ ...initial });
   const s = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -1123,5 +1221,3 @@ function UnitModal({ mode, initial, saving, formations, onSave, onClose }) {
     </ModalWrap>
   );
 }
-
-

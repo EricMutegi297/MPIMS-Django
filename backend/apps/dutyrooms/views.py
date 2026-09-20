@@ -108,7 +108,10 @@ class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             if user.detachment_id:
                 scope |= Q(detachment_id=user.detachment_id)
             if user.battalion_id:
-                scope |= Q(battalion_id=user.battalion_id) | Q(detachment__battalion_id=user.battalion_id)
+                scope |= (
+                    Q(battalion_id=user.battalion_id)
+                    | Q(detachment__company__battalion_id=user.battalion_id)
+                )
             if not scope:
                 scope = Q(created_by=user) | Q(posts__assigned_personnel=user)
         return qs.filter(scope).filter(visibility).distinct()
@@ -313,13 +316,16 @@ class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
             year = locked_roster.start_date.year
             battalion_id = locked_roster.battalion_id
             if not battalion_id and locked_roster.detachment_id:
-                battalion_id = locked_roster.detachment.battalion_id
+                battalion_id = locked_roster.detachment.company.battalion_id
             serial_qs = DutyRoster.objects.select_for_update().filter(
                 part_one_order_year=year,
                 part_one_order_sequence__isnull=False,
             )
             if battalion_id:
-                serial_qs = serial_qs.filter(Q(battalion_id=battalion_id) | Q(detachment__battalion_id=battalion_id))
+                serial_qs = serial_qs.filter(
+                    Q(battalion_id=battalion_id)
+                    | Q(detachment__company__battalion_id=battalion_id)
+                )
             else:
                 serial_qs = serial_qs.filter(battalion__isnull=True, detachment__isnull=True)
 
@@ -393,7 +399,10 @@ class OccurrenceBookViewSet(viewsets.ReadOnlyModelViewSet):
         if user.detachment_id:
             scope |= Q(detachment_id=user.detachment_id)
         if user.battalion_id:
-            scope |= Q(battalion_id=user.battalion_id) | Q(detachment__battalion_id=user.battalion_id)
+            scope |= (
+                Q(battalion_id=user.battalion_id)
+                | Q(detachment__company__battalion_id=user.battalion_id)
+            )
         if not scope:
             return qs.none()
         return qs.filter(scope).distinct()
@@ -527,7 +536,10 @@ class OccurrenceEntryViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):
         if user.detachment_id:
             scope |= Q(book__detachment_id=user.detachment_id)
         if user.battalion_id:
-            scope |= Q(book__battalion_id=user.battalion_id) | Q(book__detachment__battalion_id=user.battalion_id)
+            scope |= (
+                Q(book__battalion_id=user.battalion_id)
+                | Q(book__detachment__company__battalion_id=user.battalion_id)
+            )
         if not scope:
             scope = Q(recorded_by=user)
         return qs.filter(scope).distinct()
