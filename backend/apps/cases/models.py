@@ -299,6 +299,34 @@ class CaseAccused(models.Model):
         return f"Unidentified accused on {self.case.case_number}"
 
 
+class CaseAccusedOffence(models.Model):
+    accused = models.ForeignKey(
+        CaseAccused,
+        on_delete=models.CASCADE,
+        related_name="offences",
+    )
+    offence = models.ForeignKey(
+        "offences.Offence",
+        on_delete=models.PROTECT,
+        related_name="accused_offences",
+    )
+    count_number = models.PositiveIntegerField(default=1)
+    particulars = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "case_accused_offences"
+        ordering = ["count_number", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["accused", "offence", "count_number"],
+                name="unique_accused_offence_count",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.accused} — {self.offence} (Count {self.count_number})"
+
+
 class CaseAttachment(models.Model):
     class DocumentType(models.TextChoices):
         GENERAL = "general", "General"

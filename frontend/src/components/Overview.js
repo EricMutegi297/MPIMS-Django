@@ -33,7 +33,7 @@ function scheduleAfterPaint(callback) {
 const ROLE_LABELS = {
   admin: "Admin", co: "Commanding Officer", oc: "Officer Commanding", corps_cmd: "Corps Commander",
   investigator: "Investigator", duty_officer: "Duty Officer", guardroom_ic: "Guardroom IC",
-  detachment: "IC Cases", personnel: "Personnel", legal: "Legal Officer",
+  detachment: "Detachment IC", det_cmdr: "Detachment Commander", pltn_cmdr: "Platoon Commander", det_2ic: "Detachment 2IC", personnel: "Personnel", legal: "Legal Officer",
   order_nco: "Order NCO", mpc_hqs: "MPC HQS Admin", bsm: "BSM", cop: "COP",
   adj: "Adjutant", "2ic": "2nd in Command", docus_clerk: "Docus Clerk",
   commandant: "Commandant", ci: "Chief Instructor", si: "SI",

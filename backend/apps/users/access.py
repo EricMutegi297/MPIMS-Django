@@ -5,6 +5,34 @@ from .models import User
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 READ_ONLY_COMMAND_ROLES = {User.Role.ADJ, User.Role.CORPS_CMD}
+TODO_BATTALION_MANAGER_ROLES = {User.Role.ADMIN, User.Role.ADJ}
+TODO_CORPS_MANAGER_ROLES = {User.Role.SEC_CORPS_CMD}
+
+
+def can_manage_battalion_todos(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and (
+            user.is_superuser
+            or user.role in TODO_BATTALION_MANAGER_ROLES
+        )
+        and (
+            user.is_superuser
+            or (
+                user.battalion_id
+                and not (user.role == User.Role.ADMIN and is_hqs_admin(user))
+            )
+        )
+    )
+
+
+def can_manage_corps_todos(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and (user.is_superuser or user.role in TODO_CORPS_MANAGER_ROLES)
+    )
 BATTALION_COMMAND_ROLES = {
     User.Role.ADMIN,
     User.Role.CO,
@@ -22,6 +50,12 @@ UNIT_COMMAND_ROLES = {
     User.Role.SI,
 }
 UNIT_LEVEL_ROLES = UNIT_COMMAND_ROLES | {User.Role.DOCUS_CLERK}
+DETACHMENT_ATTACHMENT_ROLES = {
+    User.Role.DETACHMENT,
+    User.Role.DET_CMD,
+    User.Role.PLT_CMD,
+    User.Role.DET_TWO_IC,
+}
 
 
 def is_corps_commander(user):
@@ -78,7 +112,31 @@ def is_battalion_command(user):
 
 
 def is_detachment_ic(user):
-    return bool(user and user.is_authenticated and user.role == User.Role.DETACHMENT)
+    return bool(
+        user
+        and user.is_authenticated
+        and user.role in DETACHMENT_ATTACHMENT_ROLES
+    )
+
+
+def can_upload_case_attachments(user, case_obj):
+    if not user or not user.is_authenticated or not case_obj:
+        return False
+    if user.is_superuser:
+        return True
+    if user.role in DETACHMENT_ATTACHMENT_ROLES:
+        return bool(
+            user.detachment_id
+            and case_obj.tasked_detachment_id == user.detachment_id
+        )
+    if user.role in {User.Role.CO, User.Role.OC}:
+        user_company_id = getattr(getattr(user, "detachment", None), "company_id", None)
+        case_company_id = (
+            getattr(case_obj, "tasked_company_id", None)
+            or getattr(getattr(case_obj, "tasked_detachment", None), "company_id", None)
+        )
+        return bool(user_company_id and user_company_id == case_company_id)
+    return False
 
 
 def is_docus_clerk(user):

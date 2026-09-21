@@ -20,6 +20,7 @@ class CasesConfig(AppConfig):
             from django_apscheduler.jobstores import DjangoJobStore
 
             from .tasks import send_close_request_reminders
+            from apps.todos.services import send_todo_reminders
 
             scheduler = BackgroundScheduler(timezone="Africa/Nairobi")
             scheduler.add_jobstore(DjangoJobStore(), "default")
@@ -33,6 +34,15 @@ class CasesConfig(AppConfig):
                 jobstore="default",
                 replace_existing=True,
                 misfire_grace_time=3600,  # allow up to 1h late
+            )
+            scheduler.add_job(
+                send_todo_reminders,
+                trigger=CronTrigger(hour=8, minute=5),
+                id="send_todo_event_reminders",
+                name="Daily reminders for upcoming To-Do and Calendar events",
+                jobstore="default",
+                replace_existing=True,
+                misfire_grace_time=3600,
             )
             scheduler.start()
         except Exception as exc:

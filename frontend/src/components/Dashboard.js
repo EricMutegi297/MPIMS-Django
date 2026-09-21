@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, useNavigate, useLocation } from "react-router-d
 import { authService, notificationService, offenceService } from "../services/api";
 
 const Overview = lazy(() => import("./Overview"));
+const TodoList = lazy(() => import("./TodoList"));
 const HQDashboard = lazy(() => import("./HQDashboard"));
 const InvestigatorDashboard = lazy(() => import("./InvestigatorDashboard"));
 const BattalionDashboard = lazy(() => import("./BattalionDashboard"));
@@ -106,11 +107,15 @@ const ROLE_LABELS = {
   co: "Commanding Officer",
   oc: "Officer Commanding",
   corps_cmd: "Corps Commander",
+  sec_corps_cmd: "Secretary Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
   hod: "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment: "IC Cases",
+  detachment: "Detachment IC",
+  det_cmdr: "Detachment Commander",
+  pltn_cmdr: "Platoon Commander",
+  det_2ic: "Detachment 2IC",
   personnel: "Personnel",
   legal: "Legal Officer",
   order_nco: "Order NCO",
@@ -133,13 +138,22 @@ function getNavItems(user) {
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
   const isBattalionCommand = ["admin", "co", "hod", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
   const isUnitCommandRole = ["co", "adj", "2ic", "commandant", "ci", "si"].includes(user?.role) && !!user?.unit;
-  const caseViewerRoles = ["admin", "co", "corps_cmd", "investigator", "detachment", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
+  const caseViewerRoles = ["admin", "co", "corps_cmd", "investigator", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+        </svg>
+      ),
+    },
+    {
+      key: "todo-list", label: "To-Do & Calendar", path: "/dashboard/todos",
+      show: ["admin", "adj", "co", "oc", "corps_cmd", "sec_corps_cmd"].includes(user?.role),
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3M5 11h14M6 21h12a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v12z" />
         </svg>
       ),
     },
@@ -177,7 +191,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "co", "2ic", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "corps_cmd", "adj", "detachment"].includes(user?.role),
+      key: "guardrooms", label: "Guardrooms", path: "/dashboard/guardrooms", show: ["admin", "co", "2ic", "duty_officer", "guardroom_ic", "order_nco", "mpc_hqs", "corps_cmd", "adj", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
@@ -264,7 +278,7 @@ function getNavItems(user) {
       key: "teams",
       label: "Teams",
       path: "/dashboard/teams",
-      show: isSpecialBattalionAdmin || (user?.role === "detachment"),
+      show: isSpecialBattalionAdmin || ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -345,7 +359,7 @@ function getNavItems(user) {
       key: "statistics",
       label: "Statistics",
       path: "/dashboard/statistics",
-      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "investigator", "duty_officer", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"].includes(user?.role),
+      show: isSuperuser || ["admin", "co", "corps_cmd", "mpc_hqs", "cop", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "duty_officer", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -630,11 +644,11 @@ export default function Dashboard() {
 
   // Show HQDashboard for HQ battalion admins, Overview for others
   const isHqsAdmin = user?.role === "admin" && user?.battalion_type === "hqs";
-  const isCorpsCommander = user?.role === "corps_cmd";
+  const isCorpsCommander = ["corps_cmd", "sec_corps_cmd"].includes(user?.role);
   const isInvestigator = user?.role === "investigator";
 
   // Roles that are scoped to either a company or a battalion
-  const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const DETACHMENT_LEVEL_ROLES = ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "personnel"];
   const UNIT_LEVEL_ROLES = ["docus_clerk", "commandant", "ci", "si"];
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
   const isUnitLevelRole = UNIT_LEVEL_ROLES.includes(user?.role) || (["co", "adj", "2ic"].includes(user?.role) && !!user?.unit);
@@ -867,6 +881,7 @@ export default function Dashboard() {
               <Overview user={user} />
             } />
             <Route path="/cases/*" element={<Cases user={user} />} />
+            <Route path="/todos" element={<TodoList user={user} />} />
             <Route path="/clearance" element={<Cases user={user} clearanceOnly />} />
             <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
             <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />

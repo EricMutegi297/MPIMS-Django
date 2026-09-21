@@ -8,6 +8,7 @@ from .models import (
     Case,
     CaseActivityLog,
     CaseAccused,
+    CaseAccusedOffence,
     CaseAttachment,
     CaseBackBrief,
     CaseBrief,
@@ -71,21 +72,30 @@ class CaseCourtMartialHearingSerializer(serializers.ModelSerializer):
         read_only_fields = ["case", "created_by", "created_by_name", "created_at", "updated_at"]
 
 
+class CaseAccusedOffenceSerializer(serializers.ModelSerializer):
+    offence_name = serializers.CharField(source="offence.name", read_only=True)
+
+    class Meta:
+        model = CaseAccusedOffence
+        fields = ["id", "offence", "offence_name", "count_number", "particulars"]
+        extra_kwargs = {
+            "count_number": {"min_value": 1},
+        }
+
+
 class CaseAccusedSerializer(serializers.ModelSerializer):
     unit_name = serializers.SerializerMethodField()
+    offences = CaseAccusedOffenceSerializer(many=True, required=False)
 
     class Meta:
         model = CaseAccused
-        fields = ["id", "name", "rank", "service_number", "service", "unit", "unit_name"]
+        fields = ["id", "name", "rank", "service_number", "service", "unit", "unit_name", "offences"]
         extra_kwargs = {
             "unit": {"required": False, "allow_null": True},
         }
 
     def get_unit_name(self, obj):
         return obj.unit.name if obj.unit else None
-
-    def get_created_by_name(self, obj):
-        return str(obj.created_by) if obj.created_by else None
 
 
 class CaseCourtMartialMilestoneSerializer(serializers.ModelSerializer):
@@ -752,7 +762,7 @@ class CaseSerializer(serializers.ModelSerializer):
         if not user or not user.is_authenticated or not case:
             return False
         if (
-            user.role == User.Role.DETACHMENT
+            is_detachment_ic(user)
             and user.detachment_id
             and user.detachment_id == case.tasked_detachment_id
         ):
@@ -771,7 +781,7 @@ class CaseSerializer(serializers.ModelSerializer):
             return True
         if not user or not user.is_authenticated or not case:
             return False
-        if user.role == User.Role.DETACHMENT and user.detachment_id:
+        if is_detachment_ic(user) and user.detachment_id:
             return user.detachment_id == case.tasked_detachment_id
         if user.role in {User.Role.CO, User.Role.OC, User.Role.ADJ, User.Role.TWO_IC, User.Role.COMMANDANT}:
             return bool(
@@ -1329,13 +1339,23 @@ class CaseSerializer(serializers.ModelSerializer):
     def _create_or_update_accused_entries(self, case, accused_entries):
         case.accused_entries.all().delete()
         for entry in accused_entries:
-            case.accused_entries.create(
+            offences = entry.pop("offences", [])
+            accused = case.accused_entries.create(
                 name=(entry.get("name") or "").strip(),
                 rank=(entry.get("rank") or "").strip(),
                 service_number=(entry.get("service_number") or "").strip(),
                 service=(entry.get("service") or "").strip(),
                 unit=entry.get("unit") or None,
             )
+            seen_offences = set()
+            for offence in offences:
+                key = (offence["offence"].id, offence.get("count_number", 1))
+                if key in seen_offences:
+                    raise serializers.ValidationError(
+                        {"accused_entries": "An accused cannot have the same offence count more than once."}
+                    )
+                seen_offences.add(key)
+                CaseAccusedOffence.objects.create(accused=accused, **offence)
         self._sync_legacy_accused_fields(case)
 
     def create(self, validated_data):

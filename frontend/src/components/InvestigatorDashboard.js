@@ -73,6 +73,15 @@ const RTA_DAMAGE_AUTHORITY_SOURCES = [
   { value: "legal", label: "Legal" },
 ];
 
+const ATTACHMENT_UPLOAD_ROLES = new Set([
+  "detachment",
+  "det_cmdr",
+  "pltn_cmdr",
+  "det_2ic",
+  "co",
+  "oc",
+]);
+
 function closureDocumentLabel(value) {
   if (value === "part_ii_orders") return "Part II Orders";
   if (value === "cancellation_letter") return "Cancellation Letter PDF";
@@ -239,7 +248,7 @@ function fmtTime(ts) {
 }
 
 // ── Attach Modal ─────────────────────────────────────────────────────────────
-function AttachModal({ caseObj, onClose, onUploaded }) {
+function AttachModal({ caseObj, onClose, onUploaded, user }) {
   const [activeTab, setActiveTab] = useState("files");
   const [attachments, setAttachments] = useState([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -403,7 +412,9 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
 
   const totalFileCount = systemFiles.length + attachments.length;
   const caseIsInvestigationScope = ["under_investigation", "tasked", "pending"].includes(caseObj.status);
-  const canUpload = caseIsInvestigationScope && caseObj.status !== "closed";
+  const canUpload = ATTACHMENT_UPLOAD_ROLES.has(user?.role)
+    && caseIsInvestigationScope
+    && caseObj.status !== "closed";
 
   const tabs = [
     { key: "files",    label: `Files (${totalFileCount})` },
@@ -533,7 +544,9 @@ function AttachModal({ caseObj, onClose, onUploaded }) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                   </svg>
                   <p className="text-xs text-gray-500">
-                    Uploads locked — case is <span className="capitalize font-medium text-gray-400">{caseObj.status?.replace(/_/g, " ")}</span>.
+                    {user?.role === "investigator"
+                      ? "Attachments are view-only for investigators."
+                      : <>Uploads locked — case is <span className="capitalize font-medium text-gray-400">{caseObj.status?.replace(/_/g, " ")}</span>.</>}
                   </p>
                 </div>
               </div>
@@ -2391,7 +2404,7 @@ export default function InvestigatorDashboard({ user }) {
         <CasesTable
           cases={cases}
           loading={loadingCases}
-          onAttach={undefined}
+          onAttach={(caseObj) => setAttachingCase(caseObj)}
           isUnderInvestigation={activeFilter === "under_investigation"}
           isPending={activeFilter === "pending"}
           isServed={activeFilter === "served"}
@@ -2422,6 +2435,7 @@ export default function InvestigatorDashboard({ user }) {
           caseObj={attachingCase}
           onClose={() => setAttachingCase(null)}
           onUploaded={handleAttachmentChanged}
+          user={user}
         />
       )}
 

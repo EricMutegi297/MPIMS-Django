@@ -51,6 +51,8 @@ from apps.users.access import (
     is_hqs_admin,
     is_battalion_command,
     is_unit_level_case_viewer,
+    can_upload_case_attachments,
+    is_detachment_ic,
     should_block_command_write,
     unit_case_scope_q,
 )
@@ -78,7 +80,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
     def _can_manage_teams(self, user):
         if user.is_superuser:
             return True
-        if user.role == User.Role.DETACHMENT and user.detachment_id:
+        if is_detachment_ic(user) and user.detachment_id:
             return True
         if (
             user.role == User.Role.ADMIN
@@ -98,7 +100,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         # IC Cases creates teams scoped to their company record.
-        if user.role == "detachment" and user.detachment_id:
+        if is_detachment_ic(user) and user.detachment_id:
             serializer.save(battalion=user.battalion, detachment=user.detachment)
         else:
             serializer.save(battalion=user.battalion)
@@ -112,7 +114,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
                 Q(team_ic=user) | Q(members=user)
             ).distinct()
         # IC Cases sees only their company teams.
-        if user.role == "detachment" and user.detachment_id:
+        if is_detachment_ic(user) and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
         if user.battalion_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(battalion_id=user.battalion_id)
@@ -132,7 +134,7 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         # Scope the user pool to same company / battalion
         if has_global_read_access(user):
             base_users = User.objects.all()
-        elif user.role == "detachment" and user.detachment_id:
+        elif is_detachment_ic(user) and user.detachment_id:
             base_users = User.objects.filter(detachment_id=user.detachment_id)
         elif user.battalion_id:
             base_users = User.objects.filter(battalion_id=user.battalion_id)
@@ -244,7 +246,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
                 | Q(case__assigned_team__team_ic=user)
                 | Q(case__assigned_team__members=user)
             ).distinct())
-        if user.role == User.Role.DETACHMENT and user.detachment_id:
+        if is_detachment_ic(user) and user.detachment_id:
             return self._apply_exhibit_query_filters(qs.filter(
                 Q(target_detachment_id=user.detachment_id)
                 | Q(case__tasked_detachment_id=user.detachment_id)
@@ -549,7 +551,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         if user.is_superuser:
             return
         if exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT:
-            if user.role == User.Role.DETACHMENT and user.detachment_id == exhibit.target_detachment_id:
+            if is_detachment_ic(user) and user.detachment_id == exhibit.target_detachment_id:
                 return
             raise PermissionDenied("Only the target IC Cases user can review this exhibit storage request.")
         if exhibit.storage_scope in {
@@ -569,7 +571,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             return
 
         if (
-            user.role == User.Role.DETACHMENT
+            is_detachment_ic(user)
             and user.detachment_id
             and exhibit.storage_scope == ExhibitStorageRequest.StorageScope.DETACHMENT
             and user.detachment_id == exhibit.target_detachment_id
@@ -1228,11 +1230,9 @@ class CaseViewSet(viewsets.ModelViewSet):
             ).distinct())
 
         # IC Cases (role=detachment) sees cases tasked to their company record.
-        if user.role == "detachment" and user.detachment_id:
-            company_id = getattr(user.detachment, "company_id", None)
+        if is_detachment_ic(user) and user.detachment_id:
             return self._prepare_case_queryset(base_qs.filter(
-                Q(tasked_company_id=company_id)
-                | Q(tasked_detachment_id=user.detachment_id)
+                Q(tasked_detachment_id=user.detachment_id)
                 | Q(assigned_to__detachment_id=user.detachment_id)
                 | Q(assigned_team__detachment_id=user.detachment_id)
             ).distinct())
@@ -1673,9 +1673,10 @@ class CaseViewSet(viewsets.ModelViewSet):
         ).distinct()
 
     def _brief_forward_target_for_role(self, user):
+        if is_detachment_ic(user):
+            return CaseBrief.ForwardRole.DETACHMENT
         return {
             User.Role.HOD: CaseBrief.ForwardRole.HOD,
-            User.Role.DETACHMENT: CaseBrief.ForwardRole.DETACHMENT,
             User.Role.ADJ: CaseBrief.ForwardRole.ADJ,
             User.Role.TWO_IC: CaseBrief.ForwardRole.TWO_IC,
             User.Role.CO: CaseBrief.ForwardRole.CO,
@@ -1708,7 +1709,7 @@ class CaseViewSet(viewsets.ModelViewSet):
             )
             if user.role == User.Role.CORPS_CMD:
                 return qs.distinct()
-            if user.role == User.Role.DETACHMENT:
+            if is_detachment_ic(user):
                 if not user.detachment_id:
                     return qs.none()
                 return qs.filter(
@@ -1789,7 +1790,7 @@ class CaseViewSet(viewsets.ModelViewSet):
                 base_roles = {CaseBrief.ForwardRole.DETACHMENT}
             else:
                 base_roles = {CaseBrief.ForwardRole.HOD, CaseBrief.ForwardRole.ADJ}
-        elif role == User.Role.DETACHMENT and self._brief_role_has_history_access(user, brief):
+        elif is_detachment_ic(user) and self._brief_role_has_history_access(user, brief):
             base_roles = {
                 CaseBrief.ForwardRole.ADJ,
                 CaseBrief.ForwardRole.HOD,
@@ -1828,7 +1829,7 @@ class CaseViewSet(viewsets.ModelViewSet):
         if target and self._brief_role_has_history_access(user, brief):
             if user.role == User.Role.CORPS_CMD:
                 return True
-            if user.role == User.Role.DETACHMENT:
+            if is_detachment_ic(user):
                 return bool(user.detachment_id and self._case_detachment_id(user, case_obj) == user.detachment_id)
             return bool(user.battalion_id and self._case_battalion_id(case_obj) == user.battalion_id)
 
@@ -2071,7 +2072,13 @@ class CaseViewSet(viewsets.ModelViewSet):
         battalion_users = User.objects.filter(
             battalion_id=case.tasked_battalion_id,
             is_active=True,
-        ).exclude(role__in=[User.Role.DETACHMENT, User.Role.CORPS_CMD])
+        ).exclude(role__in=[
+            User.Role.DETACHMENT,
+            User.Role.DET_CMD,
+            User.Role.PLT_CMD,
+            User.Role.DET_TWO_IC,
+            User.Role.CORPS_CMD,
+        ])
         corps_commanders = User.objects.filter(role=User.Role.CORPS_CMD, is_active=True)
         if not battalion_users.exists() and not corps_commanders.exists():
             return
@@ -2129,7 +2136,16 @@ class CaseViewSet(viewsets.ModelViewSet):
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.DETACHMENT:
             recipients.update(
-                User.objects.filter(role=User.Role.DETACHMENT, detachment_id=detachment_id, is_active=True)
+                User.objects.filter(
+                    role__in=[
+                        User.Role.DETACHMENT,
+                        User.Role.DET_CMD,
+                        User.Role.PLT_CMD,
+                        User.Role.DET_TWO_IC,
+                    ],
+                    detachment_id=detachment_id,
+                    is_active=True,
+                )
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.ADJ:
             recipients.update(
@@ -3072,6 +3088,10 @@ class CaseViewSet(viewsets.ModelViewSet):
             qs = case.extra_attachments.select_related("uploaded_by").all()
             serializer = CaseAttachmentSerializer(qs, many=True, context={"request": request})
             return Response(serializer.data)
+        if not can_upload_case_attachments(request.user, case):
+            raise PermissionDenied(
+                "Only authorised Company or Detachment command users can upload case attachments."
+            )
         ensure_case_accepts_file_changes(case)
         serializer = CaseAttachmentSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -3174,7 +3194,7 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         if request.user.role == User.Role.INVESTIGATOR:
             qs = self._brief_case_scope(request.user, qs)
-        elif request.user.role == User.Role.DETACHMENT:
+        elif is_detachment_ic(request.user):
             if not request.user.detachment_id:
                 qs = qs.none()
             else:
@@ -3396,6 +3416,10 @@ class CaseViewSet(viewsets.ModelViewSet):
     )
     def delete_attachment(self, request, pk=None, att_pk=None):
         case = self.get_object()
+        if not can_upload_case_attachments(request.user, case):
+            raise PermissionDenied(
+                "Only authorised Company or Detachment command users can delete case attachments."
+            )
         ensure_case_accepts_file_changes(case)
         try:
             att = case.extra_attachments.get(pk=att_pk)

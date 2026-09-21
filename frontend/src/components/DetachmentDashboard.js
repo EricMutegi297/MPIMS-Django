@@ -6,6 +6,8 @@ import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
 import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription } from "../utils/caseTypes";
 
+const DETACHMENT_ROLES = ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic"];
+
 function toArray(data) {
   return Array.isArray(data) ? data : Array.isArray(data?.results) ? data.results : [];
 }
@@ -109,6 +111,7 @@ export default function DetachmentDashboard({ user }) {
   const navigate = useNavigate();
   const detachmentId = user?.detachment_id ?? user?.detachment;
   const companyId = user?.company_id ?? user?.detachment?.company_id ?? user?.detachment_company_id ?? user?.company;
+  const isDetachmentUser = DETACHMENT_ROLES.includes(user?.role);
   const canManageDetachmentTeams = user?.role === "detachment";
 
   // Cases
@@ -189,7 +192,7 @@ export default function DetachmentDashboard({ user }) {
   const detachmentCases = cases.filter((c) => {
     const taskedDetachmentId = c.tasked_detachment ?? c.tasked_detachment_id;
     const taskedDetachmentName = c.tasked_detachment_name;
-    if (user?.role === "detachment") {
+    if (isDetachmentUser) {
       return isOwnDetachmentCase(c);
     }
     return (
@@ -217,7 +220,9 @@ export default function DetachmentDashboard({ user }) {
     ].some((value) => String(value ?? "").toLowerCase().includes(query));
   });
   const canTaskToChildDetachment = user?.role !== "detachment";
-  const recentCases = user?.role === "detachment"
+  const hasChildDetachments = Boolean(companyId && companyDetachments.length > 0);
+  const canManageCompanyDetachmentTasking = canTaskToChildDetachment && hasChildDetachments;
+  const recentCases = isDetachmentUser
     ? detachmentCases.filter((c) => c.status === "tasked")
     : cases.filter((c) => c.status === "tasked");
   const visibleCases = caseListMode === "det"
@@ -230,7 +235,7 @@ export default function DetachmentDashboard({ user }) {
       const res = await caseService.list({ page_size: 100 });
       const nextCases = toArray(res.data);
       setCases(nextCases);
-      if (user?.role === "detachment") {
+      if (isDetachmentUser) {
         const ownCases = nextCases.filter(isOwnDetachmentCase);
         const countByStatus = (status) => ownCases.filter((c) => c.status === status).length;
         setStatusCounts({
@@ -251,12 +256,12 @@ export default function DetachmentDashboard({ user }) {
     } finally {
       setLoadingCases(false);
     }
-  }, [user, isOwnDetachmentCase]);
+  }, [user, isDetachmentUser, isOwnDetachmentCase]);
   const descLimit = 120;
 
   const loadCounts = useCallback(async () => {
     setLoadingCounts(true);
-    if (user?.role === "detachment") {
+    if (isDetachmentUser) {
       setLoadingCounts(false);
       return;
     }
@@ -287,7 +292,7 @@ export default function DetachmentDashboard({ user }) {
     } finally {
       setLoadingCounts(false);
     }
-  }, [user]);
+  }, [user, isDetachmentUser]);
 
   const loadTeams = useCallback(async () => {
     setLoadingTeams(true);
@@ -572,14 +577,14 @@ export default function DetachmentDashboard({ user }) {
           onClick={() => navigate("/dashboard/cases?status=tasked")}
           icon={<svg className="w-5 h-5 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6M7 4h10a2 2 0 012 2v12a2 2 0 01-2 2H7a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>}
         />
-        <StatCard loading={loadingCases} label="Det Cases" value={detachmentCases.length}
+        {hasChildDetachments && <StatCard loading={loadingCases} label="Det Cases" value={detachmentCases.length}
           accent="bg-cyan-500/10"
           onClick={() => {
             setCaseListMode("det");
             setDetCaseStatusFilter("all");
           }}
           icon={<svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7h18M5 7v13h14V7M8 4h8l2 3H6l2-3zm1 7h6m-6 4h6"/></svg>}
-        />
+        />}
         <StatCard loading={loadingCounts} label="Under Investigation" value={statusCounts.under_investigation}
           accent="bg-indigo-500/10"
           onClick={() => navigate("/dashboard/cases?status=under_investigation")}
@@ -609,7 +614,7 @@ export default function DetachmentDashboard({ user }) {
             {caseListMode === "det" ? "Cases Tasked to Detachments" : "Recent Cases"}
           </h3>
           <div className="flex items-center gap-3">
-            {caseListMode === "det" && canTaskToChildDetachment && (
+            {caseListMode === "det" && canManageCompanyDetachmentTasking && (
               <button
                 onClick={openBulkTaskModal}
                 disabled={taskableCases.length === 0 || companyDetachments.length === 0}
@@ -752,8 +757,7 @@ export default function DetachmentDashboard({ user }) {
                         : <span className="text-gray-600">—</span>}
                     </td>
                     <td className="px-3 md:px-5 py-3 space-y-2">
-                      {canTaskToChildDetachment &&
-                        companyDetachments.length > 0 &&
+                      {canManageCompanyDetachmentTasking &&
                         c.status === "tasked" &&
                         String(c.tasked_company ?? c.tasked_company_id) === String(companyId) &&
                         !c.tasked_detachment &&

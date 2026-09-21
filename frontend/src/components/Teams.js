@@ -9,7 +9,10 @@ function toArray(data) {
 const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
-  detachment:   "IC Cases",
+  detachment:   "Detachment IC",
+  det_cmdr:     "Detachment Commander",
+  pltn_cmdr:    "Platoon Commander",
+  det_2ic:      "Detachment 2IC",
   docus_clerk:  "Docus Clerk",
   commandant:   "Commandant",
   ci:           "Chief Instructor",

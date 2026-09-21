@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "apps.morningbriefs",
     "apps.formations",
     "apps.offences",
+    "apps.todos",
 ]
 
 MIDDLEWARE = [

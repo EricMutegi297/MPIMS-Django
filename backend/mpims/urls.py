@@ -15,6 +15,7 @@ urlpatterns = [
     path("api/morning-briefs/", include("apps.morningbriefs.urls")),
     path("api/formations/", include("apps.formations.urls")),
     path("api/offences/", include("apps.offences.urls")),
+    path("api/todos/", include("apps.todos.urls")),
 ]
 
 # Livereload for development

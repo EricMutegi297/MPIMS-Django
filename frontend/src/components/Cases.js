@@ -476,12 +476,19 @@ const ALL_RANKS = [
   "Recruit",
 ];
 
+const INIT_ACCUSED_OFFENCE = {
+  offence: "",
+  count_number: 1,
+  particulars: "",
+};
+
 const INIT_ACCUSED_ENTRY = {
   name: "",
   rank: "",
   service_number: "",
   service: "",
   unit: "",
+  offences: [{ ...INIT_ACCUSED_OFFENCE }],
 };
 
 const INIT_CREATE = {
@@ -3352,9 +3359,15 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     }
     setCreateSaving(true);
     setCreateErr("");
-    const validAccusedEntries = (createForm.accused_entries || []).filter((entry) =>
-      Object.values(entry).some((value) => String(value || "").trim())
-    );
+    const validAccusedEntries = (createForm.accused_entries || [])
+      .map((entry) => ({
+        ...entry,
+        offences: toArray(entry.offences).filter((offence) => offence?.offence),
+      }))
+      .filter((entry) =>
+        ["name", "rank", "service_number", "service", "unit"].some((field) => String(entry[field] || "").trim())
+        || entry.offences.length
+      );
     try {
       if (editing) {
         const fd = new FormData();
@@ -7152,6 +7165,111 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                           }))}
                           placeholder="Type unit name, code, service, or location..."
                         />
+
+                        <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="mb-2 flex items-center justify-between gap-3">
+                            <CaseFormLabel>Offences for this accused</CaseFormLabel>
+                            <button
+                              type="button"
+                              onClick={() => setCreateForm((f) => ({
+                                ...f,
+                                accused_entries: f.accused_entries.map((entry, index) =>
+                                  index === idx
+                                    ? { ...entry, offences: [...(entry.offences || []), { ...INIT_ACCUSED_OFFENCE }] }
+                                    : entry
+                                ),
+                              }))}
+                              className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                            >
+                              + Add offence
+                            </button>
+                          </div>
+                          <div className="space-y-2">
+                            {toArray(accused.offences).map((accusedOffence, offenceIndex) => (
+                              <div key={offenceIndex} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_90px_minmax(0,1fr)_auto]">
+                                <select
+                                  value={accusedOffence.offence || ""}
+                                  onChange={(e) => setCreateForm((f) => ({
+                                    ...f,
+                                    accused_entries: f.accused_entries.map((entry, entryIndex) =>
+                                      entryIndex === idx
+                                        ? {
+                                            ...entry,
+                                            offences: entry.offences.map((item, itemIndex) =>
+                                              itemIndex === offenceIndex ? { ...item, offence: e.target.value } : item
+                                            ),
+                                          }
+                                        : entry
+                                    ),
+                                  }))}
+                                  className={CASE_FORM_CONTROL}
+                                >
+                                  <option value="">Select offence...</option>
+                                  {offences.map((offence) => (
+                                    <option key={offence.id} value={offence.id}>
+                                      {offence.category ? `${offence.category} — ` : ""}{offence.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={accusedOffence.count_number || 1}
+                                  aria-label={`Count number for offence ${offenceIndex + 1}`}
+                                  onChange={(e) => setCreateForm((f) => ({
+                                    ...f,
+                                    accused_entries: f.accused_entries.map((entry, entryIndex) =>
+                                      entryIndex === idx
+                                        ? {
+                                            ...entry,
+                                            offences: entry.offences.map((item, itemIndex) =>
+                                              itemIndex === offenceIndex ? { ...item, count_number: e.target.value } : item
+                                            ),
+                                          }
+                                        : entry
+                                    ),
+                                  }))}
+                                  className={CASE_FORM_CONTROL}
+                                />
+                                <input
+                                  type="text"
+                                  value={accusedOffence.particulars || ""}
+                                  placeholder="Particulars (optional)"
+                                  onChange={(e) => setCreateForm((f) => ({
+                                    ...f,
+                                    accused_entries: f.accused_entries.map((entry, entryIndex) =>
+                                      entryIndex === idx
+                                        ? {
+                                            ...entry,
+                                            offences: entry.offences.map((item, itemIndex) =>
+                                              itemIndex === offenceIndex ? { ...item, particulars: e.target.value } : item
+                                            ),
+                                          }
+                                        : entry
+                                    ),
+                                  }))}
+                                  className={CASE_FORM_CONTROL}
+                                />
+                                {accused.offences.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setCreateForm((f) => ({
+                                      ...f,
+                                      accused_entries: f.accused_entries.map((entry, entryIndex) =>
+                                        entryIndex === idx
+                                          ? { ...entry, offences: entry.offences.filter((_, itemIndex) => itemIndex !== offenceIndex) }
+                                          : entry
+                                      ),
+                                    }))}
+                                    className="px-2 text-xs font-medium text-red-600 hover:text-red-700"
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     ))}
                     <button

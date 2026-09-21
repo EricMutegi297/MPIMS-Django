@@ -177,6 +177,13 @@ export const notificationService = {
       }),
 };
 
+export const todoService = {
+  list: (params) => api.get("/api/todos/", { params }),
+  create: (data) => api.post("/api/todos/", data),
+  update: (id, data) => api.patch(`/api/todos/${id}/`, data),
+  delete: (id) => api.delete(`/api/todos/${id}/`),
+};
+
 export const auditService = {
   list: (params) => api.get("/api/audit/logs/", { params }),
   get: (id) => api.get(`/api/audit/logs/${id}/`),

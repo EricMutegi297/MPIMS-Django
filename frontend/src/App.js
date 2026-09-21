@@ -25,6 +25,7 @@ function App() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password/:uid/:token" element={<ResetPassword />} />
           <Route path="/dashboard/*" element={<Dashboard />} />
+          <Route path="/todos" element={<Navigate to="/dashboard/todos" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Suspense>

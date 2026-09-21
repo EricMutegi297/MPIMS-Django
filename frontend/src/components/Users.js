@@ -7,11 +7,15 @@ const ROLE_LABELS = {
   co:           "Commanding Officer",
   oc:           "Officer Commanding",
   corps_cmd:    "Corps Commander",
+  sec_corps_cmd: "Secretary Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
   hod:          "Head of Department",
   guardroom_ic: "Guardroom IC",
-  detachment:   "IC Cases",
+  detachment:   "Detachment IC",
+  det_cmdr:     "Detachment Commander",
+  pltn_cmdr:    "Platoon Commander",
+  det_2ic:      "Detachment 2IC",
   personnel:    "Personnel",
   legal:        "Legal",
   order_nco:    "Order NCO",
@@ -208,7 +212,7 @@ export default function Users({ user }) {
   const canManage       = canCreateUsers || isDetachmentIC;
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","oc","corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
+    ? ["admin","co","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
     : isBattalionAdmin
     ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic","docus_clerk"]
     : isDocusClerk
@@ -246,7 +250,7 @@ export default function Users({ user }) {
   const [createActivationLink, setCreateActivationLink] = useState("");
 
   // Roles that can optionally be scoped to a company
-  const DETACHMENT_LEVEL_ROLES = ["detachment", "investigator", "personnel"];
+  const DETACHMENT_LEVEL_ROLES = ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "personnel"];
   const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
   const roleNeedsUnit = useCallback((role) => (
     UNIT_SCOPED_ROLES.includes(role) || (isDocusClerk && UNIT_COMMAND_ROLES.includes(role))
