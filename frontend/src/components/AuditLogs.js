@@ -54,6 +54,42 @@ function titleCase(value) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function readableDescription(log) {
+  if (log.description && !/ using [A-Z]+ at \d{4}-\d{2}-\d{2}/.test(log.description)) {
+    return log.description;
+  }
+  const who = actorLabel(log);
+  const module = titleCase(log.module);
+  const actions = {
+    login: "logged in",
+    login_failed: "had a failed login attempt",
+    logout: "logged out",
+    view: "viewed",
+    create: "created",
+    update: "updated",
+    delete: "deleted",
+    action: "performed an action in",
+    error: "encountered an error while accessing",
+  };
+  const verb = actions[log.action] || titleCase(log.action).toLowerCase();
+  if (["login", "login_failed", "logout"].includes(log.action)) {
+    return `${who} ${verb}`;
+  }
+  return `${who} ${verb} ${module}${log.object_id ? ` #${log.object_id}` : ""}`;
+}
+
+function actorLabel(log) {
+  const identity = [log.user_rank, log.user_name].filter(Boolean).join(" ")
+    || log.service_number
+    || "Anonymous";
+  const details = [
+    log.service_number,
+    titleCase(log.user_role),
+    log.battalion_name || log.detachment_name,
+  ].filter(Boolean);
+  return `${identity}${details.length ? ` ${details.join(" ")}` : ""}`;
+}
+
 function csvCell(value) {
   const text = String(value ?? "");
   if (!/[",\n]/.test(text)) return text;
@@ -288,8 +324,7 @@ export default function AuditLogs({ user }) {
                 <tr key={log.id} className="hover:bg-slate-50">
                   <td className="whitespace-nowrap px-4 py-3 text-slate-700">{formatDateTime(log.created_at)}</td>
                   <td className="px-4 py-3">
-                    <p className="font-semibold text-slate-900">{[log.user_rank, log.user_name].filter(Boolean).join(" ") || "Anonymous"}</p>
-                    <p className="text-xs text-slate-500">{log.service_number || "--"} - {titleCase(log.user_role)}</p>
+                    <p className="font-semibold text-slate-900">{actorLabel(log)}</p>
                   </td>
                   <td className="px-4 py-3">
                     <p className="font-medium text-slate-800">{log.battalion_name || "--"}</p>
@@ -297,7 +332,7 @@ export default function AuditLogs({ user }) {
                   </td>
                   <td className="px-4 py-3">
                     <Badge tone={actionTone(log.action)}>{log.action_display || titleCase(log.action)}</Badge>
-                    <p className="mt-1 max-w-xl text-xs text-slate-600">{log.description || log.path}</p>
+                    <p className="mt-1 max-w-xl text-xs text-slate-600">{readableDescription(log)}</p>
                   </td>
                   <td className="px-4 py-3">
                     <p className="font-semibold text-slate-800">{titleCase(log.module)}</p>

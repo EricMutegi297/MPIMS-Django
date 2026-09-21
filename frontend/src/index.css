@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Let long descriptions expand as they are entered instead of clipping text. */
+textarea {
+	field-sizing: content;
+	min-height: 5rem;
+	resize: vertical;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+}
+
+/* Keep long descriptions readable in tables, cards, and detail views. */
+.description-content {
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 /* Keep table headers visible while scrolling within table containers. */
 .sticky-head thead th {
 	position: sticky;

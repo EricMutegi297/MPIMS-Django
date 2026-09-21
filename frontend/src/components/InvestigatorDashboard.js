@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { caseService, caseBriefService, teamService, attachmentService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import TransferSummaryCards from "./TransferSummaryCards";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
 import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription, isRoadTrafficAccidentCase } from "../utils/caseTypes";
@@ -44,13 +45,6 @@ function normalizeDateForApi(value) {
   const isoPrefix = text.match(/^(\d{4}-\d{2}-\d{2})[T\s]/);
   if (isoPrefix) return isoPrefix[1];
   return text;
-}
-
-function normalizeDateForDisplay(value) {
-  const apiDate = normalizeDateForApi(value);
-  if (!apiDate) return "";
-  const match = apiDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return match ? `${match[3]}/${match[2]}/${match[1]}` : apiDate;
 }
 
 function parseDisplayDateForApi(value) {
@@ -973,7 +967,7 @@ function CloseModal({ caseObj, onClose, onDone }) {
   const [closureBasis, setClosureBasis] = useState(caseObj?.closure_basis || "");
   const [closureFile, setClosureFile] = useState(null);
   const [partIiOrderSerialNo, setPartIiOrderSerialNo] = useState(caseObj?.part_ii_order_serial_no || "");
-  const [partIiOrderDate, setPartIiOrderDate] = useState(normalizeDateForDisplay(caseObj?.part_ii_order_date || ""));
+  const [partIiOrderDate, setPartIiOrderDate] = useState(normalizeDateForApi(caseObj?.part_ii_order_date || ""));
   const [rtaAuthoritySource, setRtaAuthoritySource] = useState(caseObj?.rta_damage_authority_source || "");
   const [rtaAuthorityFile, setRtaAuthorityFile] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -1228,11 +1222,9 @@ function CloseModal({ caseObj, onClose, onDone }) {
                   <div>
                     <label className="block text-xs text-gray-400 mb-1.5">Part II Order Date <span className="text-red-400">*</span></label>
                     <input
-                      type="text"
-                      inputMode="numeric"
+                      type="date"
                       value={partIiOrderDate}
                       onChange={(e) => { setPartIiOrderDate(e.target.value); setErr(""); }}
-                      placeholder="dd/mm/yyyy"
                       className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
                     />
                   </div>
@@ -2311,6 +2303,8 @@ export default function InvestigatorDashboard({ user }) {
         </div>
         <NotificationBell />
       </div>
+
+      <TransferSummaryCards />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {FILTERS.map((cfg) => (

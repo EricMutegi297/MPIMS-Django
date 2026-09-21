@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import RegexValidator
 from django.conf import settings
 from django.utils import timezone
 
@@ -277,7 +278,16 @@ class CaseAccused(models.Model):
     )
     name = models.CharField(max_length=120, blank=True)
     rank = models.CharField(max_length=60, blank=True)
-    service_number = models.CharField(max_length=20, blank=True)
+    service_number = models.CharField(
+        max_length=20,
+        blank=True,
+        validators=[
+            RegexValidator(
+                regex=r"^\d+$",
+                message="Service number must contain numbers only.",
+            )
+        ],
+    )
     service = models.CharField(max_length=5, choices=Case.Service.choices, blank=True)
     unit = models.ForeignKey(
         "formations.Unit",
@@ -670,6 +680,7 @@ class CaseActivityLog(models.Model):
         BRIEF_ATTACHED = "brief_attached", "Brief Attached"
         BRIEF_UPDATED = "brief_updated", "Brief Updated"
         BRIEF_FORWARDED = "brief_forwarded", "Brief Forwarded"
+        CASE_TRANSFERRED = "case_transferred", "Case Transferred"
 
     case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name="activity_logs")
     actor = models.ForeignKey(

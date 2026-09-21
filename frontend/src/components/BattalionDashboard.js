@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, incidentService, formationService, guardroomService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import TransferSummaryCards from "./TransferSummaryCards";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription } from "../utils/caseTypes";
 
@@ -686,6 +687,8 @@ export default function BattalionDashboard({ user }) {
           }
         />
       </div>
+
+      <TransferSummaryCards />
 
       {/* ── Row 2: Status Breakdown Cards ──────────────────────── */}
       <div>

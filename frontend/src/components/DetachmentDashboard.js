@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { caseService, formationService, teamService, userService } from "../services/api";
 import NotificationBell from "./NotificationBell";
+import TransferSummaryCards from "./TransferSummaryCards";
 import useAutoDismiss from "../hooks/useAutoDismiss";
 import { openProtectedFile } from "../utils/protectedFiles";
 import { RTA_CASE_TYPE, caseAccusedUnitLabel, caseDisplayDescription } from "../utils/caseTypes";
@@ -559,6 +560,8 @@ export default function DetachmentDashboard({ user }) {
         </div>
         <NotificationBell />
       </div>
+
+      <TransferSummaryCards />
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-3">

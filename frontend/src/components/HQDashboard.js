@@ -72,16 +72,9 @@ function rtaDamageAuthorityLabel(value) {
   return RTA_DAMAGE_AUTHORITY_SOURCES.find((option) => option.value === value)?.label || "";
 }
 
-function formatDateForDisplay(value) {
-  if (!value) return "";
-  const text = String(value).trim();
-  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (match) return `${match[3]}/${match[2]}/${match[1]}`;
-  return text;
-}
-
 function parseDisplayDateForApi(value) {
   const text = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
   const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (match) return `${match[3]}-${match[2]}-${match[1]}`;
   return text;
@@ -149,7 +142,7 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
   const [closureBasis, setClosureBasis] = useState(caseObj?.closure_basis || "");
   const [closureFile, setClosureFile] = useState(null);
   const [partIiOrderSerialNo, setPartIiOrderSerialNo] = useState(caseObj?.part_ii_order_serial_no || "");
-  const [partIiOrderDate, setPartIiOrderDate] = useState(formatDateForDisplay(caseObj?.part_ii_order_date || ""));
+  const [partIiOrderDate, setPartIiOrderDate] = useState(caseObj?.part_ii_order_date || "");
   const [rtaAuthoritySource, setRtaAuthoritySource] = useState(caseObj?.rta_damage_authority_source || "");
   const [rtaAuthorityFile, setRtaAuthorityFile] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -435,11 +428,9 @@ function CloseCaseModal({ caseObj, onClose, onClosed }) {
               <div>
                 <label className="block text-xs text-gray-400 mb-1.5">Part II Order Date <span className="text-red-400">*</span></label>
                 <input
-                  type="text"
-                  inputMode="numeric"
+                  type="date"
                   value={partIiOrderDate}
                   onChange={(e) => { setPartIiOrderDate(e.target.value); setErr(""); }}
-                  placeholder="dd/mm/yyyy"
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-green-500 placeholder-gray-500"
                 />
               </div>
@@ -554,7 +545,7 @@ export default function HQDashboard({ user }) {
   const [page, setPage]               = useState(1);
   const [totalCount, setTotalCount]   = useState(0);
   const [statusCounts, setStatusCounts] = useState({
-    total: 0, new: 0, newOpen: 0, tasked: 0,
+    total: 0, transferable: 0, new: 0, newOpen: 0, tasked: 0,
     under_investigation: 0, pending: 0, served: 0, closed: 0, referred: 0,
   });
   const [totalInc, setTotalInc] = useState(0);
@@ -576,7 +567,7 @@ export default function HQDashboard({ user }) {
       const [
         allRes, newRes, openRes, taskedRes,
         uiRes, peRes, seRes, clRes, rfRes,
-        incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, rtaCaseRes, guardroomRes,
+        incRes, incOpenRes, courtMartialRes, dciCivPoliceRes, rtaCaseRes, transferredRes, guardroomRes,
       ] = (await Promise.allSettled([
         caseService.list({ page_size: 1 }),
         caseService.list({ page_size: 1, status: "new" }),
@@ -592,10 +583,12 @@ export default function HQDashboard({ user }) {
         caseService.list({ page_size: 1, criminal_offence_type: "court_martial" }),
         caseService.list({ page_size: 1, criminal_offence_type: "dci_civ_police" }),
         caseService.list({ page_size: 1, case_type: RTA_CASE_TYPE }),
+        caseService.transferred(),
         guardroomService.list(),
       ])).map(settledResponse);
       setStatusCounts({
         total:               responseCount(allRes),
+        transferable:        responseCount(transferredRes),
         new:                 responseCount(newRes),
         newOpen:             responseCount(newRes) + responseCount(openRes),
         tasked:              responseCount(taskedRes),
@@ -681,6 +674,7 @@ export default function HQDashboard({ user }) {
             {isCorpsCommander ? "Corps Command Overview" : "HQ Overview"} — All Battalions
           </p>
         </div>
+
         <NotificationBell />
       </div>
 
@@ -775,6 +769,14 @@ export default function HQDashboard({ user }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           }
+        />
+        <StatCard
+          loading={loadingCounts}
+          label="Transferred Cases"
+          value={statusCounts.transferable}
+          accent="bg-teal-500/10"
+          onClick={() => navigate("/dashboard/transferred-cases")}
+          icon={<svg className="w-5 h-5 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h10m0 0v10m0-10L7 17" /></svg>}
         />
       </div>
 

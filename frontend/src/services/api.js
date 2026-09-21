@@ -75,7 +75,12 @@ export const authService = {
 
 export const caseService = {
   list: (params) => api.get("/api/cases/", { params }),
+  transferable: () => api.get("/api/cases/transferable/"),
+  transfer: (formData) => api.post("/api/cases/transfer/", formData),
   get: (id) => api.get(`/api/cases/${id}/`),
+  lookupAccused: (serviceNumber) => api.get("/api/cases/accused-lookup/", { params: { service_number: serviceNumber } }),
+  transferred: () => api.get("/api/cases/transferred/"),
+  transferSummary: () => api.get("/api/cases/transfer-summary/"),
   activity: (id) => api.get(`/api/cases/${id}/activity/`),
   statistics: (params) => api.get("/api/cases/statistics/", { params }),
   rtaStatistics: (params) => api.get("/api/cases/rta-statistics/", { params }),

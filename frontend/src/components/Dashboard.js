@@ -5,6 +5,7 @@ import { authService, notificationService, offenceService } from "../services/ap
 const Overview = lazy(() => import("./Overview"));
 const TodoList = lazy(() => import("./TodoList"));
 const HQDashboard = lazy(() => import("./HQDashboard"));
+const TransferCases = lazy(() => import("./TransferCases"));
 const InvestigatorDashboard = lazy(() => import("./InvestigatorDashboard"));
 const BattalionDashboard = lazy(() => import("./BattalionDashboard"));
 const DetachmentDashboard = lazy(() => import("./DetachmentDashboard"));
@@ -881,6 +882,7 @@ export default function Dashboard() {
               <Overview user={user} />
             } />
             <Route path="/cases/*" element={<Cases user={user} />} />
+            <Route path="/transferred-cases" element={<TransferCases user={user} />} />
             <Route path="/todos" element={<TodoList user={user} />} />
             <Route path="/clearance" element={<Cases user={user} clearanceOnly />} />
             <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />

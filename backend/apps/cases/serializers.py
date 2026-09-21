@@ -1,4 +1,5 @@
 ﻿import json
+import re
 from collections.abc import Mapping
 
 from django.utils import timezone
@@ -627,6 +628,9 @@ class CaseSerializer(serializers.ModelSerializer):
     unit_closure_requested_by_name = serializers.SerializerMethodField()
     unit_closure_decided_by_name = serializers.SerializerMethodField()
     clearance_certificate_uploaded_by_name = serializers.SerializerMethodField()
+    transfer_from = serializers.SerializerMethodField()
+    transfer_to = serializers.SerializerMethodField()
+    transfer_reason = serializers.SerializerMethodField()
     brief = CaseBriefSerializer(read_only=True)
     accused_entries = CaseAccusedSerializer(many=True, required=False)
 
@@ -1399,6 +1403,38 @@ class CaseSerializer(serializers.ModelSerializer):
 
     def get_clearance_certificate_uploaded_by_name(self, obj):
         return str(obj.clearance_certificate_uploaded_by) if obj.clearance_certificate_uploaded_by else None
+
+    def _latest_transfer_log(self, obj):
+        prefetched_logs = getattr(obj, "transfer_history_logs", None)
+        if prefetched_logs is not None:
+            return prefetched_logs[0] if prefetched_logs else None
+        return (
+            obj.activity_logs
+            .filter(action=CaseActivityLog.Action.CASE_TRANSFERRED)
+            .order_by("-created_at", "-id")
+            .first()
+        )
+
+    def _transfer_detail_parts(self, obj):
+        log = self._latest_transfer_log(obj)
+        detail = str(log.detail or "") if log else ""
+        match = re.match(
+            r"Transferred from (?P<source>.*?) to (?P<destination>.*?)\. "
+            r"Reason: (?P<reason>.*?)\. Instructions: ",
+            detail,
+        )
+        if not match:
+            return {"source": None, "destination": obj.tasked_battalion.name if obj.tasked_battalion else None, "reason": None}
+        return match.groupdict()
+
+    def get_transfer_from(self, obj):
+        return self._transfer_detail_parts(obj)["source"]
+
+    def get_transfer_to(self, obj):
+        return self._transfer_detail_parts(obj)["destination"]
+
+    def get_transfer_reason(self, obj):
+        return self._transfer_detail_parts(obj)["reason"]
 
     def get_assigned_to_name(self, obj):
         return str(obj.assigned_to) if obj.assigned_to else None

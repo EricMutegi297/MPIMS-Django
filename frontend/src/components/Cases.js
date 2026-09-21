@@ -89,6 +89,7 @@ function normalizeDateForDisplay(value) {
 
 function parseDisplayDateForApi(value) {
   const text = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
   const match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
   if (match) return `${match[3]}-${match[2]}-${match[1]}`;
   return normalizeDateForApi(text);
@@ -512,10 +513,6 @@ function localTimeValue(date = new Date()) {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
-function localDateDisplay(date = new Date()) {
-  return normalizeDateForDisplay(localDateApi(date));
-}
-
 function caseSourceLabel(value) {
   return CASE_SOURCE_OPTIONS.find((option) => option.value === value)?.label || "Case";
 }
@@ -590,7 +587,7 @@ function emptyRtaCasualty(status = "injured") {
 
 function emptyIncidentCaseForm(source = CASE_SOURCE_INCIDENT) {
   return {
-    occurred_date: localDateDisplay(),
+    occurred_date: localDateApi(),
     occurred_time: localTimeValue(),
     incident_title: "",
     road_traffic_type: "",
@@ -1108,10 +1105,10 @@ function caseToForm(caseObj) {
     accused_entries: accusedEntries.length ? accusedEntries : [INIT_ACCUSED_ENTRY],
     accused_service: caseObj?.accused_service || "",
     submitting_unit: caseObj?.submitting_unit ? String(caseObj.submitting_unit) : "",
-    date_of_offence: normalizeDateForDisplay(caseObj?.date_of_offence),
+    date_of_offence: normalizeDateForApi(caseObj?.date_of_offence),
     place_of_offence: caseObj?.place_of_offence || "",
     rfi_no: caseObj?.rfi_no || "",
-    rfi_date: normalizeDateForDisplay(caseObj?.rfi_date),
+    rfi_date: normalizeDateForApi(caseObj?.rfi_date),
     tasking_no: caseObj?.tasking_no || "",
     rfi_document: null,
   };
@@ -1982,6 +1979,8 @@ function getBriefForwardOptions(user, caseObj) {
 export default function Cases({ user, criminalTypeFilter, clearanceOnly = false }) {
   const detailPanelRef = useRef(null);
   const actionSaveInFlightRef = useRef(new Set());
+  const accusedLookupTimersRef = useRef({});
+  const accusedLookupTokensRef = useRef({});
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const caseQueryId = searchParams.get("case");
@@ -2512,6 +2511,70 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     setSourceCaseForm(emptyIncidentCaseForm());
     setCaseFormMode("create");
     setPostCreateTaskPrompt(null);
+  }
+
+  useEffect(() => () => {
+    Object.values(accusedLookupTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+  }, []);
+
+  async function lookupAccusedDetails(index, serviceNumber, requestToken) {
+    const number = String(serviceNumber || "").trim();
+    if (!number) return;
+    try {
+      const response = await caseService.lookupAccused(number);
+      const details = response.data;
+      setCreateForm((current) => ({
+        ...current,
+        accused_entries: current.accused_entries.map((entry, entryIndex) =>
+          entryIndex === index
+            && entry.service_number === number
+            && accusedLookupTokensRef.current[index] === requestToken
+            ? {
+                ...entry,
+                name: details.name || entry.name,
+                rank: details.rank || entry.rank,
+                service: details.service || entry.service,
+                unit: details.unit || entry.unit,
+              }
+            : entry
+        ),
+      }));
+    } catch (error) {
+      if (
+        error?.response?.status !== 404
+        && accusedLookupTokensRef.current[index] === requestToken
+      ) {
+        setCreateErr("Unable to look up the accused details.");
+      }
+    }
+  }
+
+  function handleAccusedServiceNumberChange(index, value) {
+    const serviceNumber = value.replace(/\D/g, "");
+    const nextToken = (accusedLookupTokensRef.current[index] || 0) + 1;
+    accusedLookupTokensRef.current[index] = nextToken;
+    window.clearTimeout(accusedLookupTimersRef.current[index]);
+
+    setCreateForm((current) => ({
+      ...current,
+      accused_entries: current.accused_entries.map((entry, entryIndex) =>
+        entryIndex === index
+          ? {
+              ...entry,
+              service_number: serviceNumber,
+              ...(serviceNumber
+                ? {}
+                : { name: "", rank: "", service: "", unit: "" }),
+            }
+          : entry
+      ),
+    }));
+
+    if (!serviceNumber) return;
+
+    accusedLookupTimersRef.current[index] = window.setTimeout(() => {
+      lookupAccusedDetails(index, serviceNumber, nextToken);
+    }, 350);
   }
 
   function createFormHasDraft() {
@@ -3375,6 +3438,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
           if (k === "offence_ref") return;
           if (k === "accused_entries") return;
           if (k === "submitting_unit") return;
+          if (k === "tasking_no") return;
           if (k === "rfi_document") {
             if (v) fd.append(k, v);
             return;
@@ -3403,6 +3467,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
           if (k === "offence_ref") return;
           if (k === "accused_entries") return;
           if (k === "submitting_unit") return;
+          if (k === "tasking_no") return;
           if (k === "rfi_document") {
             if (v) fd.append(k, v);
             return;
@@ -3426,10 +3491,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
         setSourceCaseForm(emptyIncidentCaseForm());
         setCaseFormMode("create");
         setShowCreate(false);
-        setPostCreateTaskPrompt({
-          caseObj: res.data,
-          sourceLabel: "RFI Case",
-        });
+        openTaskForCase(res.data);
       } else {
         const sourcePayload = buildSourceCasePayload(createForm, sourceCaseForm, source);
         const incidentRes = await incidentService.create(buildIncidentRecordPayload(createForm, sourceCaseForm, source));
@@ -4071,7 +4133,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const isUnderInvestigationFilter = filter === "under_investigation";
   const showDciUpdateColumns = isDciFilter && isUnderInvestigationFilter;
   const showDciActionColumn = isDciFilter && (isAllFilter || isUnderInvestigationFilter);
-  const showUnderInvestigationActionColumn = isUnderInvestigationFilter && !isDciFilter;
+  const showUnderInvestigationActionColumn = isUnderInvestigationFilter && !isDciFilter && !isHqsAdmin;
   const primaryStatusChips = isDciFilter
     ? PRIMARY_STATUS_CHIPS.filter((s) => s !== "pending" && s !== "served")
     : PRIMARY_STATUS_CHIPS;
@@ -4271,7 +4333,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       setTaskBattalion("");
       setTaskingNo(selected?.tasking_no || "");
       setTaskFile(null);
-      setTaskingDate(normalizeDateForDisplay(todayISO));
+      setTaskingDate(todayISO);
     }
     setShowTask((prev) => !prev);
     setTaskErr("");
@@ -4350,7 +4412,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     setTaskBattalion("");
     setTaskingNo(c?.tasking_no || "");
     setTaskFile(null);
-    setTaskingDate(normalizeDateForDisplay(todayISO));
+    setTaskingDate(todayISO);
     setShowTask(true);
   }
 
@@ -5744,11 +5806,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
                       <input
-                        type="text"
-                        inputMode="numeric"
+                        type="date"
                         value={taskingDate}
                         onChange={(e) => setTaskingDate(e.target.value)}
-                        placeholder="dd/mm/yyyy"
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       />
                       <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
@@ -6472,12 +6532,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Part II Order Date *</label>
                       <input
-                        type="text"
-                        inputMode="numeric"
+                        type="date"
                         value={closePartIiOrderDate}
                         onChange={(e) => { setClosePartIiOrderDate(e.target.value); setCourtCloseErr(""); }}
                         disabled={courtCloseSaving}
-                        placeholder="dd/mm/yyyy"
                         className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                       />
                     </div>
@@ -6644,11 +6702,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
           <div>
             <label className="text-xs text-gray-400 block mb-1">Tasking Date *</label>
             <input
-                  type="text"
-                  inputMode="numeric"
+                  type="date"
                   value={taskingDate}
                   onChange={(e) => setTaskingDate(e.target.value)}
-                  placeholder="dd/mm/yyyy"
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded px-3 py-2"
                 />
                 <p className="text-[11px] text-gray-500 mt-1">Time is auto-captured when tasking is submitted.</p>
@@ -7087,16 +7143,15 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
-                            <CaseFormLabel>Name</CaseFormLabel>
+                            <CaseFormLabel>Service No</CaseFormLabel>
                             <input
                               type="text"
-                              value={accused.name}
-                              onChange={(e) => setCreateForm((f) => ({
-                                ...f,
-                                accused_entries: f.accused_entries.map((entry, index) =>
-                                  index === idx ? { ...entry, name: e.target.value } : entry
-                                ),
-                              }))}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              maxLength={20}
+                              value={accused.service_number}
+                              onChange={(e) => handleAccusedServiceNumberChange(idx, e.target.value)}
+                              placeholder="Numbers only"
                               className={CASE_FORM_CONTROL}
                             />
                           </div>
@@ -7113,20 +7168,23 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                               className={CASE_FORM_CONTROL}
                             >
                               <option value="">Select rank...</option>
+                              {accused.rank && !ALL_RANKS.includes(accused.rank) && (
+                                <option value={accused.rank}>{accused.rank}</option>
+                              )}
                               {ALL_RANKS.map((rank) => (
                                 <option key={rank} value={rank}>{rank}</option>
                               ))}
                             </select>
                           </div>
                           <div>
-                            <CaseFormLabel>Service #</CaseFormLabel>
+                            <CaseFormLabel>Name</CaseFormLabel>
                             <input
                               type="text"
-                              value={accused.service_number}
+                              value={accused.name}
                               onChange={(e) => setCreateForm((f) => ({
                                 ...f,
                                 accused_entries: f.accused_entries.map((entry, index) =>
-                                  index === idx ? { ...entry, service_number: e.target.value } : entry
+                                  index === idx ? { ...entry, name: e.target.value } : entry
                                 ),
                               }))}
                               className={CASE_FORM_CONTROL}
@@ -7298,11 +7356,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                 <div>
                   <CaseFormLabel>Date of Offence *</CaseFormLabel>
                   <input
-                    type="text"
-                    inputMode="numeric"
+                    type="date"
                     value={createForm.date_of_offence}
                     onChange={(e) => setCreateForm((f) => ({ ...f, date_of_offence: e.target.value }))}
-                    placeholder="dd/mm/yyyy"
                     required={caseFormMode === "create"}
                     className={CASE_FORM_CONTROL}
                   />
@@ -7346,23 +7402,10 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                 <div>
                   <CaseFormLabel>RFI Date{createForm.rfi_document ? " *" : ""}</CaseFormLabel>
                   <input
-                    type="text"
-                    inputMode="numeric"
+                    type="date"
                     value={createForm.rfi_date}
                     onChange={(e) => setCreateForm((f) => ({ ...f, rfi_date: e.target.value }))}
-                    placeholder="dd/mm/yyyy"
                     required={caseFormMode === "create" && Boolean(createForm.rfi_document)}
-                    className={CASE_FORM_CONTROL}
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <CaseFormLabel>Tasking REF No</CaseFormLabel>
-                  <input
-                    type="text"
-                    value={createForm.tasking_no}
-                    onChange={(e) => setCreateForm((f) => ({ ...f, tasking_no: e.target.value }))}
-                    placeholder="Optional until the case is tasked"
                     className={CASE_FORM_CONTROL}
                   />
                 </div>
@@ -7405,11 +7448,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <div>
                       <CaseFormLabel>Date *</CaseFormLabel>
                       <input
-                        type="text"
-                        inputMode="numeric"
+                        type="date"
                         value={sourceCaseForm.occurred_date}
                         onChange={(e) => updateSourceCaseField("occurred_date", e.target.value)}
-                        placeholder="dd/mm/yyyy"
                         required
                         className={CASE_FORM_CONTROL}
                       />
@@ -7569,11 +7610,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <div>
                       <CaseFormLabel>Date *</CaseFormLabel>
                       <input
-                        type="text"
-                        inputMode="numeric"
+                        type="date"
                         value={sourceCaseForm.occurred_date}
                         onChange={(e) => updateSourceCaseField("occurred_date", e.target.value)}
-                        placeholder="dd/mm/yyyy"
                         required
                         className={CASE_FORM_CONTROL}
                       />

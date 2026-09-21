@@ -3,11 +3,13 @@ import re
 import time
 
 from django.utils import timezone
+from django.urls import resolve
 
 from .models import AuditLog
 
 
 SENSITIVE_QUERY_PARTS = ("password", "token", "access", "refresh", "secret", "key", "authorization")
+SENSITIVE_FIELD_PARTS = SENSITIVE_QUERY_PARTS + ("totp", "otp", "pin")
 ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
 
 
@@ -17,16 +19,28 @@ class AuditLogMiddleware:
 
     def __call__(self, request):
         started = time.perf_counter()
+        before = self._target_snapshot(request)
         try:
             response = self.get_response(request)
         except Exception:
-            self._write_log(request, 500, round((time.perf_counter() - started) * 1000))
+            self._write_log(
+                request,
+                500,
+                round((time.perf_counter() - started) * 1000),
+                before=before,
+            )
             raise
 
-        self._write_log(request, getattr(response, "status_code", None), round((time.perf_counter() - started) * 1000), response)
+        self._write_log(
+            request,
+            getattr(response, "status_code", None),
+            round((time.perf_counter() - started) * 1000),
+            response,
+            before=before,
+        )
         return response
 
-    def _write_log(self, request, status_code=None, duration_ms=None, response=None):
+    def _write_log(self, request, status_code=None, duration_ms=None, response=None, before=None):
         if not self._should_log(request):
             return
 
@@ -37,7 +51,9 @@ class AuditLogMiddleware:
             object_id = self._object_id_for_path(request.path)
             actor = self._actor_payload(user, request, response)
             unit = self._unit_payload(user)
-            description = self._description(actor, action, module, request, object_id)
+            description = self._description(
+                actor, action, module, request, object_id, before, response, unit
+            )
             AuditLog.objects.create(
                 user=user if getattr(user, "is_authenticated", False) else None,
                 **actor,
@@ -214,6 +230,73 @@ class AuditLogMiddleware:
         return query.urlencode()
 
     @staticmethod
+    def _request_values(request):
+        try:
+            if request.content_type and "multipart" in request.content_type:
+                source = request.POST
+                values = {key: source.get(key) for key in source}
+                values.update({
+                    key: f"attached file: {file.name}"
+                    for key, file in request.FILES.items()
+                })
+                return values
+            if request.body:
+                payload = json.loads(request.body.decode("utf-8"))
+                return payload if isinstance(payload, dict) else {}
+        except (AttributeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            return {}
+        return {}
+
+    @classmethod
+    def _target_snapshot(cls, request):
+        if request.method not in {"PUT", "PATCH", "DELETE"}:
+            return {}
+        try:
+            match = resolve(request.path)
+            view_class = getattr(match.func, "cls", None)
+            model = getattr(getattr(view_class, "queryset", None), "model", None)
+            object_id = next(
+                (value for key, value in match.kwargs.items() if key in {"pk", "id"}), None
+            )
+            if not model or not object_id:
+                return {}
+            instance = model.objects.filter(pk=object_id).first()
+            if not instance:
+                return {}
+            fields = cls._request_values(request)
+            return {
+                key: cls._safe_value(getattr(instance, key, None), key)
+                for key in fields
+                if hasattr(instance, key)
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _safe_value(value, field_name=""):
+        if any(part in field_name.lower() for part in SENSITIVE_FIELD_PARTS):
+            return "[redacted]"
+        if value is None:
+            return ""
+        text = str(value)
+        return text if len(text) <= 120 else f"{text[:117]}..."
+
+    @classmethod
+    def _change_details(cls, request, before):
+        values = cls._request_values(request)
+        changes = []
+        for field, new_value in values.items():
+            if any(part in field.lower() for part in SENSITIVE_FIELD_PARTS):
+                continue
+            old_value = before.get(field, "") if before else ""
+            new_text = cls._safe_value(new_value, field)
+            if field in before and old_value != new_text:
+                changes.append(f"{field.replace('_', ' ')} changed from '{old_value}' to '{new_text}'")
+            elif field not in before and new_text:
+                changes.append(f"{field.replace('_', ' ')} set to '{new_text}'")
+        return changes[:8]
+
+    @staticmethod
     def _client_ip(request):
         forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
         if forwarded_for:
@@ -221,9 +304,45 @@ class AuditLogMiddleware:
         return request.META.get("REMOTE_ADDR") or None
 
     @staticmethod
-    def _description(actor, action, module, request, object_id):
-        who = actor.get("service_number") or actor.get("user_name") or "Anonymous"
-        target = f"{module}"
+    def _description(
+        actor, action, module, request, object_id, before=None, response=None, unit=None
+    ):
+        identity = " ".join(
+            part for part in [actor.get("user_rank"), actor.get("user_name")] if part
+        ) or "Anonymous"
+        who = " ".join(
+            part for part in [
+                identity,
+                actor.get("service_number"),
+                actor.get("user_role"),
+                (unit or {}).get("battalion_name") or (unit or {}).get("detachment_name"),
+            ] if part
+        )
+        action_words = {
+            AuditLog.Action.LOGIN: "logged in",
+            AuditLog.Action.LOGIN_FAILED: "had a failed login attempt",
+            AuditLog.Action.LOGOUT: "logged out",
+            AuditLog.Action.VIEW: "viewed",
+            AuditLog.Action.CREATE: "created",
+            AuditLog.Action.UPDATE: "updated",
+            AuditLog.Action.DELETE: "deleted",
+            AuditLog.Action.ACTION: "performed an action in",
+            AuditLog.Action.ERROR: "encountered an error while accessing",
+        }
+        verb = action_words.get(action, action.replace("_", " "))
+        target = module.replace("_", " ").title()
         if object_id:
             target = f"{target} #{object_id}"
-        return f"{who} {action.replace('_', ' ')} {target} using {request.method} at {timezone.now():%Y-%m-%d %H:%M:%S}"
+        if action in {AuditLog.Action.LOGIN, AuditLog.Action.LOGIN_FAILED, AuditLog.Action.LOGOUT}:
+            return f"{who} {verb}"
+        details = AuditLogMiddleware._change_details(request, before or {})
+        if request.FILES:
+            files = ", ".join(
+                f"attached {file.name} to {target}" for file in request.FILES.values()
+            )
+            details.append(files)
+        if action == AuditLog.Action.DELETE:
+            return f"{who} deleted {target}"
+        if details:
+            return f"{who} {verb} {target}: {'; '.join(details)}"
+        return f"{who} {verb} {target}"
