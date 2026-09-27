@@ -124,7 +124,7 @@ jobs:
       - name: Scan Python source with Bandit
         run: bandit -r backend/apps -lll -iii -x "backend/apps/*/tests.py,backend/apps/**/migrations/*"
       - name: Scan repository with Trivy
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -146,7 +146,7 @@ jobs:
       - name: Build realtime image
         run: docker build --tag mpims-realtime:ci realtime
       - name: Scan backend image
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: mpims-backend:ci
           scan-type: image
@@ -154,7 +154,7 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
       - name: Scan frontend image
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: mpims-frontend:ci
           scan-type: image
@@ -162,7 +162,7 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
       - name: Scan realtime image
-        uses: aquasecurity/trivy-action@0.32.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: mpims-realtime:ci
           scan-type: image
