@@ -1,15 +1,42 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.admin.forms import AdminAuthenticationForm
+from django import forms
+from django.core.exceptions import ValidationError
+from .tokens import revoke_user_sessions
 from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
+from .views import verify_totp_device
+
+
+class TOTPAdminAuthenticationForm(AdminAuthenticationForm):
+    totp_code = forms.CharField(
+        label="Google Authenticator code",
+        max_length=6,
+        widget=forms.PasswordInput,
+    )
+
+    def confirm_login_allowed(self, user):
+        super().confirm_login_allowed(user)
+        try:
+            device = user.totp_device
+        except TOTPDevice.DoesNotExist as exc:
+            raise ValidationError("Configure Google Authenticator through MPIMS before using admin.") from exc
+        if not device.confirmed:
+            raise ValidationError("Confirm Google Authenticator through MPIMS before using admin.")
+        valid, message = verify_totp_device(device, self.cleaned_data["totp_code"], self.request)
+        if not valid:
+            raise ValidationError(message)
+
+
+admin.site.login_form = TOTPAdminAuthenticationForm
 
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
     list_display = (
-        "service_number", "name", "rank", "role", "unit",
-        "is_active", "mfa_exempt", "email_otp_enabled",
+        "service_number", "name", "rank", "role", "unit", "is_active",
     )
-    list_filter = ("role", "is_active", "mfa_exempt", "email_otp_enabled", "formation")
+    list_filter = ("role", "is_active", "formation")
     search_fields = ("service_number", "name", "email")
     ordering = ("name",)
     fieldsets = (
@@ -17,7 +44,6 @@ class UserAdmin(BaseUserAdmin):
         ("Personal", {"fields": ("name", "rank", "email")}),
         ("Organisation", {"fields": ("role", "unit", "battalion", "formation", "detachment")}),
         ("Flags", {"fields": ("is_active", "is_staff", "is_superuser", "must_change_password")}),
-        ("MFA", {"fields": ("mfa_exempt", "email_otp_enabled")}),
     )
     add_fieldsets = (
         (None, {
@@ -25,6 +51,18 @@ class UserAdmin(BaseUserAdmin):
             "fields": ("service_number", "name", "rank", "role", "password1", "password2"),
         }),
     )
+
+    def save_model(self, request, obj, form, change):
+        previous = (
+            User.objects.filter(pk=obj.pk)
+            .values("is_active")
+            .first()
+            if change
+            else None
+        )
+        super().save_model(request, obj, form, change)
+        if previous and previous["is_active"] and not obj.is_active:
+            revoke_user_sessions(obj)
 
 
 @admin.register(TOTPDevice)

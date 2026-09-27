@@ -1,18 +1,119 @@
 import json
 import shutil
 import tempfile
+from unittest.mock import MagicMock, patch
 
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.test import APIClient
 
 from apps.formations.models import Battalion, Formation, Unit
 from apps.notifications.models import Notification
 from apps.users.models import User
-from .models import Case, CaseAttachment, InvestigationTeam
+from .models import Case, CaseAttachment, CaseNumberSequence, InvestigationTeam
+from .uploads import UploadScanUnavailable, validate_case_upload
+
+
+class CaseUploadValidationTests(SimpleTestCase):
+    @override_settings(CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024, CASE_UPLOAD_CLAMAV_ENABLED=False)
+    def test_accepts_pdf_signature_and_normalizes_filename(self):
+        upload = SimpleUploadedFile(
+            "sensitive name.pdf",
+            b"%PDF-1.7\nvalid test content",
+            content_type="application/pdf",
+        )
+
+        validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+        self.assertEqual(upload.name, "sensitive-name.pdf")
+
+    @override_settings(CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024, CASE_UPLOAD_CLAMAV_ENABLED=False)
+    def test_rejects_extension_signature_mismatch(self):
+        upload = SimpleUploadedFile(
+            "payload.pdf",
+            b"not a PDF",
+            content_type="application/pdf",
+        )
+
+        with self.assertRaises(serializers.ValidationError):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+    @override_settings(CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024, CASE_UPLOAD_CLAMAV_ENABLED=False)
+    def test_rejects_mismatched_mime_type(self):
+        upload = SimpleUploadedFile(
+            "document.pdf",
+            b"%PDF-1.7\nvalid test content",
+            content_type="image/png",
+        )
+
+        with self.assertRaises(serializers.ValidationError):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+    @override_settings(CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024, CASE_UPLOAD_CLAMAV_ENABLED=False)
+    def test_rejects_extension_outside_field_allowlist(self):
+        upload = SimpleUploadedFile(
+            "document.png",
+            b"%PDF-1.7\nvalid test content",
+            content_type="application/pdf",
+        )
+
+        with self.assertRaises(serializers.ValidationError):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+    @override_settings(CASE_DOCUMENT_MAX_UPLOAD_BYTES=8, CASE_UPLOAD_CLAMAV_ENABLED=False)
+    def test_rejects_oversized_upload(self):
+        upload = SimpleUploadedFile(
+            "large.pdf",
+            b"%PDF-1.4\ncontent",
+            content_type="application/pdf",
+        )
+
+        with self.assertRaises(serializers.ValidationError):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+    @override_settings(
+        CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024,
+        CASE_UPLOAD_CLAMAV_ENABLED=True,
+        CASE_UPLOAD_CLAMAV_HOST="localhost",
+        CASE_UPLOAD_CLAMAV_PORT=3310,
+        CASE_UPLOAD_CLAMAV_TIMEOUT=1,
+    )
+    @patch("apps.cases.uploads.socket.create_connection")
+    def test_rejects_malware_reported_by_clamav(self, create_connection):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.recv.return_value = b"stream: Eicar-Test-Signature FOUND\0"
+        create_connection.return_value = connection
+        upload = SimpleUploadedFile(
+            "document.pdf",
+            b"%PDF-1.7\nvalid test content",
+            content_type="application/pdf",
+        )
+
+        with self.assertRaises(serializers.ValidationError):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
+
+    @override_settings(
+        CASE_DOCUMENT_MAX_UPLOAD_BYTES=1024,
+        CASE_UPLOAD_CLAMAV_ENABLED=True,
+        CASE_UPLOAD_CLAMAV_HOST="localhost",
+        CASE_UPLOAD_CLAMAV_PORT=3310,
+        CASE_UPLOAD_CLAMAV_TIMEOUT=1,
+    )
+    @patch("apps.cases.uploads.socket.create_connection", side_effect=OSError("offline"))
+    def test_rejects_upload_when_configured_scanner_is_unavailable(self, _create_connection):
+        upload = SimpleUploadedFile(
+            "document.pdf",
+            b"%PDF-1.7\nvalid test content",
+            content_type="application/pdf",
+        )
+
+        with self.assertRaises(UploadScanUnavailable):
+            validate_case_upload(upload, field_name="file", allowed_extensions={".pdf"})
 
 
 class CaseApiTests(TestCase):
@@ -81,6 +182,103 @@ class CaseApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.superuser)
+
+    def test_clearance_certificate_uses_existing_unit_service_access_policy(self):
+        unit_user = User.objects.create_user(
+            service_number="300001",
+            password="test-password",
+            name="Unit Officer",
+            role=User.Role.CI,
+            unit=self.unit,
+        )
+        case = Case.objects.create(
+            title="DCI case with unit access",
+            criminal_offence_type=Case.CriminalOffenceType.DCI_CIV,
+            accused_unit=self.unit,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=unit_user)
+
+        response = self.client.post(
+            reverse("case-clearance-certificate", args=[case.id]),
+            {},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            response.data["detail"],
+            "Only the accused unit can attach a clearance certificate.",
+        )
+
+    def test_attachment_upload_uses_existing_attachment_access_policy(self):
+        unit_user = User.objects.create_user(
+            service_number="300002",
+            password="test-password",
+            name="Unit Officer",
+            role=User.Role.CI,
+            unit=self.unit,
+        )
+        case = Case.objects.create(
+            title="Unit case attachment access",
+            accused_unit=self.unit,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=unit_user)
+
+        response = self.client.post(
+            reverse("case-attachments", args=[case.id]),
+            {},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(
+            response.data["detail"],
+            "Only authorised Company or Detachment command users can upload case attachments.",
+        )
+
+    def test_document_download_requires_case_access_and_sets_private_headers(self):
+        media_root = tempfile.mkdtemp()
+        try:
+            with override_settings(MEDIA_ROOT=media_root):
+                case = Case.objects.create(title="Protected document test", created_by=self.superuser)
+                case.rfi_document.save(
+                    "protected.pdf",
+                    ContentFile(b"%PDF-1.4\nprotected"),
+                    save=True,
+                )
+                download_url = f"/api/cases/{case.pk}/documents/field-rfi_document/download/"
+
+                response = self.client.get(download_url)
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+                self.assertIn("no-store", response["Cache-Control"])
+                self.assertIn("attachment", response["Content-Disposition"])
+                self.assertEqual(b"".join(response.streaming_content), b"%PDF-1.4\nprotected")
+
+                foreign_case = Case.objects.create(
+                    title="Foreign document owner",
+                    created_by=self.superuser,
+                )
+                foreign_attachment = CaseAttachment.objects.create(
+                    case=foreign_case,
+                    file=ContentFile(b"%PDF-1.4\nforeign", name="foreign.pdf"),
+                )
+                wrong_owner_url = (
+                    f"/api/cases/{case.pk}/documents/{foreign_attachment.pk}/download/"
+                )
+                self.assertEqual(
+                    self.client.get(wrong_owner_url).status_code,
+                    status.HTTP_404_NOT_FOUND,
+                )
+
+                self.client.force_authenticate(user=self.investigator)
+                denied_response = self.client.get(download_url)
+                self.assertEqual(denied_response.status_code, status.HTTP_404_NOT_FOUND)
+        finally:
+            shutil.rmtree(media_root, ignore_errors=True)
 
     def test_create_case_without_accused_or_rfi_allows_hqs_admin(self):
         url = reverse("case-list")
@@ -878,3 +1076,19 @@ class CaseApiTests(TestCase):
             response = self.client.get(reverse("case-protected-file"), {"path": path})
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CaseNumberSequenceTests(TestCase):
+    def test_case_numbers_increment_from_the_locked_yearly_sequence(self):
+        year = timezone.now().year
+        CaseNumberSequence.objects.create(year=year, last_number=40)
+
+        first_case = Case.objects.create(title="First generated case")
+        second_case = Case.objects.create(title="Second generated case")
+
+        self.assertEqual(first_case.case_number, f"CASE/{year}/0041")
+        self.assertEqual(second_case.case_number, f"CASE/{year}/0042")
+        self.assertEqual(
+            CaseNumberSequence.objects.get(year=year).last_number,
+            42,
+        )

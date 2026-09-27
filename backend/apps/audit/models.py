@@ -4,6 +4,21 @@ from django.db import models
 from apps.common.fields import EncryptedTextField
 
 
+class AppendOnlyAuditLogQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise PermissionError("Audit log entries are append-only.")
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("Audit log entries are append-only.")
+
+    def bulk_update(self, objs, fields, batch_size=None):
+        raise PermissionError("Audit log entries are append-only.")
+
+
+class AuditLogManager(models.Manager.from_queryset(AppendOnlyAuditLogQuerySet)):
+    pass
+
+
 class AuditLog(models.Model):
     class Action(models.TextChoices):
         LOGIN = "login", "Login"
@@ -23,7 +38,7 @@ class AuditLog(models.Model):
         on_delete=models.SET_NULL,
         related_name="audit_logs",
     )
-    service_number = models.CharField(max_length=50, blank=True)
+    service_number = EncryptedTextField(blank=True)
     user_name = models.CharField(max_length=150, blank=True)
     user_rank = models.CharField(max_length=80, blank=True)
     user_role = models.CharField(max_length=50, blank=True)
@@ -57,6 +72,8 @@ class AuditLog(models.Model):
     duration_ms = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = AuditLogManager()
+
     class Meta:
         db_table = "audit_logs"
         ordering = ["-created_at"]
@@ -64,10 +81,21 @@ class AuditLog(models.Model):
             models.Index(fields=["-created_at"]),
             models.Index(fields=["action", "-created_at"]),
             models.Index(fields=["module", "-created_at"]),
-            models.Index(fields=["service_number", "-created_at"]),
             models.Index(fields=["user_role", "-created_at"]),
         ]
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise PermissionError("Audit log entries are append-only.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise PermissionError("Audit log entries are append-only.")
+
     def __str__(self):
-        actor = self.service_number or self.user_name or "Anonymous"
+        service_number = str(self.service_number or "")
+        if service_number:
+            actor = f"{'*' * max(0, len(service_number) - 2)}{service_number[-2:]}"
+        else:
+            actor = self.user_name or "Anonymous"
         return f"{self.created_at:%Y-%m-%d %H:%M:%S} {actor} {self.action} {self.module}"

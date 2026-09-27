@@ -1,39 +1,83 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: host
+    command: redis-server --port 6380 --bind 127.0.0.1 --protected-mode yes --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   backend:
     build: ./backend
     restart: unless-stopped
-    command: python manage.py runserver 0.0.0.0:8000
+    command: ["gunicorn", "mpims.wsgi:application", "--bind", "127.0.0.1:8000", "--workers", "${WEB_CONCURRENCY:-2}", "--timeout", "60"]
     network_mode: host
     volumes:
-      - ./backend:/app
+      - ./backend/media:/app/media
     env_file:
       - ./backend/.env
     environment:
       DB_HOST: 127.0.0.1
       DB_PORT: 5432
+      DEBUG: "False"
       FRONTEND_URL: https://marshal.mod.go.ke
-      ALLOWED_HOSTS: marshal.mod.go.ke,192.168.90.244,localhost,127.0.0.1
-      CORS_ALLOWED_ORIGINS: https://marshal.mod.go.ke,http://192.168.90.244:3000,http://localhost:3000
-      CSRF_TRUSTED_ORIGINS: https://marshal.mod.go.ke,http://192.168.90.244:3000,http://localhost:3000
+      ALLOWED_HOSTS: marshal.mod.go.ke
+      CORS_ALLOWED_ORIGINS: https://marshal.mod.go.ke
+      CSRF_TRUSTED_ORIGINS: https://marshal.mod.go.ke
+      DB_SSLMODE: ${DB_SSLMODE:-verify-full}
+      DB_SSLROOTCERT: ${DB_SSLROOTCERT:-}
+      CELERY_BROKER_URL: redis://127.0.0.1:6380/0
+      SECURE_HSTS_SECONDS: 31536000
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "mpims", "worker", "--loglevel=INFO", "--concurrency=${CELERY_WORKER_CONCURRENCY:-2}"]
+    network_mode: host
+    env_file:
+      - ./backend/.env
+    environment:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DEBUG: "False"
+      DB_SSLMODE: ${DB_SSLMODE:-verify-full}
+      DB_SSLROOTCERT: ${DB_SSLROOTCERT:-}
+      CELERY_BROKER_URL: redis://127.0.0.1:6380/0
+    depends_on:
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
       args:
-        REACT_APP_API_URL: https://marshal.mod.go.ke
-        REACT_APP_WS_URL: https://marshal.mod.go.ke
+        VITE_API_URL: https://marshal.mod.go.ke
+        VITE_WS_URL: https://marshal.mod.go.ke
     restart: unless-stopped
     ports:
-      - "3000:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "127.0.0.1:3000:80"
   
   realtime:
     build: ./realtime
     restart: unless-stopped
     network_mode: host
+    env_file:
+      - ./realtime/.env
     environment:
-      DATABASE_URL: postgres://mpims_user:mpims_pass@127.0.0.1:5432/mpims_db
       DJANGO_API_URL: http://127.0.0.1:8000
       CORS_ORIGIN: https://marshal.mod.go.ke
+      HOST: 127.0.0.1
       PORT: 4000
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:

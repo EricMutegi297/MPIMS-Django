@@ -8,8 +8,18 @@ from django.urls import resolve
 from .models import AuditLog
 
 
-SENSITIVE_QUERY_PARTS = ("password", "token", "access", "refresh", "secret", "key", "authorization")
-SENSITIVE_FIELD_PARTS = SENSITIVE_QUERY_PARTS + ("totp", "otp", "pin")
+SENSITIVE_QUERY_PARTS = (
+    "password", "token", "access", "refresh", "secret", "key", "authorization",
+    "service_number", "accused", "identity", "description", "remarks", "evidence",
+    "service_no", "document", "attachment", "filename", "search", "query",
+)
+SENSITIVE_FIELD_PARTS = SENSITIVE_QUERY_PARTS + (
+    "totp", "otp", "pin", "name", "detail", "summary", "note", "file",
+    "email", "phone", "address", "statement", "finding", "narrative",
+    "offence", "incident", "witness", "victim", "suspect", "allegation",
+    "complainant", "offender", "subject", "personal", "location", "birth",
+    "medical", "contact",
+)
 ID_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
 
 
@@ -126,7 +136,7 @@ class AuditLogMiddleware:
         if getattr(user, "is_authenticated", False):
             return {
                 "service_number": getattr(user, "service_number", "") or "",
-                "user_name": getattr(user, "name", "") or str(user),
+                "user_name": getattr(user, "name", "") or "Unknown user",
                 "user_rank": getattr(user, "rank", "") or "",
                 "user_role": getattr(user, "role", "") or ("superuser" if getattr(user, "is_superuser", False) else ""),
             }
@@ -286,7 +296,10 @@ class AuditLogMiddleware:
         values = cls._request_values(request)
         changes = []
         for field, new_value in values.items():
-            if any(part in field.lower() for part in SENSITIVE_FIELD_PARTS):
+            if (
+                any(part in field.lower() for part in SENSITIVE_FIELD_PARTS)
+                or isinstance(new_value, (dict, list, tuple))
+            ):
                 continue
             old_value = before.get(field, "") if before else ""
             new_text = cls._safe_value(new_value, field)
@@ -307,17 +320,6 @@ class AuditLogMiddleware:
     def _description(
         actor, action, module, request, object_id, before=None, response=None, unit=None
     ):
-        identity = " ".join(
-            part for part in [actor.get("user_rank"), actor.get("user_name")] if part
-        ) or "Anonymous"
-        who = " ".join(
-            part for part in [
-                identity,
-                actor.get("service_number"),
-                actor.get("user_role"),
-                (unit or {}).get("battalion_name") or (unit or {}).get("detachment_name"),
-            ] if part
-        )
         action_words = {
             AuditLog.Action.LOGIN: "logged in",
             AuditLog.Action.LOGIN_FAILED: "had a failed login attempt",
@@ -334,15 +336,12 @@ class AuditLogMiddleware:
         if object_id:
             target = f"{target} #{object_id}"
         if action in {AuditLog.Action.LOGIN, AuditLog.Action.LOGIN_FAILED, AuditLog.Action.LOGOUT}:
-            return f"{who} {verb}"
+            return verb
         details = AuditLogMiddleware._change_details(request, before or {})
         if request.FILES:
-            files = ", ".join(
-                f"attached {file.name} to {target}" for file in request.FILES.values()
-            )
-            details.append(files)
+            details.append(f"uploaded {len(request.FILES)} file(s) to {target}")
         if action == AuditLog.Action.DELETE:
-            return f"{who} deleted {target}"
+            return f"deleted {target}"
         if details:
-            return f"{who} {verb} {target}: {'; '.join(details)}"
-        return f"{who} {verb} {target}"
+            return f"{verb} {target}: {'; '.join(details)}"
+        return f"{verb} {target}"

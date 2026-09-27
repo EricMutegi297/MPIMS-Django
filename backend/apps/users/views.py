@@ -11,7 +11,7 @@ import pyotp
 import qrcode
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
+from apps.common.mail import enqueue_email
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -21,11 +21,14 @@ from rest_framework import status, generics, permissions
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.notifications.models import Notification
 
 from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
+from .tokens import revoke_user_sessions, user_credential_version
 from .access import has_global_read_access, is_admin_hqs, is_battalion_admin, is_detachment_ic, is_docus_clerk, is_hqs_admin
 from .serializers import (
     ChangePasswordSerializer,
@@ -108,7 +111,7 @@ def send_password_setup_email(user, subject, intro):
         "Open the link and choose your password. If you did not expect this message, contact your MPIMS administrator."
     )
     try:
-        return bool(send_mail(
+        return bool(enqueue_email(
             subject=subject,
             message=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
@@ -128,16 +131,11 @@ def email_delivery_mode():
 
 
 def totp_required_for_user(user):
-    return bool(user and getattr(settings, "TOTP_REQUIRED", True) and not getattr(user, "mfa_exempt", False))
+    return bool(user)
 
 
 def email_otp_required_for_user(user):
-    return bool(
-        user
-        and getattr(settings, "TOTP_REQUIRED", True)
-        and getattr(user, "mfa_exempt", False)
-        and getattr(user, "email_otp_enabled", False)
-    )
+    return False
 
 
 def email_otp_lifetime():
@@ -200,6 +198,8 @@ def user_has_confirmed_totp(user):
 
 def issue_auth_tokens(user, *, mfa_pending=False):
     refresh = RefreshToken.for_user(user)
+    refresh["auth_version"] = user.auth_token_version
+    refresh["credential_version"] = user_credential_version(user)
     if mfa_pending:
         refresh["mfa_pending"] = True
         refresh["mfa_reason"] = "totp_setup"
@@ -704,7 +704,7 @@ def send_email_otp_login_code(user, code):
         f"This code expires in {minutes} minutes. If you did not try to sign in, contact your MPIMS administrator."
     )
     try:
-        return bool(send_mail(
+        return bool(enqueue_email(
             subject="MPIMS Login Verification Code",
             message=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
@@ -855,31 +855,6 @@ def login_view(request):
     user = serializer.validated_data["user"]
     reset_login_failures(service_number, ip_address)
 
-    if email_otp_required_for_user(user):
-        if not user.email:
-            return Response(
-                {"detail": "Email OTP is enabled for this account, but no email address is set."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        challenge, code = create_email_otp_login_challenge(user)
-        if not send_email_otp_login_code(user, code):
-            return Response(
-                {"detail": "Could not send the email verification code. Contact your MPIMS administrator."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        return Response({
-            "user": UserSerializer(user).data,
-            "mustChangePassword": user.must_change_password,
-            "requiresTotp": False,
-            "totpSetupRequired": False,
-            "requiresEmailOtp": True,
-            "emailOtpChallenge": {
-                "challenge_id": challenge.challenge_id,
-                "expires_at": challenge.expires_at,
-                "sent_to": masked_email(challenge.sent_to),
-            },
-        })
-
     totp_required = totp_required_for_user(user)
     device = get_confirmed_totp_device(user)
 
@@ -904,8 +879,36 @@ def login_view(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
 def logout_view(request):
-    # JWT is stateless — client discards the tokens
+    refresh_token = str(request.data.get("refresh") or "").strip()
+    if not refresh_token:
+        return Response(
+            {"detail": "A refresh token is required to log out."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        refresh = RefreshToken(refresh_token)
+        user_id = refresh.get(api_settings.USER_ID_CLAIM)
+        user = User.objects.get(**{api_settings.USER_ID_FIELD: user_id})
+    except TokenError:
+        return Response(
+            {"detail": "The refresh token is invalid or expired."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except (User.DoesNotExist, TypeError, ValueError):
+        return Response(
+            {"detail": "The refresh token is invalid or expired."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not user.is_active or refresh.get("auth_version") != user.auth_token_version:
+        return Response(
+            {"detail": "The refresh token is invalid or expired."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    refresh.blacklist()
+    revoke_user_sessions(user)
     return Response({"detail": "Logged out successfully."})
 
 
@@ -921,6 +924,7 @@ def change_password(request):
     request.user.set_password(serializer.validated_data["new_password"])
     request.user.must_change_password = False
     request.user.save(update_fields=["password", "must_change_password"])
+    revoke_user_sessions(request.user)
     mfa_pending = totp_required_for_user(request.user) and not user_has_confirmed_totp(request.user)
     return Response({
         "detail": "Password changed successfully.",
@@ -982,6 +986,7 @@ def password_reset_confirm(request):
     user.set_password(serializer.validated_data["new_password"])
     user.must_change_password = False
     user.save(update_fields=["password", "must_change_password"])
+    revoke_user_sessions(user)
     reset_password_reset_confirm_failures(uid, ip_address)
     return Response({"detail": "Password reset successfully. You can now sign in."})
 
@@ -991,8 +996,8 @@ def totp_status(request):
     device = get_totp_device(request.user)
     return Response({
         "required": totp_required_for_user(request.user),
-        "mfa_exempt": bool(getattr(request.user, "mfa_exempt", False)),
-        "email_otp_enabled": bool(getattr(request.user, "email_otp_enabled", False)),
+        "mfa_exempt": False,
+        "email_otp_enabled": False,
         "configured": bool(device and device.confirmed),
         "pending": bool(device and not device.confirmed),
         "locked_until": device.locked_until if device else None,
@@ -1122,6 +1127,7 @@ def user_totp_reset(request, pk):
 
     TOTPDevice.objects.filter(user=user).delete()
     TOTPLoginChallenge.objects.filter(user=user).delete()
+    revoke_user_sessions(user)
     return Response({"detail": "Google Authenticator reset. The user will set it up at next login."})
 
 
@@ -1248,8 +1254,15 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         actor = self.request.user
+        was_active = serializer.instance.is_active
         current_role = getattr(serializer.instance, "role", "")
         new_role = serializer.validated_data.get("role", current_role)
+
+        def save_user(**kwargs):
+            updated_user = serializer.save(**kwargs)
+            if was_active and not updated_user.is_active:
+                revoke_user_sessions(updated_user)
+            return updated_user
 
         if (
             (current_role == User.Role.CORPS_CMD or new_role == User.Role.CORPS_CMD)
@@ -1265,7 +1278,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             if new_role == User.Role.DOCUS_CLERK:
                 unit = serializer.validated_data.get("unit", serializer.instance.unit)
                 enforce_docus_clerk_unit_limit(unit, actor, exclude_user_id=serializer.instance.pk)
-            serializer.save()
+            save_user()
             return
 
         if is_battalion_admin(actor):
@@ -1280,7 +1293,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
                 raise PermissionDenied("Cannot move users outside your battalion units or accused units in tasked cases.")
             if detachment and detachment.company.battalion_id != actor.battalion_id:
                 raise PermissionDenied("Battalion admin can only manage detachment users in their battalion.")
-            serializer.save(battalion=actor.battalion)
+            save_user(battalion=actor.battalion)
             return
 
         if is_docus_clerk(actor):
@@ -1290,7 +1303,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             if unit and unit.id != actor.unit_id:
                 raise PermissionDenied("Docus Clerk can only manage users in their assigned unit.")
             battalion = actor.unit.battalion if actor.unit_id and actor.unit.battalion_id else actor.battalion
-            serializer.save(unit=actor.unit, battalion=battalion)
+            save_user(unit=actor.unit, battalion=battalion)
             return
 
         if is_detachment_ic(actor):
@@ -1301,7 +1314,7 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
             if detachment and detachment != actor.detachment:
                 raise PermissionDenied("Cannot move users outside your company.")
 
-        serializer.save()
+        save_user()
 
     def perform_destroy(self, instance):
         actor = self.request.user

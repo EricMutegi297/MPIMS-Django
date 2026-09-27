@@ -177,18 +177,26 @@ class Command(BaseCommand):
                 service=ACCUSED["service"],
                 unit=accused_unit,
             )
-            CaseActivityLog.objects.get_or_create(
+            if not CaseActivityLog.objects.filter(
                 case=case,
                 action=CaseActivityLog.Action.BATTALION_TASKED,
-                detail=f"Simulation case tasked to {battalion.name}.",
-                defaults={"actor": created_by},
-            )
-            CaseActivityLog.objects.get_or_create(
+            ).exists():
+                CaseActivityLog.objects.create(
+                    case=case,
+                    action=CaseActivityLog.Action.BATTALION_TASKED,
+                    detail=f"Simulation case tasked to {battalion.name}.",
+                    actor=created_by,
+                )
+            if not CaseActivityLog.objects.filter(
                 case=case,
                 action=CaseActivityLog.Action.TEAM_ASSIGNED,
-                detail=f"Simulation case assigned to {team.name}.",
-                defaults={"actor": created_by},
-            )
+            ).exists():
+                CaseActivityLog.objects.create(
+                    case=case,
+                    action=CaseActivityLog.Action.TEAM_ASSIGNED,
+                    detail=f"Simulation case assigned to {team.name}.",
+                    actor=created_by,
+                )
             created_cases.append((case, battalion, team, case_created))
 
         action = "created/updated"

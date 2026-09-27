@@ -1,6 +1,6 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
+from .token_refresh import MPIMSTokenRefreshView
 
 urlpatterns = [
     path("login/", views.login_view, name="login"),
@@ -15,7 +15,7 @@ urlpatterns = [
     path("totp/login/verify/", views.totp_login_verify, name="totp-login-verify"),
     path("email-otp/login/verify/", views.email_otp_login_verify, name="email-otp-login-verify"),
     path("users/<int:pk>/totp-reset/", views.user_totp_reset, name="user-totp-reset"),
-    path("token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
+    path("token/refresh/", MPIMSTokenRefreshView.as_view(), name="token-refresh"),
     path("users/", views.UserListCreateView.as_view(), name="user-list"),
     path("users/<int:pk>/", views.UserDetailView.as_view(), name="user-detail"),
 ]

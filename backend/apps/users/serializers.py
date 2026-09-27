@@ -16,6 +16,8 @@ class UserSerializer(serializers.ModelSerializer):
     detachment_name = serializers.SerializerMethodField()
     company_id = serializers.SerializerMethodField()
     is_superuser = serializers.SerializerMethodField()
+    mfa_exempt = serializers.SerializerMethodField()
+    email_otp_enabled = serializers.SerializerMethodField()
     totp_configured = serializers.SerializerMethodField()
     totp_required = serializers.SerializerMethodField()
 
@@ -51,6 +53,12 @@ class UserSerializer(serializers.ModelSerializer):
     def get_is_superuser(self, obj):
         return bool(obj.is_superuser)
 
+    def get_mfa_exempt(self, obj):
+        return False
+
+    def get_email_otp_enabled(self, obj):
+        return False
+
     def get_totp_configured(self, obj):
         try:
             return bool(obj.totp_device.confirmed)
@@ -58,26 +66,15 @@ class UserSerializer(serializers.ModelSerializer):
             return False
 
     def get_totp_required(self, obj):
-        from django.conf import settings
-
-        return bool(getattr(settings, "TOTP_REQUIRED", True) and not obj.mfa_exempt)
+        return True
 
     def validate(self, attrs):
-        mfa_exempt = attrs.get("mfa_exempt", getattr(self.instance, "mfa_exempt", False))
-        email_otp_enabled = attrs.get(
-            "email_otp_enabled",
-            getattr(self.instance, "email_otp_enabled", False),
-        )
-        email = attrs.get("email", getattr(self.instance, "email", ""))
-
-        if email_otp_enabled and not mfa_exempt:
-            raise serializers.ValidationError(
-                {"email_otp_enabled": "Email OTP can only be enabled for Google Authenticator exempt users."}
-            )
-        if email_otp_enabled and not str(email or "").strip():
-            raise serializers.ValidationError(
-                {"email": "Email is required before enabling email OTP."}
-            )
+        removed_mfa_fields = {"mfa_exempt", "email_otp_enabled"}.intersection(self.initial_data)
+        if removed_mfa_fields:
+            raise serializers.ValidationError({
+                field: "MFA exemptions and email OTP are no longer supported; authenticator MFA is mandatory."
+                for field in sorted(removed_mfa_fields)
+            })
         return attrs
 
 

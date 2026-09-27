@@ -1,7 +1,8 @@
+import logging
 import re
 
 from django.conf import settings
-from django.core.mail import send_mail
+from apps.common.mail import enqueue_email
 from django.db import transaction
 from django.db.models import Count, Max, Q, Sum
 from django.utils.dateparse import parse_date
@@ -24,6 +25,8 @@ from .serializers import (
     OccurrenceToIncidentSerializer,
     user_label,
 )
+
+logger = logging.getLogger(__name__)
 
 
 DUTY_ROOM_POST_NAME = "duty room"
@@ -57,7 +60,7 @@ class DutyRoomNotificationMixin:
         email_list = [user.email for user in recipients if user.email]
         if email_list:
             try:
-                send_mail(
+                enqueue_email(
                     subject=subject,
                     message=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
@@ -65,7 +68,7 @@ class DutyRoomNotificationMixin:
                     fail_silently=True,
                 )
             except Exception:
-                pass
+                logger.exception("Failed to queue duty room notification email.")
 
 
 class DutyRosterViewSet(DutyRoomNotificationMixin, viewsets.ModelViewSet):

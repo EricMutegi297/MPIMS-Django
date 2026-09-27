@@ -1,0 +1,17 @@
+Django>=5.0.4
+djangorestframework>=3.15.1
+django-cors-headers>=4.3.1
+psycopg[binary]>=3.2.0
+python-decouple>=3.8
+Pillow>=10.3.0
+djangorestframework-simplejwt>=5.3.1
+django-filter>=24.2
+APScheduler>=3.10.4
+django-apscheduler>=0.7.0
+whitenoise>=6.6.0
+cryptography>=42.0.0
+celery[redis]>=5.5,<6
+pyotp>=2.10.0
+qrcode[pil]>=8.2
+pywin32>=306; platform_system=="Windows"
+gunicorn>=23.0

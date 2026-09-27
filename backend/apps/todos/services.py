@@ -2,7 +2,7 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.mail import send_mail
+from apps.common.mail import enqueue_email
 from django.utils import timezone
 
 from apps.notifications.models import Notification
@@ -64,7 +64,7 @@ def send_todo_reminders():
         emails = [user.email for user in new_users if user.email]
         if emails:
             try:
-                send_mail(
+                enqueue_email(
                     subject=f"[MPIMS] Upcoming event: {event.title}",
                     message=f"{message}\n\n{event.description}\nLocation: {event.location or 'Not specified'}",
                     from_email=settings.DEFAULT_FROM_EMAIL,

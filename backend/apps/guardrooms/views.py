@@ -1,5 +1,7 @@
+import logging
+
 from django.conf import settings
-from django.core.mail import send_mail
+from apps.common.mail import enqueue_email
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.db.models import Q
@@ -18,6 +20,8 @@ from apps.users.access import (
     should_block_command_write,
 )
 from apps.users.models import User
+
+logger = logging.getLogger(__name__)
 
 
 class GuardroomViewSet(viewsets.ModelViewSet):
@@ -600,7 +604,7 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
         if not recipients:
             return
         try:
-            send_mail(
+            enqueue_email(
                 subject=subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
@@ -608,4 +612,4 @@ class GuardroomPlacementRequestViewSet(viewsets.ModelViewSet):
                 fail_silently=True,
             )
         except Exception:
-            pass
+            logger.exception("Failed to queue guardroom notification email.")

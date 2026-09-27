@@ -16,7 +16,7 @@ def send_close_request_reminders():
     """Daily reminder: notify HQS admins of all pending close requests."""
     try:
         from django.conf import settings as django_settings
-        from django.core.mail import send_mail
+        from apps.common.mail import enqueue_email
 
         from apps.formations.models import Battalion
         from apps.notifications.models import Notification
@@ -94,7 +94,7 @@ def send_close_request_reminders():
                 + "\n\nPlease log in to the MPIMS dashboard to review and close these cases."
             )
             try:
-                send_mail(
+                enqueue_email(
                     subject=f"[MPIMS] Daily Reminder — {len(pending)} Pending Case Closure(s)",
                     message=body,
                     from_email=django_settings.DEFAULT_FROM_EMAIL,

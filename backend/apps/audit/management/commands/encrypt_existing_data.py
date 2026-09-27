@@ -47,7 +47,10 @@ class Command(BaseCommand):
             for pk in target_pks:
                 if not dry_run:
                     obj = model._default_manager.only(model._meta.pk.name, *encrypted_fields).get(pk=pk)
-                    obj.save(update_fields=encrypted_fields)
+                    if model._meta.label_lower == "audit.auditlog":
+                        self._update_append_only_audit_row(model, obj, encrypted_fields)
+                    else:
+                        obj.save(update_fields=encrypted_fields)
 
             if model_count:
                 total_rows += model_count
@@ -62,6 +65,25 @@ class Command(BaseCommand):
                 self.stdout.write(f"{action} {model_count} rows in {model_label}")
 
         self.stdout.write(self.style.SUCCESS(f"Done. Rows processed: {total_rows}"))
+
+    @staticmethod
+    def _update_append_only_audit_row(model, obj, encrypted_fields):
+        quote_name = connection.ops.quote_name
+        table = quote_name(model._meta.db_table)
+        assignments = []
+        values = []
+        for name in encrypted_fields:
+            field = model._meta.get_field(name)
+            assignments.append(f"{quote_name(field.column)} = %s")
+            values.append(field.get_db_prep_save(getattr(obj, name), connection))
+        pk_field = model._meta.pk
+        values.append(getattr(obj, pk_field.attname))
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {table} SET {', '.join(assignments)} "
+                f"WHERE {quote_name(pk_field.column)} = %s",
+                values,
+            )
 
     @staticmethod
     def _target_pks(model, encrypted_fields, batch_size, rotate=False):

@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
+const BASE_URL = import.meta.env.VITE_API_URL || "";
 const USER_CACHE_KEY = "mpims_user_cache";
 
 const api = axios.create({

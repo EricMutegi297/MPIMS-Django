@@ -14,7 +14,6 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsSuperUser]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = [
-        "service_number",
         "user_name",
         "user_rank",
         "user_role",
@@ -33,7 +32,6 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         "method",
         "status_code",
         "duration_ms",
-        "service_number",
         "user_role",
     ]
     ordering = ["-created_at"]

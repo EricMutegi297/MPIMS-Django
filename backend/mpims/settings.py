@@ -1,14 +1,24 @@
 from pathlib import Path
 from decouple import config
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config("SECRET_KEY")
-FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY", default="")
+FIELD_ENCRYPTION_KEY = config("FIELD_ENCRYPTION_KEY", default="").strip()
+if not FIELD_ENCRYPTION_KEY:
+    raise ImproperlyConfigured("Set FIELD_ENCRYPTION_KEY to a dedicated Fernet key.")
+if FIELD_ENCRYPTION_KEY == SECRET_KEY:
+    raise ImproperlyConfigured("FIELD_ENCRYPTION_KEY must be different from SECRET_KEY.")
 FIELD_ENCRYPTION_OLD_KEYS = config("FIELD_ENCRYPTION_OLD_KEYS", default="")
+CASE_DOCUMENT_MAX_UPLOAD_BYTES = config(
+    "CASE_DOCUMENT_MAX_UPLOAD_BYTES",
+    default=25 * 1024 * 1024,
+    cast=int,
+)
 
 
-def _as_bool(value, default=True):
+def _as_bool(value, default=False):
     if isinstance(value, bool):
         return value
     normalized = str(value).strip().lower()
@@ -19,11 +29,31 @@ def _as_bool(value, default=True):
     return default
 
 
-DEBUG = _as_bool(config("DEBUG", default=True))
+CASE_UPLOAD_CLAMAV_ENABLED = _as_bool(
+    config("CASE_UPLOAD_CLAMAV_ENABLED", default=False),
+    default=False,
+)
+CASE_UPLOAD_CLAMAV_HOST = config("CASE_UPLOAD_CLAMAV_HOST", default="127.0.0.1")
+CASE_UPLOAD_CLAMAV_PORT = config("CASE_UPLOAD_CLAMAV_PORT", default=3310, cast=int)
+CASE_UPLOAD_CLAMAV_TIMEOUT = config("CASE_UPLOAD_CLAMAV_TIMEOUT", default=10, cast=int)
+
+DEBUG = _as_bool(config("DEBUG", default=False), default=False)
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
 USE_X_FORWARDED_HOST = _as_bool(config("USE_X_FORWARDED_HOST", default=True))
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = not DEBUG
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SECURE_HSTS_SECONDS = config(
+    "SECURE_HSTS_SECONDS",
+    default=0 if DEBUG else 31_536_000,
+    cast=int,
+)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG and SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = not DEBUG and SECURE_HSTS_SECONDS > 0
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -34,9 +64,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Third-party
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_filters",
-    "channels",
     "django_apscheduler",
     # Local apps
     "apps.users",
@@ -87,6 +117,15 @@ WSGI_APPLICATION = "mpims.wsgi.application"
 ASGI_APPLICATION = "mpims.asgi.application"
 
 # ── Database ─────────────────────────────────────────────────────────────────
+DB_SSLMODE = config(
+    "DB_SSLMODE",
+    default="prefer" if DEBUG else "verify-full",
+).strip().lower()
+if not DEBUG and DB_SSLMODE not in {"require", "verify-ca", "verify-full"}:
+    raise ImproperlyConfigured(
+        "Production DB_SSLMODE must require TLS (require, verify-ca, or verify-full)."
+    )
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -96,10 +135,13 @@ DATABASES = {
         "HOST": config("DB_HOST", default="localhost"),
         "PORT": config("DB_PORT", default="5432"),
         "OPTIONS": {
-            "sslmode": config("DB_SSLMODE", default="prefer"),
+            "sslmode": DB_SSLMODE,
         },
     }
 }
+DB_SSLROOTCERT = config("DB_SSLROOTCERT", default="").strip()
+if DB_SSLROOTCERT:
+    DATABASES["default"]["OPTIONS"]["sslrootcert"] = DB_SSLROOTCERT
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = "users.User"
@@ -112,7 +154,7 @@ SESSION_ENGINE = "django.contrib.sessions.backends.db"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "apps.users.authentication.MPIMSJWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",  # keeps Django admin working
+        "apps.users.authentication.MPIMSSessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -132,24 +174,32 @@ from datetime import timedelta  # noqa: E402
 SIMPLE_JWT = {
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=2),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
+    "BLACKLIST_AFTER_ROTATION": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
     "AUTH_HEADER_NAME": "HTTP_AUTHORIZATION",
 }
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-CORS_ALLOW_ALL_ORIGINS = DEBUG  # allow any origin in dev
-CORS_ALLOWED_ORIGINS = config(
-    "CORS_ALLOWED_ORIGINS", default="http://localhost:3000,https://localhost:3000"
-).split(",")
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        "CORS_ALLOWED_ORIGINS", default="http://localhost:3000,https://localhost:3000"
+    ).split(",")
+    if origin.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = config(
-    "CSRF_TRUSTED_ORIGINS",
-    default="http://localhost:3000,https://localhost:3000,http://192.168.88.13:3000,https://192.168.88.13:3000",
-).split(",")
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        "CSRF_TRUSTED_ORIGINS",
+        default="http://localhost:3000,https://localhost:3000",
+    ).split(",")
+    if origin.strip()
+]
 
 # ── Internationalisation ──────────────────────────────────────────────────────
 LANGUAGE_CODE = "en-us"
@@ -192,8 +242,16 @@ DEFAULT_FROM_EMAIL = config(
 )
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 
-# Google Authenticator / TOTP MFA.
-TOTP_REQUIRED = config("TOTP_REQUIRED", default=True, cast=bool)
+# Asynchronous email and background jobs use the same Redis broker.
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_PUBLISH_RETRY = True
+CELERY_IMPORTS = ("apps.common.tasks",)
+
+# Google Authenticator / TOTP MFA is mandatory for every account and role.
+TOTP_REQUIRED = True
 TOTP_ISSUER_NAME = config("TOTP_ISSUER_NAME", default="MPIMS")
 TOTP_CODE_WINDOW = config("TOTP_CODE_WINDOW", default=1, cast=int)
 TOTP_SETUP_TOKEN_LIFETIME_MINUTES = config("TOTP_SETUP_TOKEN_LIFETIME_MINUTES", default=30, cast=int)
@@ -220,13 +278,3 @@ PASSWORD_RESET_CONFIRM_FAILURE_LIMIT = config("PASSWORD_RESET_CONFIRM_FAILURE_LI
 PASSWORD_RESET_CONFIRM_IP_FAILURE_LIMIT = config("PASSWORD_RESET_CONFIRM_IP_FAILURE_LIMIT", default=50, cast=int)
 PASSWORD_RESET_CONFIRM_WINDOW_MINUTES = config("PASSWORD_RESET_CONFIRM_WINDOW_MINUTES", default=15, cast=int)
 PASSWORD_RESET_CONFIRM_LOCKOUT_MINUTES = config("PASSWORD_RESET_CONFIRM_LOCKOUT_MINUTES", default=15, cast=int)
-
-# ── Channels (WebSocket) ──────────────────────────────────────────────────────
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",
-        # For production swap to Redis:
-        # "BACKEND": "channels_redis.core.RedisChannelLayer",
-        # "CONFIG": {"hosts": [("127.0.0.1", 6379)]},
-    }
-}

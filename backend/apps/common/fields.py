@@ -46,16 +46,13 @@ def _fernet_for_secret(secret):
 
 def _configured_key_sources():
     active_key = (getattr(settings, "FIELD_ENCRYPTION_KEY", "") or "").strip()
-    secret_key = getattr(settings, "SECRET_KEY", "")
     old_keys = [
         key.strip()
         for key in (getattr(settings, "FIELD_ENCRYPTION_OLD_KEYS", "") or "").split(",")
         if key.strip()
     ]
 
-    sources = [active_key or secret_key, *old_keys]
-    if active_key and secret_key:
-        sources.append(secret_key)
+    sources = [active_key, *old_keys]
     return [source for index, source in enumerate(sources) if source and source not in sources[:index]]
 
 

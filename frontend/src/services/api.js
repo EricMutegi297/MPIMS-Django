@@ -50,7 +50,9 @@ export const authService = {
   },
   logout: async () => {
     try {
-      return await api.post("/api/auth/logout/");
+      return await api.post("/api/auth/logout/", {
+        refresh: sessionStorage.getItem("refresh_token"),
+      });
     } finally {
       clearSession();
     }

@@ -73,6 +73,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     must_change_password = models.BooleanField(default=True)
+    auth_token_version = models.PositiveIntegerField(default=0)
     mfa_secret = models.CharField(max_length=64, blank=True)
     mfa_enabled = models.BooleanField(default=False)
     mfa_exempt = models.BooleanField(

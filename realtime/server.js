@@ -15,8 +15,18 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { Client } = require("pg");
+const {
+  authenticatedRooms,
+  createSocketAuthenticator,
+  emitIncidentUpdate,
+} = require("./socket-auth");
 
 const PORT = process.env.PORT || 4000;
+const HOST = process.env.HOST || "0.0.0.0";
+const AUTH_REVALIDATION_INTERVAL_MS = Number(process.env.AUTH_REVALIDATION_INTERVAL_MS || 60000);
+if (!Number.isSafeInteger(AUTH_REVALIDATION_INTERVAL_MS) || AUTH_REVALIDATION_INTERVAL_MS < 1000) {
+  throw new Error("AUTH_REVALIDATION_INTERVAL_MS must be an integer of at least 1000.");
+}
 const CORS_ORIGIN = (process.env.CORS_ORIGIN || "http://localhost:3000")
   .split(",")
   .map((origin) => origin.trim())
@@ -31,20 +41,44 @@ const io = new Server(server, {
     credentials: true,
   },
 });
+const { authenticateSocket, validateToken } = createSocketAuthenticator();
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// --- Socket.io: each client joins their own user room ---
+io.use(authenticateSocket);
+
+// --- Socket.io: join only the room belonging to the authenticated account ---
 io.on("connection", (socket) => {
-  const userId = socket.handshake.auth?.userId;
-  if (!userId) {
-    socket.disconnect(true);
-    return;
-  }
-  socket.join(`user_${userId}`);
+  const { userId } = socket.data.authenticatedProfile;
+  socket.join(authenticatedRooms(socket.data.authenticatedProfile));
   console.log(`[socket] user ${userId} connected (${socket.id})`);
 
+  let revalidating = false;
+  const revalidationTimer = setInterval(() => {
+    if (revalidating) return;
+    revalidating = true;
+    validateToken(socket.data.accessToken)
+      .then((profile) => {
+        const currentRooms = authenticatedRooms(socket.data.authenticatedProfile);
+        const refreshedRooms = authenticatedRooms(profile);
+        if (JSON.stringify(currentRooms) !== JSON.stringify(refreshedRooms)) {
+          console.log(`[socket] disconnecting after authorization scope changed (${socket.id})`);
+          socket.disconnect(true);
+          return;
+        }
+        socket.data.authenticatedProfile = profile;
+      })
+      .catch(() => {
+        console.log(`[socket] disconnecting unauthenticated session (${socket.id})`);
+        socket.disconnect(true);
+      })
+      .finally(() => {
+        revalidating = false;
+      });
+  }, AUTH_REVALIDATION_INTERVAL_MS);
+
   socket.on("disconnect", () => {
+    clearInterval(revalidationTimer);
     console.log(`[socket] user ${userId} disconnected (${socket.id})`);
   });
 });
@@ -52,7 +86,7 @@ io.on("connection", (socket) => {
 // --- PostgreSQL LISTEN/NOTIFY ---
 // Django (or a pg trigger) can call:
 //   NOTIFY mpims_notification, '{"recipient_id": 5, "message": "...", "type": "incident"}';
-//   NOTIFY mpims_incident, '{"unit_id": 3, "incident_number": "INC/2024/0001"}';
+//   NOTIFY mpims_incident, '{"battalion_id": 1, "incident_number": "INC/2024/0001"}';
 
 async function startPgListener() {
   const pgClient = new Client({ connectionString: process.env.DATABASE_URL });
@@ -76,14 +110,12 @@ async function startPgListener() {
         console.warn("[pg] unparseable payload:", msg.payload);
         return;
       }
-
       if (msg.channel === "mpims_notification" && payload.recipient_id) {
         io.to(`user_${payload.recipient_id}`).emit("notification", payload);
         console.log(`[notify] → user_${payload.recipient_id}:`, payload);
       } else if (msg.channel === "mpims_incident") {
-        // Broadcast incident updates to all connected clients
-        io.emit("incident_update", payload);
-        console.log("[incident] broadcast:", payload);
+        if (!emitIncidentUpdate(io, payload)) return;
+        console.log("[incident] scoped update:", payload);
       }
     });
   } catch (err) {
@@ -93,7 +125,7 @@ async function startPgListener() {
   }
 }
 
-server.listen(PORT, () => {
-  console.log(`[server] MPIMS realtime listening on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[server] MPIMS realtime listening on ${HOST}:${PORT}`);
   startPgListener();
 });

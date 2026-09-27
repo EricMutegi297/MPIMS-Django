@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend checks and tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mpims_db
+          POSTGRES_USER: mpims_user
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mpims_user -d mpims_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SECRET_KEY: ci-only-not-a-production-secret
+      FIELD_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      DEBUG: "True"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+      DB_NAME: mpims_db
+      DB_USER: mpims_user
+      DB_PASSWORD: ci-password
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_SSLMODE: disable
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install locked backend dependencies
+        run: python -m pip install --require-hashes -r backend/requirements.txt
+      - name: Run Django system checks
+        working-directory: backend
+        run: python manage.py check
+      - name: Check migration files
+        working-directory: backend
+        run: python manage.py makemigrations --check --dry-run
+      - name: Run backend tests
+        working-directory: backend
+        run: python manage.py test
+
+  frontend:
+    name: Frontend build and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+      - name: Run frontend tests
+        run: npm run test --if-present
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+
+  realtime:
+    name: Realtime tests and dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: realtime
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: realtime/package-lock.json
+      - name: Install locked realtime dependencies
+        run: npm ci
+      - name: Run realtime tests
+        run: npm test
+      - name: Audit realtime dependencies
+        run: npm audit --audit-level=high
+
+  security:
+    name: Backend and source security scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install audit tools
+        run: python -m pip install pip-audit==2.10.0 bandit==1.9.4
+      - name: Audit Python dependencies
+        run: pip-audit --strict -r backend/requirements.txt
+      - name: Scan Python source with Bandit
+        run: bandit -r backend/apps -lll -iii -x "backend/apps/*/tests.py,backend/apps/**/migrations/*"
+      - name: Scan repository with Trivy
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  docker:
+    name: Build application images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build --tag mpims-backend:ci backend
+      - name: Build frontend image
+        run: docker build --tag mpims-frontend:ci frontend
+      - name: Build realtime image
+        run: docker build --tag mpims-realtime:ci realtime
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: mpims-backend:ci
+          scan-type: image
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: mpims-frontend:ci
+          scan-type: image
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan realtime image
+        uses: aquasecurity/trivy-action@0.32.0
+        with:
+          image-ref: mpims-realtime:ci
+          scan-type: image
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
