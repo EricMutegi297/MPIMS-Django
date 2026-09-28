@@ -171,6 +171,8 @@ class CaseActionsMixin:
     def _brief_case_scope(self, user, qs):
         if has_global_read_access(user):
             return qs
+        if getattr(user, "role", None) == User.Role.COMPANY_CMD:
+            return qs
         if getattr(user, "role", None) == User.Role.INVESTIGATOR:
             return qs.filter(
                 Q(assigned_to=user)
@@ -207,6 +209,8 @@ class CaseActionsMixin:
     def _brief_visible_scope(self, user, qs):
         if getattr(user, "role", None) == User.Role.INVESTIGATOR:
             return qs
+        if getattr(user, "role", None) == User.Role.COMPANY_CMD:
+            return qs.filter(company_case_scope_q(user)).distinct()
 
         if getattr(user, "role", None) == User.Role.ADMIN and not has_global_read_access(user):
             if not user.battalion_id:
@@ -341,6 +345,8 @@ class CaseActionsMixin:
         if not user or not user.is_authenticated:
             return False
         if user.role == User.Role.INVESTIGATOR:
+            return self._can_manage_case_brief(user, case_obj)
+        if user.role == User.Role.COMPANY_CMD:
             return self._can_manage_case_brief(user, case_obj)
         if user.role == User.Role.ADMIN and not has_global_read_access(user):
             return bool(user.battalion_id and self._case_battalion_id(case_obj) == user.battalion_id)

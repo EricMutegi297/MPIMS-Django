@@ -10,7 +10,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.formations.models import Battalion, Detachment
+from apps.formations.models import Battalion, Company, Detachment
 from apps.notifications.models import Notification
 
 from .models import LoginThrottle, TOTPDevice, User
@@ -243,15 +243,36 @@ class UserManagementPermissionTests(APITestCase):
         self.user_list_url = reverse("user-list")
         self.battalion = Battalion.objects.create(name="1 MP BN")
         self.other_battalion = Battalion.objects.create(name="2 MP BN")
-        self.company = Detachment.objects.create(
+        self.company = Company.objects.create(
             battalion=self.battalion,
-            company=Detachment.Company.A,
+            company=Company.Company.A,
             name="A Coy",
         )
-        self.other_company = Detachment.objects.create(
-            battalion=self.other_battalion,
-            company=Detachment.Company.B,
+        self.company_detachment = Detachment.objects.create(
+            company=self.company,
+            name="A Coy HQ",
+        )
+        self.company_child_detachment = Detachment.objects.create(
+            company=self.company,
+            name="A Coy B",
+        )
+        self.other_same_battalion_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
             name="B Coy",
+        )
+        self.other_same_battalion_detachment = Detachment.objects.create(
+            company=self.other_same_battalion_company,
+            name="B Coy HQ",
+        )
+        self.other_company = Company.objects.create(
+            battalion=self.other_battalion,
+            company=Company.Company.B,
+            name="B Coy",
+        )
+        self.other_company_detachment = Detachment.objects.create(
+            company=self.other_company,
+            name="B Coy HQ",
         )
         self.battalion_admin = User.objects.create_user(
             service_number="700001",
@@ -271,7 +292,18 @@ class UserManagementPermissionTests(APITestCase):
             email="ic@example.test",
             role=User.Role.DETACHMENT,
             battalion=self.battalion,
-            detachment=self.company,
+            detachment=self.company_detachment,
+            must_change_password=False,
+        )
+        self.company_manager = User.objects.create_user(
+            service_number="700003",
+            password="TestPass123!",
+            name="Company Commander",
+            rank="Maj",
+            email="company.commander@example.test",
+            role=User.Role.COMPANY_CMD,
+            battalion=self.battalion,
+            detachment=self.company_detachment,
             must_change_password=False,
         )
 
@@ -292,7 +324,7 @@ class UserManagementPermissionTests(APITestCase):
 
         response = self.client.post(
             self.user_list_url,
-            self.user_payload(detachment=self.company),
+            self.user_payload(detachment=self.company_detachment),
             format="json",
         )
 
@@ -304,26 +336,145 @@ class UserManagementPermissionTests(APITestCase):
 
         response = self.client.post(
             self.user_list_url,
-            self.user_payload(detachment=self.company),
+            self.user_payload(detachment=self.company_detachment),
             format="json",
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = User.objects.get(service_number="700100")
         self.assertEqual(created.battalion, self.battalion)
-        self.assertEqual(created.detachment, self.company)
+        self.assertEqual(created.detachment, self.company_detachment)
 
     def test_battalion_admin_cannot_create_user_for_other_battalion_company(self):
         self.client.force_authenticate(self.battalion_admin)
 
         response = self.client.post(
             self.user_list_url,
-            self.user_payload(detachment=self.other_company),
+            self.user_payload(detachment=self.other_company_detachment),
             format="json",
         )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(User.objects.filter(service_number="700100").exists())
+
+    def test_company_manager_lists_only_users_in_company_and_child_detachments(self):
+        own_user = User.objects.create_user(
+            service_number="700101",
+            password="TestPass123!",
+            name="Own Company User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+            detachment=self.company_child_detachment,
+        )
+        other_user = User.objects.create_user(
+            service_number="700102",
+            password="TestPass123!",
+            name="Other Company User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.other_battalion,
+            detachment=self.other_company_detachment,
+        )
+        other_company_user = User.objects.create_user(
+            service_number="700106",
+            password="TestPass123!",
+            name="Other Company User In Same Battalion",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+            detachment=self.other_same_battalion_detachment,
+        )
+        unassigned_user = User.objects.create_user(
+            service_number="700107",
+            password="TestPass123!",
+            name="Unassigned Battalion User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+        )
+        self.client.force_authenticate(self.company_manager)
+
+        response = self.client.get(self.user_list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data.get("results", response.data)
+        listed_ids = {user["id"] for user in results}
+        self.assertIn(own_user.id, listed_ids)
+        self.assertNotIn(other_user.id, listed_ids)
+        self.assertNotIn(other_company_user.id, listed_ids)
+        self.assertNotIn(unassigned_user.id, listed_ids)
+
+    def test_company_manager_cannot_move_users_outside_company_or_escalate_roles(self):
+        target = User.objects.create_user(
+            service_number="700103",
+            password="TestPass123!",
+            name="Own Company User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+            detachment=self.company_child_detachment,
+        )
+        self.client.force_authenticate(self.company_manager)
+
+        move_response = self.client.patch(
+            reverse("user-detail", args=[target.id]),
+            {"detachment": self.other_company_detachment.id},
+            format="json",
+        )
+        self.assertEqual(move_response.status_code, status.HTTP_403_FORBIDDEN)
+        target.refresh_from_db()
+        self.assertEqual(target.detachment, self.company_child_detachment)
+
+        role_response = self.client.patch(
+            reverse("user-detail", args=[target.id]),
+            {"role": User.Role.ADMIN},
+            format="json",
+        )
+        self.assertEqual(role_response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_detachment_manager_cannot_edit_users_in_another_detachment(self):
+        own_user = User.objects.create_user(
+            service_number="700104",
+            password="TestPass123!",
+            name="Own Detachment User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+            detachment=self.company_detachment,
+        )
+        other_user = User.objects.create_user(
+            service_number="700105",
+            password="TestPass123!",
+            name="Other Detachment User",
+            rank="Cpl",
+            role=User.Role.PERSONNEL,
+            battalion=self.battalion,
+            detachment=self.company_child_detachment,
+        )
+        detachment_commander = User.objects.create_user(
+            service_number="700006",
+            password="TestPass123!",
+            name="Detachment Commander",
+            rank="Lt",
+            role=User.Role.DET_CMD,
+            battalion=self.battalion,
+            detachment=self.company_detachment,
+        )
+        self.client.force_authenticate(detachment_commander)
+
+        response = self.client.get(self.user_list_url)
+        results = response.data.get("results", response.data)
+        listed_ids = {user["id"] for user in results}
+        self.assertIn(own_user.id, listed_ids)
+        self.assertNotIn(other_user.id, listed_ids)
+
+        update_response = self.client.patch(
+            reverse("user-detail", args=[other_user.id]),
+            {"name": "Unauthorized change"},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 @override_settings(TOTP_REQUIRED=False)

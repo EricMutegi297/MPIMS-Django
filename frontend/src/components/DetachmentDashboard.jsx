@@ -113,7 +113,9 @@ export default function DetachmentDashboard({ user }) {
   const detachmentId = user?.detachment_id ?? user?.detachment;
   const companyId = user?.company_id ?? user?.detachment?.company_id ?? user?.detachment_company_id ?? user?.company;
   const isDetachmentUser = DETACHMENT_ROLES.includes(user?.role);
+  const isCompanyCommand = ["co", "company_cmd", "oc"].includes(user?.role) && !!companyId;
   const canManageDetachmentTeams = user?.role === "detachment";
+  const canAssignCases = canManageDetachmentTeams || user?.role === "det_cmdr" || isCompanyCommand;
 
   // Cases
   const [cases, setCases]               = useState([]);
@@ -324,12 +326,16 @@ export default function DetachmentDashboard({ user }) {
   }), [loadCases, loadCounts, loadTeams, loadWorkload]);
 
   useEffect(() => {
-    if (canManageDetachmentTeams && detachmentId) {
-      userService.list({ detachment: detachmentId, page_size: 200 })
+    if (canAssignCases && (isCompanyCommand || detachmentId)) {
+      userService.list({
+        ...(isCompanyCommand ? { company: companyId } : { detachment: detachmentId }),
+        role: "investigator",
+        page_size: 200,
+      })
         .then((r) => setDetUsers(toArray(r.data)))
         .catch(() => {});
     }
-  }, [canManageDetachmentTeams, detachmentId]);
+  }, [canAssignCases, isCompanyCommand, companyId, detachmentId]);
 
   useEffect(() => {
     if (!companyId) {
@@ -338,15 +344,17 @@ export default function DetachmentDashboard({ user }) {
     }
     formationService.subDetachments({ company: companyId, page_size: 200 })
       .then((r) => {
-        const items = toArray(r.data).filter((d) => String(d.id) !== String(detachmentId));
+        const items = toArray(r.data).filter(
+          (d) => isCompanyCommand || String(d.id) !== String(detachmentId)
+        );
         setCompanyDetachments(items);
       })
       .catch(() => setCompanyDetachments([]));
-  }, [companyId, detachmentId]);
+  }, [companyId, detachmentId, isCompanyCommand]);
 
   // Assign team
   const openAssignModal = (c) => {
-    if (!canManageDetachmentTeams) return;
+    if (!canAssignCases) return;
     setShowCreateTeam(false);
     setAssignModal(c);
     setAssignmentMode(c?.assigned_team ? "team" : "io");
@@ -459,7 +467,7 @@ export default function DetachmentDashboard({ user }) {
   };
 
   const handleAssignTeam = async () => {
-    if (!canManageDetachmentTeams) { setAssignError("Only IC Cases can assign cases."); return; }
+    if (!canAssignCases) { setAssignError("You are not allowed to assign cases."); return; }
     if (assignmentMode === "team" && !selTeam) { setAssignError("Please select a team."); return; }
     if (assignmentMode === "io" && !selIo) { setAssignError("Please select an IO."); return; }
     if (!deadline) { setAssignError("Investigation deadline is required."); return; }
@@ -773,7 +781,7 @@ export default function DetachmentDashboard({ user }) {
                           Task to Detachment
                         </button>
                       )}
-                      {canManageDetachmentTeams && c.status === "tasked" && !c.assigned_team && !c.assigned_to && (
+                      {canAssignCases && c.status === "tasked" && !c.assigned_team && !c.assigned_to && (
                         <button
                           onClick={() => openAssignModal(c)}
                           className="px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
@@ -798,57 +806,6 @@ export default function DetachmentDashboard({ user }) {
             </div>
           )}
         </div>
-      </div>
-
-      {/* Investigation Teams Section */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
-            Investigation Teams
-          </h3>
-          {canManageDetachmentTeams && (
-            <button
-              onClick={() => {
-                setShowCreateTeam(true);
-                setNewTeamName("");
-                setNewTeamIC("");
-                setNewTeamMembers([]);
-                setCreateTeamError("");
-              }}
-              className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors"
-            >
-              + Create Team
-            </button>
-          )}
-        </div>
-        {loadingTeams ? (
-          <div className="space-y-2">
-            {[1,2].map((i) => (
-              <div key={i} className="h-14 bg-gray-800 rounded-xl animate-pulse" />
-            ))}
-          </div>
-        ) : teams.length === 0 ? (
-          <div className="bg-gray-800 rounded-xl p-5">
-            <p className="text-gray-500 text-sm">No investigation teams yet. Create your first team.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {teams.map((t) => (
-              <div key={t.id} className="bg-gray-800 rounded-xl px-4 md:px-5 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <div>
-                  <p className="text-white font-medium">{t.name}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {t.team_ic_detail?.name ? `IC: ${t.team_ic_detail.name}` : "No IC assigned"} ·{" "}
-                    {t.members?.length ?? 0} member{t.members?.length !== 1 ? "s" : ""}
-                  </p>
-                </div>
-                <span className="text-xs px-2 py-0.5 rounded bg-gray-700 text-gray-400">
-                  Team
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       <Footer />
@@ -917,7 +874,7 @@ export default function DetachmentDashboard({ user }) {
       )}
 
       {/* Assign IO or Team Modal */}
-      {canManageDetachmentTeams && assignModal && (
+      {canAssignCases && assignModal && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
           onClick={() => setAssignModal(null)}

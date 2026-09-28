@@ -176,8 +176,13 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
 export default function Teams({ user, scope = "detachment" }) {
   const isDetachmentIC = user?.role === "detachment";
   const isBattalionScope = scope === "battalion";
+  const isCompanyScope = scope === "company";
   const canManageTeams = isDetachmentIC || isBattalionScope;
-  const scopeId = isBattalionScope ? (user?.battalion ?? user?.battalion_id) : (user?.detachment ?? user?.detachment_id);
+  const scopeId = isBattalionScope
+    ? (user?.battalion ?? user?.battalion_id)
+    : isCompanyScope
+    ? user?.company_id
+    : (user?.detachment ?? user?.detachment_id);
 
   const [teams, setTeams]               = useState([]);
   const [loadingTeams, setLoadingTeams] = useState(true);
@@ -228,13 +233,14 @@ export default function Teams({ user, scope = "detachment" }) {
     const params = { page_size: 200 };
     if (scopeId) {
       if (isBattalionScope) params.battalion = scopeId;
+      else if (isCompanyScope) params.company = scopeId;
       else params.detachment = scopeId;
     }
     teamService.list(params)
       .then((r) => setTeams(toArray(r.data)))
       .catch(() => setTeams([]))
       .finally(() => setLoadingTeams(false));
-  }, [isBattalionScope, scopeId]);
+  }, [isBattalionScope, isCompanyScope, scopeId]);
 
   useEffect(() => { loadTeams(); loadWorkload(); }, [loadTeams, loadWorkload]);
 
@@ -242,6 +248,7 @@ export default function Teams({ user, scope = "detachment" }) {
     if (!scopeId) return;
     const params = { page_size: 200 };
     if (isBattalionScope) params.battalion = scopeId;
+    else if (isCompanyScope) params.company = scopeId;
     else params.detachment = scopeId;
     userService.list(params)
       .then((r) => {
@@ -253,7 +260,7 @@ export default function Teams({ user, scope = "detachment" }) {
         }
       })
       .catch(() => setDetUsers([]));
-  }, [isBattalionScope, scopeId]);
+  }, [isBattalionScope, isCompanyScope, scopeId]);
 
   // â”€â”€ Create helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Sort least-engaged first using workload data
@@ -367,6 +374,8 @@ export default function Teams({ user, scope = "detachment" }) {
           <p className="text-sm text-gray-500 mt-0.5">
             {isBattalionScope
               ? (user?.battalion_name ? `${user.battalion_name} Teams` : "Battalion Teams")
+              : isCompanyScope
+              ? (user?.company_name ? `${user.company_name} Teams` : "Company Teams")
               : (user?.detachment_name ? `${user.detachment_name} Company` : "Company Teams")}
           </p>
         </div>

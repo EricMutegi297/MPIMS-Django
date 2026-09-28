@@ -22,6 +22,7 @@ class CaseViewSet(
     CaseRecordsMixin,
     viewsets.ModelViewSet,
 ):
+    filterset_fields = ["status", "criminal_offence_type"]
     queryset = Case.objects.select_related("assigned_to", "created_by", "accused_unit", "source_incident").prefetch_related(
         "extra_attachments", "court_martial_hearings", "court_martial_milestones", "accused_entries"
     ).all()

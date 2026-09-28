@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework import serializers, status
 from rest_framework.test import APIClient
 
-from apps.formations.models import Battalion, Formation, Unit
+from apps.formations.models import Battalion, Company, Detachment, Formation, Unit
 from apps.notifications.models import Notification
 from apps.users.models import User
 from .models import Case, CaseAttachment, CaseNumberSequence, InvestigationTeam
@@ -182,6 +182,292 @@ class CaseApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.superuser)
+
+    def test_case_list_filters_status_and_criminal_offence_type(self):
+        Case.objects.create(
+            title="Court Martial case",
+            status=Case.Status.NEW,
+            criminal_offence_type=Case.CriminalOffenceType.COURT_MARTIAL,
+            created_by=self.superuser,
+        )
+        Case.objects.create(
+            title="DCI pending case",
+            status=Case.Status.PENDING,
+            criminal_offence_type=Case.CriminalOffenceType.DCI_CIV,
+            created_by=self.superuser,
+        )
+        Case.objects.create(
+            title="DCI new case",
+            status=Case.Status.NEW,
+            criminal_offence_type=Case.CriminalOffenceType.DCI_CIV,
+            created_by=self.superuser,
+        )
+
+        pending_response = self.client.get(
+            reverse("case-list"),
+            {"status": Case.Status.PENDING, "page_size": 1},
+        )
+        court_martial_response = self.client.get(
+            reverse("case-list"),
+            {"criminal_offence_type": Case.CriminalOffenceType.COURT_MARTIAL, "page_size": 1},
+        )
+        combined_response = self.client.get(
+            reverse("case-list"),
+            {
+                "status": Case.Status.NEW,
+                "criminal_offence_type": Case.CriminalOffenceType.DCI_CIV,
+                "page_size": 1,
+            },
+        )
+
+        self.assertEqual(pending_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(pending_response.data["count"], 1)
+        self.assertEqual(court_martial_response.data["count"], 1)
+        self.assertEqual(combined_response.data["count"], 1)
+
+    def test_unit_viewer_can_see_cases_submitted_by_their_unit(self):
+        submitted_case = Case.objects.create(
+            title="Served case submitted by unit",
+            status=Case.Status.SERVED,
+            submitting_unit=self.unit,
+            tasked_battalion=self.special_battalion,
+            created_by=self.superuser,
+        )
+        unrelated_unit = Unit.objects.create(
+            name="2 KR BN",
+            battalion=self.battalion,
+            formation=self.formation,
+            service=Unit.Service.KA,
+        )
+        unrelated_case = Case.objects.create(
+            title="Case assigned to another accused unit",
+            status=Case.Status.SERVED,
+            submitting_unit=self.unit,
+            accused_unit=unrelated_unit,
+            tasked_battalion=self.special_battalion,
+            created_by=self.superuser,
+        )
+        unit_viewer = User.objects.create_user(
+            "300003",
+            "test-password",
+            name="Docus Clerk",
+            role=User.Role.DOCUS_CLERK,
+            unit=self.unit,
+        )
+        self.client.force_authenticate(user=unit_viewer)
+
+        response = self.client.get(reverse("case-list"), {"status": Case.Status.SERVED})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            [case["id"] for case in response.data["results"]],
+            [submitted_case.id],
+        )
+        self.assertNotIn(unrelated_case.id, [case["id"] for case in response.data["results"]])
+        self.assertEqual(response.data["results"][0]["accused_unit_name"], self.unit.name)
+
+    def test_detachment_ic_can_see_cases_tasked_to_their_detachment_only(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="A Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="B Company",
+        )
+        detachment = Detachment.objects.create(company=company, name="Alpha Detachment")
+        user = User.objects.create_user(
+            "300004",
+            "test-password",
+            name="Detachment IC",
+            role=User.Role.DETACHMENT,
+            battalion=self.battalion,
+            detachment=detachment,
+        )
+        own_detachment_case = Case.objects.create(
+            title="Case tasked to own detachment",
+            tasked_company=company,
+            tasked_detachment=detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        company_case = Case.objects.create(
+            title="Company-level case",
+            tasked_company=company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        sibling_detachment = Detachment.objects.create(company=company, name="Bravo Detachment")
+        sibling_detachment_case = Case.objects.create(
+            title="Sibling-detachment case",
+            tasked_company=company,
+            tasked_detachment=sibling_detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        unrelated_case = Case.objects.create(
+            title="Other-company case",
+            tasked_company=other_company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get(reverse("case-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], own_detachment_case.id)
+        visible_ids = [case["id"] for case in response.data["results"]]
+        self.assertNotIn(company_case.id, visible_ids)
+        self.assertNotIn(sibling_detachment_case.id, visible_ids)
+        self.assertNotIn(unrelated_case.id, visible_ids)
+
+    def test_company_command_can_see_company_and_child_detachment_cases(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="A Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="B Company",
+        )
+        own_detachment = Detachment.objects.create(company=company, name="Alpha Detachment")
+        child_detachment = Detachment.objects.create(company=company, name="Bravo Detachment")
+        other_detachment = Detachment.objects.create(company=other_company, name="Other Detachment")
+        company_commander = User.objects.create_user(
+            "300005",
+            "test-password",
+            name="Company Commander",
+            role=User.Role.COMPANY_CMD,
+            battalion=self.battalion,
+            detachment=own_detachment,
+        )
+        company_case = Case.objects.create(
+            title="Company-level case",
+            tasked_company=company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        child_case = Case.objects.create(
+            title="Child-detachment case",
+            tasked_company=company,
+            tasked_detachment=child_detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        unrelated_case = Case.objects.create(
+            title="Other-company case",
+            tasked_company=other_company,
+            tasked_detachment=other_detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=company_commander)
+
+        response = self.client.get(reverse("case-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        visible_ids = {case["id"] for case in response.data["results"]}
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(visible_ids, {company_case.id, child_case.id})
+        self.assertNotIn(unrelated_case.id, visible_ids)
+
+    def test_company_commander_can_view_and_attach_briefs_within_company_scope(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="Briefs Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="Other Briefs Company",
+        )
+        own_detachment = Detachment.objects.create(company=company, name="HQ Detachment")
+        child_detachment = Detachment.objects.create(company=company, name="Child Detachment")
+        other_detachment = Detachment.objects.create(company=other_company, name="Other Detachment")
+        commander = User.objects.create_user(
+            "300006",
+            "test-password",
+            name="Briefs Company Commander",
+            role=User.Role.COMPANY_CMD,
+            battalion=self.battalion,
+            detachment=own_detachment,
+        )
+        company_case = Case.objects.create(
+            title="Company brief case",
+            tasked_company=company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        child_case = Case.objects.create(
+            title="Child detachment brief case",
+            tasked_company=company,
+            tasked_detachment=child_detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        unrelated_case = Case.objects.create(
+            title="Unrelated brief case",
+            tasked_company=other_company,
+            tasked_detachment=other_detachment,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=commander)
+
+        briefable_response = self.client.get(reverse("case-briefable-cases"))
+        self.assertEqual(briefable_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            {case["id"] for case in briefable_response.data},
+            {company_case.id, child_case.id},
+        )
+
+        media_root = tempfile.mkdtemp()
+        try:
+            with override_settings(MEDIA_ROOT=media_root, CASE_UPLOAD_CLAMAV_ENABLED=False):
+                upload_response = self.client.post(
+                    reverse("case-brief", args=[child_case.id]),
+                    {
+                        "summary": "Company commander brief",
+                        "file": SimpleUploadedFile(
+                            "brief.pdf",
+                            b"%PDF-1.4\nbrief content",
+                            content_type="application/pdf",
+                        ),
+                    },
+                    format="multipart",
+                )
+
+                self.assertEqual(upload_response.status_code, status.HTTP_200_OK)
+                self.assertEqual(upload_response.data["attached_by"], commander.pk)
+
+                detail_response = self.client.get(reverse("case-detail", args=[child_case.id]))
+                self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+                self.assertIsNotNone(detail_response.data["brief"])
+
+                file_response = self.client.get(upload_response.data["file"])
+                self.assertEqual(file_response.status_code, status.HTTP_200_OK)
+
+                briefs_response = self.client.get(reverse("case-briefs"))
+                self.assertEqual(briefs_response.status_code, status.HTTP_200_OK)
+                self.assertEqual(
+                    {case["id"] for case in briefs_response.data},
+                    {child_case.id},
+                )
+
+                unrelated_response = self.client.get(
+                    reverse("case-brief", args=[unrelated_case.id])
+                )
+                self.assertEqual(unrelated_response.status_code, status.HTTP_404_NOT_FOUND)
+        finally:
+            shutil.rmtree(media_root, ignore_errors=True)
 
     def test_clearance_certificate_uses_existing_unit_service_access_policy(self):
         unit_user = User.objects.create_user(

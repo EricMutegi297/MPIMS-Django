@@ -11,7 +11,7 @@ class CaseRecordsMixin:
         parser_classes=[JSONParser],
     )
     def briefable_cases(self, request):
-        if request.user.role != User.Role.INVESTIGATOR:
+        if request.user.role not in {User.Role.INVESTIGATOR, User.Role.COMPANY_CMD}:
             return Response([])
         qs = self.get_queryset().select_related(
             "assigned_to",
@@ -124,8 +124,14 @@ class CaseRecordsMixin:
 
         data = request.data.copy()
         if request.method == "POST":
-            if request.user.role != User.Role.INVESTIGATOR or not self._can_manage_case_brief(request.user, case):
-                raise PermissionDenied("Only assigned investigators can create briefs.")
+            allowed_creator = request.user.role in {
+                User.Role.INVESTIGATOR,
+                User.Role.COMPANY_CMD,
+            }
+            if not allowed_creator or not self._can_manage_case_brief(request.user, case):
+                raise PermissionDenied(
+                    "Only assigned investigators or the Company Commander for this case can create briefs."
+                )
         if request.method == "POST" and hasattr(case, "brief"):
             return Response(
                 {"detail": "A brief already exists for this case. Use forwarding or update instead."},

@@ -296,7 +296,7 @@ export default function Briefs({ user }) {
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [tableSearch, setTableSearch] = useState("");
   const [stageFilter, setStageFilter] = useState("all");
-  const canCreateBrief = user?.role === "investigator";
+  const canCreateBrief = ["investigator", "company_cmd"].includes(user?.role);
   const isAdminViewer = user?.role === "admin" || user?.role === "mpc_hqs" || user?.is_superuser;
   const showForwardedFromColumn = !canCreateBrief;
   useAutoDismiss(notice, setNotice);
@@ -523,7 +523,13 @@ export default function Briefs({ user }) {
     <div className="p-4 md:p-6 text-slate-900 space-y-5">
       <div>
         <h2 className="text-2xl font-bold text-slate-950">Briefs</h2>
-        <p className="text-sm text-slate-600">{user?.role === "investigator" ? "Investigator" : "Dashboard"}</p>
+        <p className="text-sm text-slate-600">
+          {user?.role === "investigator"
+            ? "Investigator"
+            : user?.role === "company_cmd"
+              ? "Company Commander"
+              : "Dashboard"}
+        </p>
       </div>
 
       {(error || notice) && (
@@ -602,7 +608,13 @@ export default function Briefs({ user }) {
 
         <section className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-800">{canCreateBrief ? "Created Briefs" : isAdminViewer ? "Briefs" : "Forwarded Briefs"}</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-800">            {user?.role === "company_cmd"
+              ? "Company Briefs"
+              : canCreateBrief
+                ? "Created Briefs"
+                : isAdminViewer
+                  ? "Briefs"
+                  : "Forwarded Briefs"}</h3>
             <span className="text-xs font-medium text-slate-500">{filteredBriefCases.length} of {briefCases.length} total</span>
           </div>
           <div className="grid gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 md:grid-cols-[1fr_220px_auto]">

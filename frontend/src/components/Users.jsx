@@ -5,6 +5,7 @@ import useAutoDismiss from "../hooks/useAutoDismiss";
 const ROLE_LABELS = {
   admin:        "Admin",
   co:           "Commanding Officer",
+  company_cmd:  "Company Commander",
   oc:           "Officer Commanding",
   corps_cmd:    "Corps Commander",
   sec_corps_cmd: "Secretary Corps Commander",
@@ -33,6 +34,7 @@ const ROLE_LABELS = {
 const ROLE_BADGE = {
   admin:        "bg-blue-500/20 text-blue-400",
   co:           "bg-purple-500/20 text-purple-400",
+  company_cmd:  "bg-violet-500/20 text-violet-300",
   oc:           "bg-fuchsia-500/20 text-fuchsia-400",
   corps_cmd:    "bg-red-500/20 text-red-400",
   investigator: "bg-indigo-500/20 text-indigo-400",
@@ -199,16 +201,23 @@ export default function Users({ user }) {
   const isBattalionAdmin = user?.role === "admin" && !isHqsAdmin && !isSuperuser;
   const isDetachmentIC  = user?.role === "detachment";
   const isDocusClerk    = user?.role === "docus_clerk";
+  const isCompanyUserManager =
+    ["company_cmd", "pltn_cmdr"].includes(user?.role) && Boolean(user?.company_id);
+  const isDetachmentUserManager =
+    ["detachment", "det_cmdr"].includes(user?.role) && Boolean(user?.detachment);
   const canCreateUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin || isDocusClerk;
-  const canManage       = canCreateUsers || isDetachmentIC;
+  const canManage       = canCreateUsers || isCompanyUserManager || isDetachmentUserManager;
+  const canDeleteUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin || isDocusClerk;
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
+    ? ["admin","co","company_cmd","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
     : isBattalionAdmin
-    ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic","docus_clerk"]
+    ? ["co","company_cmd","oc","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+    : isCompanyUserManager
+    ? ["detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator"]
     : isDocusClerk
     ? UNIT_COMMAND_ROLES
-    : isDetachmentIC
+    : isDetachmentUserManager
     ? ["personnel","investigator"]
     : [];
 
@@ -217,11 +226,11 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","oc","detachment","personnel","investigator","hod","adj","2ic","docus_clerk"]
+      ? ["co","company_cmd","oc","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+      : isCompanyUserManager || isDetachmentUserManager
+      ? Object.keys(ROLE_LABELS)
       : isDocusClerk
       ? UNIT_COMMAND_ROLES
-      : isDetachmentIC
-      ? ["personnel","investigator"]
       : []
   );
 
@@ -241,7 +250,7 @@ export default function Users({ user }) {
   const [createActivationLink, setCreateActivationLink] = useState("");
 
   // Roles that can optionally be scoped to a company
-  const DETACHMENT_LEVEL_ROLES = ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "personnel"];
+  const DETACHMENT_LEVEL_ROLES = ["company_cmd", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "personnel"];
   const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
   const roleNeedsUnit = useCallback((role) => (
     UNIT_SCOPED_ROLES.includes(role) || (isDocusClerk && UNIT_COMMAND_ROLES.includes(role))
@@ -332,12 +341,15 @@ export default function Users({ user }) {
       rank: u.rank || "",
       email: u.email || "",
       role: u.role || "",
+      detachment: String(u.detachment ?? ""),
       is_active: u.is_active,
     };
     setEditTarget(u);
     setEditForm(nextForm);
     setEditError("");
+    setDetachments([]);
     setShowEdit(true);
+    if (u.battalion) loadDetachments(String(u.battalion));
   };
 
   const handleEditUser = async (e) => {
@@ -431,18 +443,21 @@ export default function Users({ user }) {
     // Non-HQS/non-superuser battalion restriction
     if (isDocusClerk && user?.unit) {
       params.unit = user.unit;
-    } else if (!isHqsAdmin && !isSuperuser && !isDetachmentIC && user?.battalion) {
+    } else if (!isHqsAdmin && !isSuperuser && !isDetachmentIC && !isCompanyUserManager && user?.battalion) {
       params.battalion = user.battalion;
     }
     if (isDetachmentIC && user?.detachment) {
       params.detachment = user.detachment;
+    }
+    if (isCompanyUserManager && user?.company_id) {
+      params.company = user.company_id;
     }
     userService
       .list(params)
       .then((res) => setUsers(toArray(res.data)))
       .catch(() => setError("Failed to load users."))
       .finally(() => setLoading(false));
-  }, [isHqsAdmin, isSuperuser, isDetachmentIC, isDocusClerk, user?.battalion, user?.detachment, user?.unit]);
+  }, [isHqsAdmin, isSuperuser, isDetachmentIC, isDocusClerk, isCompanyUserManager, user?.battalion, user?.company_id, user?.detachment, user?.unit]);
 
   useEffect(() => {
     loadUsers();
@@ -462,8 +477,10 @@ export default function Users({ user }) {
 
   const title = isHqsAdmin || isSuperuser
     ? "All Users"
-    : isDetachmentIC
+    : isDetachmentUserManager
     ? `${user?.detachment_name ?? "Company"} — Personnel`
+    : isCompanyUserManager
+    ? `${user?.battalion_name ?? "Company"} — Personnel`
     : isDocusClerk
     ? `${user?.unit_name ?? "Unit"} - Unit Command`
     : user?.battalion_name
@@ -679,10 +696,12 @@ export default function Users({ user }) {
                               onClick={() => openEdit(u)}
                               className="text-blue-400 hover:text-blue-300 text-xs font-medium"
                             >Edit</button>
-                            <button
-                              onClick={() => setConfirmDeleteId(u.id)}
-                              className="text-red-400 hover:text-red-300 text-xs font-medium"
-                            >Delete</button>
+                            {canDeleteUsers && (
+                              <button
+                                onClick={() => setConfirmDeleteId(u.id)}
+                                className="text-red-400 hover:text-red-300 text-xs font-medium"
+                              >Delete</button>
+                            )}
                           </span>
                         )}
                       </td>
@@ -844,15 +863,26 @@ export default function Users({ user }) {
               {DETACHMENT_LEVEL_ROLES.includes(form.role) && (
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
-                    Detachment <span className="text-gray-500">(optional — leave blank for battalion-level)</span>
+                    {form.role === "company_cmd"
+                      ? "Company assignment *"
+                      : "Detachment (optional — leave blank for battalion-level)"}
                   </label>
                   <select
+                    required={form.role === "company_cmd"}
                     value={form.detachment}
                     onChange={(e) => setForm({ ...form, detachment: e.target.value })}
                     className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
                   >
-                    <option value="">— Battalion level (no company) —</option>
-                    {detachments.map((d) => (
+                    <option value="">
+                      {form.role === "company_cmd" ? "Select a company" : "— Battalion level (no company) —"}
+                    </option>
+                    {detachments
+                      .filter((d) => {
+                        if (isCompanyUserManager) return String(d.company) === String(user?.company_id);
+                        if (isDetachmentUserManager) return String(d.id) === String(user?.detachment);
+                        return true;
+                      })
+                      .map((d) => (
                       <option key={d.id} value={d.id}>
                         {d.company_code ? `${d.company_code} Coy` : "Coy"}{d.company_name ? ` - ${d.company_name}` : ""} — {d.name}
                       </option>
@@ -930,14 +960,54 @@ export default function Users({ user }) {
                 <label className="block text-xs text-gray-400 mb-1">Role *</label>
                 <select
                   required value={editForm.role}
-                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  onChange={(e) => {
+                    const nextRole = e.target.value;
+                    setEditForm({
+                      ...editForm,
+                      role: nextRole,
+                      detachment: DETACHMENT_LEVEL_ROLES.includes(nextRole)
+                        ? editForm.detachment
+                        : "",
+                    });
+                    if (DETACHMENT_LEVEL_ROLES.includes(nextRole) && editTarget?.battalion) {
+                      loadDetachments(String(editTarget.battalion));
+                    }
+                  }}
                   className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
+                  <option value="">Select role</option>
+                  {editTarget?.role && !ASSIGNABLE_ROLES.includes(editTarget.role) && (
+                    <option value={editTarget.role} disabled>
+                      {ROLE_LABELS[editTarget.role] || editTarget.role} (no role change)
+                    </option>
+                  )}
                   {ASSIGNABLE_ROLES.map((r) => (
                     <option key={r} value={r}>{ROLE_LABELS[r] || r}</option>
                   ))}
                 </select>
               </div>
+              {DETACHMENT_LEVEL_ROLES.includes(editForm.role) && (
+                <div className="col-span-2">
+                  <label className="block text-xs text-gray-400 mb-1">
+                    {editForm.role === "company_cmd" ? "Company assignment *" : "Detachment"}
+                  </label>
+                  <select
+                    required={editForm.role === "company_cmd"}
+                    value={editForm.detachment || ""}
+                    onChange={(e) => setEditForm({ ...editForm, detachment: e.target.value })}
+                    className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">
+                      {editForm.role === "company_cmd" ? "Select a company" : "— No detachment —"}
+                    </option>
+                    {detachments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.company_code ? `${d.company_code} Coy` : "Coy"}{d.company_name ? ` - ${d.company_name}` : ""} — {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="col-span-2 flex items-center gap-3">
                 <label className="text-xs text-gray-400">Account Status</label>
                 <button

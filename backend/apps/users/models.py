@@ -25,6 +25,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
         CO = "co", "Commanding Officer"
+        COMPANY_CMD = "company_cmd", "Company Commander"
         OC = "oc", "Officer Commanding"
         CORPS_CMD = "corps_cmd", "Corps Commander"
         SEC_CORPS_CMD = "sec_corps_cmd", "Secretary Corps Commander"

@@ -28,9 +28,14 @@ class CaseAccessMixin:
         if has_global_read_access(user):
             return True
         if is_unit_level_case_viewer(user):
-            if case_obj.accused_unit_id == user.unit_id:
-                return True
-            return case_obj.accused_entries.filter(unit_id=user.unit_id).exists()
+            return (
+                case_obj.accused_unit_id == user.unit_id
+                or case_obj.accused_entries.filter(unit_id=user.unit_id).exists()
+                or (
+                    case_obj.accused_unit_id is None
+                    and case_obj.submitting_unit_id == user.unit_id
+                )
+            )
         if user.role == User.Role.INVESTIGATOR:
             if case_obj.assigned_to_id == user.id:
                 return True
@@ -38,6 +43,14 @@ class CaseAccessMixin:
                 team = case_obj.assigned_team
                 return bool(team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()))
             return False
+        if is_company_command(user):
+            company_id = user.detachment.company_id
+            return bool(
+                case_obj.tasked_company_id == company_id
+                or getattr(getattr(case_obj, "tasked_detachment", None), "company_id", None) == company_id
+                or getattr(getattr(getattr(case_obj, "assigned_to", None), "detachment", None), "company_id", None) == company_id
+                or getattr(getattr(getattr(case_obj, "assigned_team", None), "detachment", None), "company_id", None) == company_id
+            )
         if case_obj.tasked_battalion_id and user.battalion_id == case_obj.tasked_battalion_id:
             return True
         if case_obj.tasked_detachment_id and user.battalion_id == getattr(case_obj.tasked_detachment, "battalion_id", None):
@@ -58,6 +71,7 @@ class CaseAccessMixin:
             "assigned_to",
             "created_by",
             "accused_unit",
+            "submitting_unit",
             "tasked_battalion",
             "tasked_company",
             "tasked_detachment",
@@ -92,6 +106,11 @@ class CaseAccessMixin:
                 | Q(assigned_team__members=user)
             ).distinct())
 
+        if is_company_command(user):
+            return self._prepare_case_queryset(
+                base_qs.filter(company_case_scope_q(user)).distinct()
+            )
+
         # Battalion command users see cases tasked to their battalion or its companies.
         if is_battalion_command(user):
             return self._prepare_case_queryset(base_qs.filter(
@@ -106,7 +125,7 @@ class CaseAccessMixin:
                 | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
             ).distinct())
 
-        # IC Cases (role=detachment) sees cases tasked to their company record.
+        # Detachment roles see cases assigned to their own detachment only.
         if is_detachment_ic(user) and user.detachment_id:
             return self._prepare_case_queryset(base_qs.filter(
                 Q(tasked_detachment_id=user.detachment_id)
@@ -238,6 +257,10 @@ class CaseAccessMixin:
             and (
                 case_obj.accused_unit_id == user.unit_id
                 or case_obj.accused_entries.filter(unit_id=user.unit_id).exists()
+                or (
+                    case_obj.accused_unit_id is None
+                    and case_obj.submitting_unit_id == user.unit_id
+                )
             )
         )
 
@@ -307,6 +330,8 @@ class CaseAccessMixin:
             return False
         if has_global_read_access(user):
             return True
+        if user.role == User.Role.COMPANY_CMD:
+            return Case.objects.filter(pk=case_obj.pk).filter(company_case_scope_q(user)).exists()
         if case_obj.assigned_to_id == user.id:
             return True
         team = getattr(case_obj, "assigned_team", None)

@@ -56,6 +56,9 @@ DETACHMENT_ATTACHMENT_ROLES = {
     User.Role.PLT_CMD,
     User.Role.DET_TWO_IC,
 }
+COMPANY_COMMAND_ROLES = {User.Role.CO, User.Role.COMPANY_CMD, User.Role.OC}
+COMPANY_USER_MANAGER_ROLES = {User.Role.COMPANY_CMD, User.Role.PLT_CMD}
+DETACHMENT_USER_MANAGER_ROLES = {User.Role.DETACHMENT, User.Role.DET_CMD}
 
 
 def is_corps_commander(user):
@@ -116,6 +119,47 @@ def is_detachment_ic(user):
         user
         and user.is_authenticated
         and user.role in DETACHMENT_ATTACHMENT_ROLES
+    )
+
+
+def is_company_command(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.role in COMPANY_COMMAND_ROLES
+        and user.detachment_id
+        and getattr(getattr(user, "detachment", None), "company_id", None)
+    )
+
+
+def company_case_scope_q(user):
+    company_id = getattr(getattr(user, "detachment", None), "company_id", None)
+    if not company_id:
+        return Q(pk__in=[])
+    return (
+        Q(tasked_company_id=company_id)
+        | Q(tasked_detachment__company_id=company_id)
+        | Q(assigned_to__detachment__company_id=company_id)
+        | Q(assigned_team__detachment__company_id=company_id)
+    )
+
+
+def is_company_user_manager(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.role in COMPANY_USER_MANAGER_ROLES
+        and user.detachment_id
+        and getattr(getattr(user, "detachment", None), "company_id", None)
+    )
+
+
+def is_detachment_user_manager(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.role in DETACHMENT_USER_MANAGER_ROLES
+        and user.detachment_id
     )
 
 
@@ -184,4 +228,8 @@ def unit_case_scope_q(user):
     unit_id = getattr(user, "unit_id", None)
     if not unit_id:
         return Q(pk__in=[])
-    return Q(accused_unit_id=unit_id) | Q(accused_entries__unit_id=unit_id)
+    return (
+        Q(accused_unit_id=unit_id)
+        | Q(accused_entries__unit_id=unit_id)
+        | Q(accused_unit__isnull=True, submitting_unit_id=unit_id)
+    )

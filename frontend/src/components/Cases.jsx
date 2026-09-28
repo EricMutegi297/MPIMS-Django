@@ -2162,6 +2162,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
     (user?.role === "admin" || user?.role === "co");
   const isInvestigator = user?.role === "investigator";
+  const canAttachBrief = isInvestigator || user?.role === "company_cmd";
   const isAccusedUnitUser = Boolean(user?.unit_id || user?.unit) && ["adj", "co", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role);
   const selectedCriminalWorkflowType = String(selected?.criminal_offence_type || activeCriminalTypeFilter || "").toLowerCase();
   const supportsUnitServiceAcknowledgement = selectedCriminalWorkflowType !== "dci_civ_police";
@@ -5953,7 +5954,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                       Request Guardroom
                     </button>
                   )}
-                  {!selected.brief ? (
+                  {!selected.brief && canAttachBrief ? (
                     <button
                       type="button"
                       onClick={toggleBriefUpload}
@@ -5961,7 +5962,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     >
                       {showBriefUpload ? "Cancel Brief Upload" : "Upload Brief"}
                     </button>
-                  ) : (
+                  ) : selected.brief && briefForwardOptions.length > 0 ? (
                     <button
                       type="button"
                       onClick={toggleForwardForm}
@@ -5969,7 +5970,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     >
                       {showForwardForm ? "Cancel Forward" : "Brief uploaded - Forward"}
                     </button>
-                  )}
+                  ) : null}
                 </div>
                 {showDocumentUpload && (
                   <form onSubmit={handleDocumentUpload} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
@@ -6001,7 +6002,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     </button>
                   </form>
                 )}
-                {showBriefUpload && !selected.brief && (
+                {showBriefUpload && !selected.brief && canAttachBrief && (
                   <form onSubmit={handleBriefUpload} className="bg-gray-700/40 rounded-lg p-4 space-y-3">
                     <div>
                       <label className="text-xs text-gray-400 block mb-1">Brief Summary</label>
@@ -6037,13 +6038,26 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                       <div>
                         <p className="font-semibold text-white">Brief uploaded</p>
                         <p className="text-gray-300 text-xs mt-1">
-                          A brief has already been attached. Forward it to HOD or Adjutant instead of uploading another one.
+                          {canAttachBrief && !isInvestigator
+                            ? "A brief has already been attached to this case."
+                            : "A brief has already been attached. Forward it to HOD or Adjutant instead of uploading another one."}
                         </p>
                       </div>
                       <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2.5 py-1 text-[11px] text-emerald-100">
                         {selected.brief.status === "forwarded" ? "Forwarded" : "Uploaded"}
                       </span>
                     </div>
+                    {selected.brief.file && (
+                      <div className="mt-3">
+                        <ProtectedDocumentButton
+                          url={selected.brief.file}
+                          label="brief"
+                          className="px-3 py-1.5 bg-emerald-600/20 text-emerald-100 border border-emerald-500/40 rounded text-xs font-medium hover:bg-emerald-600/30"
+                        >
+                          View Brief
+                        </ProtectedDocumentButton>
+                      </div>
+                    )}
                     {selected.brief.forwarded_to_role && (
                       <p className="text-gray-300 text-xs mt-2">
                         Forwarded to: <span className="text-white">{selected.brief.forwarded_to_role.toUpperCase()}</span>
@@ -6806,6 +6820,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                         <th className="px-3 py-3">Accused</th>
                         <th className="px-3 py-3">Unit</th>
                         <th className="px-3 py-3">Offence</th>
+                        <th className="px-3 py-3">Description</th>
                         <th className="px-3 py-3">Status</th>
                       </tr>
                     </thead>
@@ -6834,6 +6849,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                             <td className="px-3 py-3">{caseObj.accused_name || "--"}</td>
                             <td className="px-3 py-3">{accusedUnitLabel(caseObj) || "--"}</td>
                             <td className="px-3 py-3">{caseObj.offence_name || caseObj.offence || "--"}</td>
+                            <td className="max-w-60 truncate px-3 py-3" title={caseDisplayDescription(caseObj) || undefined}>
+                              {caseDisplayDescription(caseObj) || "--"}
+                            </td>
                             <td className="px-3 py-3">
                               <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
                                 {STATUS_CHIP_META[caseObj.status]?.label || caseObj.status || "--"}

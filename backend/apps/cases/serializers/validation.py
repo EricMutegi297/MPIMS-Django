@@ -4,7 +4,12 @@ from django.utils import timezone
 from rest_framework import serializers
 from ..models import Case, CaseCourtMartialMilestone
 from apps.formations.models import Battalion
-from apps.users.access import is_hqs_admin, is_battalion_admin, is_detachment_ic
+from apps.users.access import (
+    is_hqs_admin,
+    is_battalion_admin,
+    is_company_command,
+    is_detachment_ic,
+)
 from apps.users.models import User
 
 from .constants import CASE_FILE_FIELDS, CLOSED_CASE_FILE_ERROR
@@ -443,6 +448,12 @@ class CaseValidationMixin:
             elif is_battalion_admin(user):
                 if user.battalion_id != getattr(tasked_battalion, "id", None):
                     raise serializers.ValidationError({"tasking": "You can only task cases within your battalion."})
+            elif is_company_command(user):
+                company_id = user.detachment.company_id
+                if tasked_company and tasked_company.id != company_id:
+                    raise serializers.ValidationError({"tasking": "You can only task cases within your company."})
+                if tasked_detachment and tasked_detachment.company_id != company_id:
+                    raise serializers.ValidationError({"tasking": "You can only task cases within your company."})
             elif is_detachment_ic(user):
                 detachment_company_id = getattr(getattr(user, "detachment", None), "company_id", None)
                 if not detachment_company_id:
@@ -546,10 +557,23 @@ class CaseValidationMixin:
             assigned_team = None
 
         if assignment_requested and user and user.is_authenticated:
-            can_assign_case = user.is_superuser or is_battalion_admin(user) or is_detachment_ic(user)
+            can_assign_case = (
+                user.is_superuser
+                or is_battalion_admin(user)
+                or is_company_command(user)
+                or is_detachment_ic(user)
+            )
             if not can_assign_case:
                 raise serializers.ValidationError({"assignment": "You are not allowed to assign cases for investigation."})
-            if is_detachment_ic(user):
+            if is_company_command(user):
+                company_id = user.detachment.company_id
+                case_company_id = (
+                    tasked_company.id if tasked_company else
+                    tasked_detachment.company_id if tasked_detachment else None
+                )
+                if case_company_id != company_id:
+                    raise serializers.ValidationError({"assignment": "You can only assign cases within your company."})
+            elif is_detachment_ic(user):
                 if not tasked_detachment or user.detachment_id != tasked_detachment.id:
                     raise serializers.ValidationError({"assignment": "Detachment commanders can only assign cases within their own detachment."})
             elif is_battalion_admin(user) and tasked_company and tasked_company.battalion_id != user.battalion_id:
@@ -561,6 +585,22 @@ class CaseValidationMixin:
                 tasked_company,
                 tasked_detachment,
             )
+            if is_company_command(user):
+                company_id = user.detachment.company_id
+                if assigned_team and (
+                    not assigned_team.detachment_id
+                    or assigned_team.detachment.company_id != company_id
+                ):
+                    raise serializers.ValidationError(
+                        {"assigned_team": "Selected team must belong to your company."}
+                    )
+                if assigned_to and (
+                    not assigned_to.detachment_id
+                    or assigned_to.detachment.company_id != company_id
+                ):
+                    raise serializers.ValidationError(
+                        {"assigned_to": "Selected IO must belong to your company."}
+                    )
 
         is_court_martial = criminal_offence_type == Case.CriminalOffenceType.COURT_MARTIAL
         assignment_target = assigned_team or assigned_to

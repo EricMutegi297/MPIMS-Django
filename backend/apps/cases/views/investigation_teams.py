@@ -43,6 +43,10 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         # IC Cases sees only their company teams.
         if is_detachment_ic(user) and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
+        if is_company_command(user):
+            return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(
+                detachment__company_id=user.detachment.company_id
+            )
         if user.battalion_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(battalion_id=user.battalion_id)
         return InvestigationTeam.objects.none()
@@ -63,6 +67,8 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
             base_users = User.objects.all()
         elif is_detachment_ic(user) and user.detachment_id:
             base_users = User.objects.filter(detachment_id=user.detachment_id)
+        elif is_company_command(user):
+            base_users = User.objects.filter(detachment__company_id=user.detachment.company_id)
         elif user.battalion_id:
             base_users = User.objects.filter(battalion_id=user.battalion_id)
         else:

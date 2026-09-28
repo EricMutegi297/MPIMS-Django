@@ -106,6 +106,7 @@ function ModuleFallback() {
 const ROLE_LABELS = {
   admin: "Admin",
   co: "Commanding Officer",
+  company_cmd: "Company Commander",
   oc: "Officer Commanding",
   corps_cmd: "Corps Commander",
   sec_corps_cmd: "Secretary Corps Commander",
@@ -139,7 +140,7 @@ function getNavItems(user) {
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
   const isBattalionCommand = ["admin", "co", "hod", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
   const isUnitCommandRole = ["co", "adj", "2ic", "commandant", "ci", "si"].includes(user?.role) && !!user?.unit;
-  const caseViewerRoles = ["admin", "co", "corps_cmd", "investigator", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
+  const caseViewerRoles = ["admin", "co", "company_cmd", "oc", "corps_cmd", "investigator", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
   const items = [
     {
       key: "overview", label: "Overview", path: "/dashboard", exact: true, show: true,
@@ -232,7 +233,7 @@ function getNavItems(user) {
       ),
     },
     {
-      key: "users", label: "Users", path: "/dashboard/users", show: isSuperuser || ["admin", "mpc_hqs", "personnel", "detachment", "docus_clerk"].includes(user?.role),
+      key: "users", label: "Users", path: "/dashboard/users", show: isSuperuser || ["admin", "mpc_hqs", "personnel", "detachment", "det_cmdr", "company_cmd", "pltn_cmdr", "docus_clerk"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -279,18 +280,10 @@ function getNavItems(user) {
       key: "teams",
       label: "Teams",
       path: "/dashboard/teams",
-      show: isSpecialBattalionAdmin || ["detachment", "det_cmdr", "pltn_cmdr", "det_2ic"].includes(user?.role),
+      show: isSpecialBattalionAdmin || ["co", "company_cmd", "oc", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic"].includes(user?.role),
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-      ),
-    },
-    {
-      key: "det-teams", label: "Teams", path: "/dashboard/det-teams", show: user?.role === "detachment",
-      icon: (
-        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
         </svg>
       ),
     },
@@ -654,6 +647,7 @@ export default function Dashboard() {
   const isDetachmentLevelRole = DETACHMENT_LEVEL_ROLES.includes(user?.role);
   const isUnitLevelRole = UNIT_LEVEL_ROLES.includes(user?.role) || (["co", "adj", "2ic"].includes(user?.role) && !!user?.unit);
   const hasDetachment = !!user?.detachment;
+  const isCompanyCommand = ["co", "company_cmd", "oc"].includes(user?.role) && !!user?.company_id;
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
 
   // Sidebar navigation items
@@ -876,7 +870,7 @@ export default function Dashboard() {
             <Route path="/" element={
               isInvestigator ? <InvestigatorDashboard user={user} /> :
               (isHqsAdmin || isCorpsCommander) ? <HQDashboard user={user} /> :
-              (isDetachmentLevelRole && hasDetachment) ? <DetachmentDashboard user={user} /> :
+              ((isDetachmentLevelRole && hasDetachment) || isCompanyCommand) ? <DetachmentDashboard user={user} /> :
               (isDetachmentLevelRole && !hasDetachment) ? <BattalionDashboard user={user} /> :
               user?.battalion_type ? <BattalionDashboard user={user} /> :
               <Overview user={user} />
@@ -895,7 +889,18 @@ export default function Dashboard() {
             <Route path="/briefs" element={<Briefs user={user} />} />
             <Route path="/back-briefs" element={<BackBriefs user={user} />} />
             <Route path="/users/*" element={<Users user={user} />} />
-            <Route path="/teams" element={<Teams user={user} scope={isSpecialBattalionAdmin ? "battalion" : "detachment"} />} />
+            <Route path="/teams" element={
+              <Teams
+                user={user}
+                scope={
+                  isSpecialBattalionAdmin
+                    ? "battalion"
+                    : ["co", "company_cmd", "oc"].includes(user?.role) && user?.company_id
+                    ? "company"
+                    : "detachment"
+                }
+              />
+            } />
             <Route path="/battalions" element={<Formations user={user} mode="battalions" />} />
             <Route path="/Battalions" element={<Formations user={user} mode="battalions" />} />
             <Route path="/formations" element={<Formations user={user} mode="formations" />} />

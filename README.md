@@ -185,9 +185,8 @@ npm ci
 npm start
 ```
 
-The frontend runs at:
-
-- http://localhost:3000
+The frontend runs at `http://localhost:3000` and `npm start` opens it in your
+default browser.
 
 ### 3. Realtime Service
 

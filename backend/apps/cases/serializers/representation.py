@@ -68,7 +68,9 @@ class CaseRepresentationMixin:
         return obj.offence_ref.name if obj.offence_ref else None
 
     def get_accused_unit_name(self, obj):
-        return obj.accused_unit.name if obj.accused_unit else None
+        if obj.accused_unit:
+            return obj.accused_unit.name
+        return obj.submitting_unit.name if obj.submitting_unit else None
 
     def get_submitting_unit_name(self, obj):
         return obj.submitting_unit.name if obj.submitting_unit else None
