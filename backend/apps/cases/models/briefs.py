@@ -13,13 +13,18 @@ class CaseBrief(models.Model):
         FORWARDED = "forwarded", "Forwarded"
 
     class ForwardRole(models.TextChoices):
+        IC_CASES = "ic_cases", "IC Cases"
         HOD = "hod", "HOD"
         CO = "co", "Commanding Officer"
         OC = "oc", "OC"
         CORPS_CMD = "corps_cmd", "Corps Cmd"
-        DETACHMENT = "detachment", "IC Cases"
+        DETACHMENT = "detachment", "Legacy IC Cases"
+        DETACHMENT_IC = "detachment_ic", "Detachment IC"
+        DETACHMENT_COMMANDER = "detachment_commander", "Detachment Commander"
         ADJ = "adj", "Adjutant"
         TWO_IC = "2ic", "2IC"
+        COMPANY_OC = "company_oc", "Company OC"
+        COMPANY_TWO_IC = "company_2ic", "Company 2IC"
 
     case = models.OneToOneField(
         Case,

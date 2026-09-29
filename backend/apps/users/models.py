@@ -34,6 +34,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         HOD = "hod", "Head of Department"
         GUARDROOM_IC = "guardroom_ic", "Guardroom IC"
         DETACHMENT = "detachment", "Detachment IC"
+        IC_CASES = "ic_cases", "IC Cases"
         DET_CMD = "det_cmdr", "Detachment Commander"
         PLT_CMD = "pltn_cmdr", "Platoon Commander"
         DET_TWO_IC = "det_2ic", "Detachment 2IC"
@@ -70,6 +71,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     detachment = models.ForeignKey(
         "formations.Detachment", null=True, blank=True, on_delete=models.SET_NULL, related_name="users"
+    )
+    company = models.ForeignKey(
+        "formations.Company", null=True, blank=True, on_delete=models.SET_NULL, related_name="users"
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)

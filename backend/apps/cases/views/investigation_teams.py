@@ -7,6 +7,8 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
     def _can_manage_teams(self, user):
         if user.is_superuser:
             return True
+        if user.role == User.Role.IC_CASES and user.detachment_id:
+            return True
         if is_detachment_ic(user) and user.detachment_id:
             return True
         if (
@@ -29,6 +31,8 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
         # IC Cases creates teams scoped to their company record.
         if is_detachment_ic(user) and user.detachment_id:
             serializer.save(battalion=user.battalion, detachment=user.detachment)
+        elif user.role == User.Role.IC_CASES and user.detachment_id:
+            serializer.save(battalion=user.battalion, detachment=user.detachment)
         else:
             serializer.save(battalion=user.battalion)
 
@@ -40,6 +44,17 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(
                 Q(team_ic=user) | Q(members=user)
             ).distinct()
+        if user.role == User.Role.IC_CASES:
+            teams = InvestigationTeam.objects.prefetch_related("members").select_related(
+                "team_ic", "battalion", "detachment"
+            )
+            if user.detachment_id:
+                return teams.filter(detachment_id=user.detachment_id)
+            if user.company_id:
+                return teams.filter(detachment__company_id=user.company_id)
+            if user.battalion_id:
+                return teams.filter(battalion_id=user.battalion_id)
+            return teams.none()
         # IC Cases sees only their company teams.
         if is_detachment_ic(user) and user.detachment_id:
             return InvestigationTeam.objects.prefetch_related("members").select_related("team_ic", "battalion", "detachment").filter(detachment_id=user.detachment_id)
@@ -67,6 +82,14 @@ class InvestigationTeamViewSet(viewsets.ModelViewSet):
             base_users = User.objects.all()
         elif is_detachment_ic(user) and user.detachment_id:
             base_users = User.objects.filter(detachment_id=user.detachment_id)
+        elif user.role == User.Role.IC_CASES and user.detachment_id:
+            base_users = User.objects.filter(detachment_id=user.detachment_id)
+        elif user.role == User.Role.IC_CASES and user.company_id:
+            base_users = User.objects.filter(
+                Q(company_id=user.company_id) | Q(detachment__company_id=user.company_id)
+            )
+        elif user.role == User.Role.IC_CASES and user.battalion_id:
+            base_users = User.objects.filter(battalion_id=user.battalion_id)
         elif is_company_command(user):
             base_users = User.objects.filter(detachment__company_id=user.detachment.company_id)
         elif user.battalion_id:

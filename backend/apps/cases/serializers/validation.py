@@ -9,6 +9,8 @@ from apps.users.access import (
     is_battalion_admin,
     is_company_command,
     is_detachment_ic,
+    is_scoped_to_company,
+    user_company_id,
 )
 from apps.users.models import User
 
@@ -144,6 +146,8 @@ class CaseValidationMixin:
         if not user or not user.is_authenticated or not case:
             return False
         if is_detachment_ic(user) and user.detachment_id:
+            return user.detachment_id == case.tasked_detachment_id
+        if user.role == User.Role.IC_CASES and user.detachment_id:
             return user.detachment_id == case.tasked_detachment_id
         if user.role in {User.Role.CO, User.Role.OC, User.Role.ADJ, User.Role.TWO_IC, User.Role.COMMANDANT}:
             return bool(
@@ -562,6 +566,7 @@ class CaseValidationMixin:
                 or is_battalion_admin(user)
                 or is_company_command(user)
                 or is_detachment_ic(user)
+                or user.role == User.Role.IC_CASES
             )
             if not can_assign_case:
                 raise serializers.ValidationError({"assignment": "You are not allowed to assign cases for investigation."})
@@ -576,6 +581,34 @@ class CaseValidationMixin:
             elif is_detachment_ic(user):
                 if not tasked_detachment or user.detachment_id != tasked_detachment.id:
                     raise serializers.ValidationError({"assignment": "Detachment commanders can only assign cases within their own detachment."})
+            elif user.role == User.Role.IC_CASES:
+                if user.detachment_id:
+                    if not tasked_detachment or user.detachment_id != tasked_detachment.id:
+                        raise serializers.ValidationError(
+                            {"assignment": "Detachment-level IC Cases can only assign cases tasked to their detachment."}
+                        )
+                elif user.company_id:
+                    case_company_id = (
+                        tasked_company.id if tasked_company else
+                        tasked_detachment.company_id if tasked_detachment else None
+                    )
+                    if case_company_id != user.company_id:
+                        raise serializers.ValidationError(
+                            {"assignment": "Company-level IC Cases can only assign cases within their company."}
+                        )
+                elif user.battalion_id:
+                    case_battalion_id = (
+                        tasked_battalion.id if tasked_battalion else
+                        tasked_detachment.company.battalion_id if tasked_detachment else None
+                    )
+                    if case_battalion_id != user.battalion_id:
+                        raise serializers.ValidationError(
+                            {"assignment": "Battalion-level IC Cases can only assign cases within their battalion."}
+                        )
+                else:
+                    raise serializers.ValidationError(
+                        {"assignment": "Assign an IC Cases account to a detachment, company, or battalion before assigning cases."}
+                    )
             elif is_battalion_admin(user) and tasked_company and tasked_company.battalion_id != user.battalion_id:
                 raise serializers.ValidationError({"assignment": "You can only assign cases within your battalion."})
             self._validate_assignment_scope(
@@ -598,6 +631,18 @@ class CaseValidationMixin:
                     not assigned_to.detachment_id
                     or assigned_to.detachment.company_id != company_id
                 ):
+                    raise serializers.ValidationError(
+                        {"assigned_to": "Selected IO must belong to your company."}
+                    )
+            elif user.role == User.Role.IC_CASES and user.company_id and not user.detachment_id:
+                if assigned_team and (
+                    not assigned_team.detachment_id
+                    or assigned_team.detachment.company_id != user.company_id
+                ):
+                    raise serializers.ValidationError(
+                        {"assigned_team": "Selected team must belong to your company."}
+                    )
+                if assigned_to and user_company_id(assigned_to) != user.company_id:
                     raise serializers.ValidationError(
                         {"assigned_to": "Selected IO must belong to your company."}
                     )

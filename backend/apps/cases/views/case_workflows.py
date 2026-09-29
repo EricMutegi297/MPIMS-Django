@@ -268,9 +268,52 @@ class CaseWorkflowsMixin:
 
         battalion_id = self._case_battalion_id(case)
         detachment_id = self._case_detachment_id(actor, case)
+        company_id = self._case_company_id(case) or user_company_id(actor)
 
         recipients = set()
-        if brief.forwarded_to_role == CaseBrief.ForwardRole.HOD:
+        if brief.forwarded_to_role == CaseBrief.ForwardRole.IC_CASES:
+            scoped_ic_cases = User.objects.filter(role=User.Role.IC_CASES, is_active=True)
+            if detachment_id:
+                recipients.update(scoped_ic_cases.filter(detachment_id=detachment_id))
+            elif company_id:
+                recipients.update(scoped_ic_cases.filter(company_id=company_id))
+            elif battalion_id:
+                recipients.update(
+                    scoped_ic_cases.filter(
+                        battalion_id=battalion_id,
+                        company__isnull=True,
+                        detachment__isnull=True,
+                    )
+                )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.DETACHMENT_IC:
+            recipients.update(
+                User.objects.filter(
+                    role=User.Role.DETACHMENT,
+                    detachment_id=detachment_id,
+                    is_active=True,
+                )
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.DETACHMENT_COMMANDER:
+            recipients.update(
+                User.objects.filter(
+                    role=User.Role.DET_CMD,
+                    detachment_id=detachment_id,
+                    is_active=True,
+                )
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.COMPANY_TWO_IC:
+            recipients.update(
+                User.objects.filter(role=User.Role.TWO_IC, is_active=True).filter(
+                    Q(company_id=company_id) | Q(detachment__company_id=company_id)
+                )
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.COMPANY_OC:
+            recipients.update(
+                User.objects.filter(role=User.Role.OC, is_active=True).filter(
+                    Q(company_id=company_id) | Q(detachment__company_id=company_id)
+                )
+            )
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.HOD:
             recipients.update(
                 User.objects.filter(role=User.Role.HOD, battalion_id=battalion_id, is_active=True)
             )
@@ -280,7 +323,13 @@ class CaseWorkflowsMixin:
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.OC:
             recipients.update(
-                User.objects.filter(role=User.Role.OC, battalion_id=battalion_id, is_active=True)
+                User.objects.filter(
+                    role=User.Role.OC,
+                    battalion_id=battalion_id,
+                    company__isnull=True,
+                    detachment__isnull=True,
+                    is_active=True,
+                )
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.CORPS_CMD:
             recipients.update(
@@ -305,7 +354,13 @@ class CaseWorkflowsMixin:
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.TWO_IC:
             recipients.update(
-                User.objects.filter(role=User.Role.TWO_IC, battalion_id=battalion_id, is_active=True)
+                User.objects.filter(
+                    role=User.Role.TWO_IC,
+                    battalion_id=battalion_id,
+                    company__isnull=True,
+                    detachment__isnull=True,
+                    is_active=True,
+                )
             )
         if actor:
             recipients.discard(actor)
@@ -444,13 +499,16 @@ class CaseWorkflowsMixin:
                 logger.exception("Failed to queue brief-approval email for case %s.", case.pk)
 
     def _send_detachment_tasking_notification(self, case):
-        """Notify all users in the tasked company (role=detachment as IC Cases)."""
+        """Notify the responsible detachment leaders and IC Cases users."""
         if not case.tasked_detachment_id:
             return
-        # Notify users whose company record matches and whose role is 'detachment' (IC Cases).
         users = User.objects.filter(
             detachment_id=case.tasked_detachment_id,
-            role="detachment",
+            role__in=[
+                User.Role.DETACHMENT,
+                User.Role.IC_CASES,
+                User.Role.DET_CMD,
+            ],
             is_active=True,
         )
         if not users.exists():
@@ -549,11 +607,29 @@ class CaseWorkflowsMixin:
                 is_active=True,
             ))
 
-        # IC Cases if this is a company-level case.
+        # IC Cases and detachment leaders for cases tasked to a detachment.
         if case.tasked_detachment_id:
             recipients.update(User.objects.filter(
-                role="detachment",
+                role__in=[
+                    User.Role.DETACHMENT,
+                    User.Role.IC_CASES,
+                    User.Role.DET_CMD,
+                ],
                 detachment_id=case.tasked_detachment_id,
+                is_active=True,
+            ))
+        elif case.tasked_company_id:
+            recipients.update(User.objects.filter(
+                role=User.Role.IC_CASES,
+                company_id=case.tasked_company_id,
+                is_active=True,
+            ))
+        elif case.tasked_battalion_id:
+            recipients.update(User.objects.filter(
+                role=User.Role.IC_CASES,
+                battalion_id=case.tasked_battalion_id,
+                company__isnull=True,
+                detachment__isnull=True,
                 is_active=True,
             ))
 
@@ -603,8 +679,26 @@ class CaseWorkflowsMixin:
         if case.tasked_detachment_id:
             recipients.update(
                 User.objects.filter(
-                    role="detachment",
+                    role=User.Role.IC_CASES,
                     detachment_id=case.tasked_detachment_id,
+                    is_active=True,
+                )
+            )
+        elif case.tasked_company_id:
+            recipients.update(
+                User.objects.filter(
+                    role=User.Role.IC_CASES,
+                    company_id=case.tasked_company_id,
+                    is_active=True,
+                )
+            )
+        elif case.tasked_battalion_id:
+            recipients.update(
+                User.objects.filter(
+                    role=User.Role.IC_CASES,
+                    battalion_id=case.tasked_battalion_id,
+                    company__isnull=True,
+                    detachment__isnull=True,
                     is_active=True,
                 )
             )

@@ -378,6 +378,68 @@ class CaseApiTests(TestCase):
         self.assertEqual(visible_ids, {company_case.id, child_case.id})
         self.assertNotIn(unrelated_case.id, visible_ids)
 
+    def test_company_ic_cases_can_view_and_assign_only_company_cases(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="IC Cases Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="Other IC Cases Company",
+        )
+        ic_cases_user = User.objects.create_user(
+            "300006",
+            "test-password",
+            name="Company IC Cases",
+            role=User.Role.IC_CASES,
+            battalion=self.battalion,
+            company=company,
+        )
+        investigator = User.objects.create_user(
+            "300007",
+            "test-password",
+            name="Company Investigator",
+            role=User.Role.INVESTIGATOR,
+            battalion=self.battalion,
+            company=company,
+        )
+        company_case = Case.objects.create(
+            title="IC Cases company case",
+            tasked_company=company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        unrelated_case = Case.objects.create(
+            title="Other company case",
+            tasked_company=other_company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+        self.client.force_authenticate(user=ic_cases_user)
+
+        list_response = self.client.get(reverse("case-list"))
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_response.data["count"], 1)
+        self.assertEqual(list_response.data["results"][0]["id"], company_case.id)
+
+        assign_response = self.client.patch(
+            reverse("case-detail", args=[company_case.id]),
+            {"assigned_to": investigator.id},
+            format="json",
+        )
+        self.assertEqual(assign_response.status_code, status.HTTP_200_OK, assign_response.data)
+        company_case.refresh_from_db()
+        self.assertEqual(company_case.assigned_to_id, investigator.id)
+
+        unrelated_response = self.client.patch(
+            reverse("case-detail", args=[unrelated_case.id]),
+            {"assigned_to": investigator.id},
+            format="json",
+        )
+        self.assertEqual(unrelated_response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_company_commander_can_view_and_attach_briefs_within_company_scope(self):
         company = Company.objects.create(
             battalion=self.battalion,

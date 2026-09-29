@@ -14,6 +14,7 @@ const ROLE_LABELS = {
   hod:          "Head of Department",
   guardroom_ic: "Guardroom IC",
   detachment:   "Detachment IC",
+  ic_cases:     "IC Cases",
   det_cmdr:     "Detachment Commander",
   pltn_cmdr:    "Platoon Commander",
   det_2ic:      "Detachment 2IC",
@@ -42,6 +43,7 @@ const ROLE_BADGE = {
   hod:          "bg-lime-500/20 text-lime-400",
   guardroom_ic: "bg-orange-500/20 text-orange-400",
   detachment:   "bg-teal-500/20 text-teal-400",
+  ic_cases:     "bg-cyan-500/20 text-cyan-300",
   personnel:    "bg-gray-500/20 text-gray-400",
   legal:        "bg-pink-500/20 text-pink-400",
   order_nco:    "bg-cyan-500/20 text-cyan-400",
@@ -210,9 +212,9 @@ export default function Users({ user }) {
   const canDeleteUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin || isDocusClerk;
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","company_cmd","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
+    ? ["admin","co","company_cmd","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
     : isBattalionAdmin
-    ? ["co","company_cmd","oc","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+    ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
     : isCompanyUserManager
     ? ["detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator"]
     : isDocusClerk
@@ -226,7 +228,7 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","company_cmd","oc","detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+      ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
       : isCompanyUserManager || isDetachmentUserManager
       ? Object.keys(ROLE_LABELS)
       : isDocusClerk
@@ -237,11 +239,12 @@ export default function Users({ user }) {
   // Create user modal state
   const BLANK_FORM = {
     service_number: "", name: "", rank: "", email: "", role: "",
-    battalion: "", detachment: "", unit: "",
+    battalion: "", detachment: "", company: "", ic_cases_scope: "battalion", unit: "",
   };
   const [showCreate, setShowCreate]     = useState(false);
   const [form, setForm]                 = useState(BLANK_FORM);
   const [battalions, setBattalions]     = useState([]);
+  const [companies, setCompanies]       = useState([]);
   const [units, setUnits]               = useState([]);
   const [detachments, setDetachments]   = useState([]);
   const [creating, setCreating]         = useState(false);
@@ -261,6 +264,16 @@ export default function Users({ user }) {
     formationService.subDetachments({ "company__battalion": battalionId, page_size: 200 })
       .then((r) => setDetachments(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
       .catch(() => setDetachments([]));
+  }, []);
+
+  const loadCompanies = useCallback((battalionId) => {
+    if (!battalionId) { setCompanies([]); return; }
+    formationService.companies({ battalion: battalionId, page_size: 200 })
+      .then((r) => setCompanies(Array.isArray(r.data) ? r.data : r.data?.results ?? []))
+      .catch(() => {
+        setCompanies([]);
+        setError("Failed to load companies for user assignment.");
+      });
   }, []);
 
   const loadUnits = useCallback((battalionId = "") => {
@@ -312,12 +325,15 @@ export default function Users({ user }) {
       battalion: isBattalionAdmin ? String(user.battalion ?? "") : "",
       unit: isDocusClerk ? String(user.unit ?? "") : "",
       detachment: "",
+      company: "",
+      ic_cases_scope: "battalion",
     };
     setForm(prefill);
     setCreateError("");
     setCreateNotice("");
     setCreateActivationLink("");
     setDetachments([]);
+    setCompanies([]);
     setShowCreate(true);
     if (battalions.length === 0) {
       formationService.battalions({ page_size: 200 })
@@ -327,6 +343,7 @@ export default function Users({ user }) {
     // Pre-load detachments when battalion is already known
     if (isBattalionAdmin && user.battalion) {
       loadDetachments(String(user.battalion));
+      loadCompanies(String(user.battalion));
       loadUnits();
     } else if (isDocusClerk) {
       setUnits(user?.unit ? [{ id: user.unit, name: user.unit_name || "Assigned unit" }] : []);
@@ -342,6 +359,10 @@ export default function Users({ user }) {
       email: u.email || "",
       role: u.role || "",
       detachment: String(u.detachment ?? ""),
+      company: String(u.company ?? ""),
+      ic_cases_scope: u.role === "ic_cases"
+        ? (u.detachment ? "detachment" : u.company ? "company" : "battalion")
+        : "battalion",
       is_active: u.is_active,
     };
     setEditTarget(u);
@@ -349,7 +370,10 @@ export default function Users({ user }) {
     setEditError("");
     setDetachments([]);
     setShowEdit(true);
-    if (u.battalion) loadDetachments(String(u.battalion));
+    if (u.battalion) {
+      loadDetachments(String(u.battalion));
+      loadCompanies(String(u.battalion));
+    }
   };
 
   const handleEditUser = async (e) => {
@@ -358,6 +382,29 @@ export default function Users({ user }) {
     setEditError("");
     try {
       const payload = { ...editForm };
+      delete payload.ic_cases_scope;
+      if (editForm.role === "ic_cases") {
+        if (editForm.ic_cases_scope === "company") {
+          payload.detachment = null;
+          if (!payload.company) {
+            setEditError("Select a company for this IC Cases account.");
+            return;
+          }
+        } else if (editForm.ic_cases_scope === "detachment") {
+          payload.company = null;
+          if (!payload.detachment) {
+            setEditError("Select a detachment for this IC Cases account.");
+            return;
+          }
+        } else {
+          payload.company = null;
+          payload.detachment = null;
+        }
+      } else if (editTarget.company) {
+        payload.company = null;
+      } else {
+        delete payload.company;
+      }
       await userService.update(editTarget.id, payload);
       setShowEdit(false);
       loadUsers();
@@ -402,7 +449,29 @@ export default function Users({ user }) {
     }
     try {
       const payload = { ...form };
+      delete payload.ic_cases_scope;
+      if (form.role === "ic_cases") {
+        if (form.ic_cases_scope === "company") {
+          payload.detachment = "";
+          if (!payload.company) {
+            setCreateError("Select a company for this IC Cases account.");
+            return;
+          }
+        } else if (form.ic_cases_scope === "detachment") {
+          payload.company = "";
+          if (!payload.detachment) {
+            setCreateError("Select a detachment for this IC Cases account.");
+            return;
+          }
+        } else {
+          payload.company = "";
+          payload.detachment = "";
+        }
+      } else {
+        delete payload.company;
+      }
       if (!payload.detachment) delete payload.detachment;
+      if (!payload.company) delete payload.company;
       if (!payload.battalion) delete payload.battalion;
       if (!payload.unit) delete payload.unit;
       if (isDocusClerk && user?.unit) payload.unit = user.unit;
@@ -784,6 +853,10 @@ export default function Users({ user }) {
                       role: newRole,
                       battalion: isGlobalRole || needsUnit ? "" : form.battalion,
                       detachment: clearDet || isGlobalRole || needsUnit ? "" : form.detachment,
+                      company: newRole === "ic_cases" ? form.company : "",
+                      ic_cases_scope: newRole === "ic_cases"
+                        ? (form.role === "ic_cases" ? form.ic_cases_scope : "battalion")
+                        : "battalion",
                       unit: needsUnit ? (isDocusClerk ? String(user?.unit ?? "") : form.unit) : "",
                     });
                     // Load companies when switching to a company-level role and battalion is known
@@ -817,8 +890,9 @@ export default function Users({ user }) {
                       required={!GLOBAL_LEVEL_ROLES.includes(form.role)} value={form.battalion}
                       onChange={(e) => {
                         const val = e.target.value;
-                        setForm({ ...form, battalion: val, detachment: "", unit: "" });
+                        setForm({ ...form, battalion: val, detachment: "", company: "", unit: "" });
                         loadDetachments(val);
+                        loadCompanies(val);
                         loadUnits(val);
                       }}
                       className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -888,6 +962,64 @@ export default function Users({ user }) {
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+              {form.role === "ic_cases" && (
+                <div className="col-span-2 space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">IC Cases scope *</label>
+                    <select
+                      required
+                      value={form.ic_cases_scope}
+                      onChange={(e) => setForm({
+                        ...form,
+                        ic_cases_scope: e.target.value,
+                        company: "",
+                        detachment: "",
+                      })}
+                      className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="battalion">Battalion-wide</option>
+                      <option value="company">Company</option>
+                      <option value="detachment">Detachment</option>
+                    </select>
+                  </div>
+                  {form.ic_cases_scope === "company" && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Company *</label>
+                      <select
+                        required
+                        value={form.company}
+                        onChange={(e) => setForm({ ...form, company: e.target.value })}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="">Select a company</option>
+                        {companies.map((company) => (
+                          <option key={company.id} value={company.id}>
+                            {company.company ? `${company.company} Coy` : "Company"} — {company.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {form.ic_cases_scope === "detachment" && (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Detachment *</label>
+                      <select
+                        required
+                        value={form.detachment}
+                        onChange={(e) => setForm({ ...form, detachment: e.target.value })}
+                        className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="">Select a detachment</option>
+                        {detachments.map((detachment) => (
+                          <option key={detachment.id} value={detachment.id}>
+                            {detachment.company_code ? `${detachment.company_code} Coy` : "Coy"}{detachment.company_name ? ` — ${detachment.company_name}` : ""} / {detachment.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -968,8 +1100,16 @@ export default function Users({ user }) {
                       detachment: DETACHMENT_LEVEL_ROLES.includes(nextRole)
                         ? editForm.detachment
                         : "",
+                      company: nextRole === "ic_cases" ? editForm.company : "",
+                      ic_cases_scope: nextRole === "ic_cases"
+                        ? (editForm.role === "ic_cases" ? editForm.ic_cases_scope : "battalion")
+                        : "battalion",
                     });
                     if (DETACHMENT_LEVEL_ROLES.includes(nextRole) && editTarget?.battalion) {
+                      loadDetachments(String(editTarget.battalion));
+                    }
+                    if (nextRole === "ic_cases" && editTarget?.battalion) {
+                      loadCompanies(String(editTarget.battalion));
                       loadDetachments(String(editTarget.battalion));
                     }
                   }}
@@ -1006,6 +1146,76 @@ export default function Users({ user }) {
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+              {editForm.role === "ic_cases" && (
+                <div className="col-span-2 space-y-3">
+                  {isSuperuser || isHqsAdmin || isBattalionAdmin ? (
+                    <>
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">IC Cases scope *</label>
+                        <select
+                          required
+                          value={editForm.ic_cases_scope}
+                          onChange={(e) => setEditForm({
+                            ...editForm,
+                            ic_cases_scope: e.target.value,
+                            company: "",
+                            detachment: "",
+                          })}
+                          className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="battalion">Battalion-wide</option>
+                          <option value="company">Company</option>
+                          <option value="detachment">Detachment</option>
+                        </select>
+                      </div>
+                      {editForm.ic_cases_scope === "company" && (
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Company *</label>
+                          <select
+                            required
+                            value={editForm.company}
+                            onChange={(e) => setEditForm({ ...editForm, company: e.target.value })}
+                            className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          >
+                            <option value="">Select a company</option>
+                            {companies.map((company) => (
+                              <option key={company.id} value={company.id}>
+                                {company.company ? `${company.company} Coy` : "Company"} — {company.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {editForm.ic_cases_scope === "detachment" && (
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Detachment *</label>
+                          <select
+                            required
+                            value={editForm.detachment}
+                            onChange={(e) => setEditForm({ ...editForm, detachment: e.target.value })}
+                            className="w-full bg-gray-700 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          >
+                            <option value="">Select a detachment</option>
+                            {detachments.map((detachment) => (
+                              <option key={detachment.id} value={detachment.id}>
+                                {detachment.company_code ? `${detachment.company_code} Coy` : "Coy"}{detachment.company_name ? ` — ${detachment.company_name}` : ""} / {detachment.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-400">
+                      Scope: {editForm.ic_cases_scope === "company"
+                        ? "Company"
+                        : editForm.ic_cases_scope === "detachment"
+                        ? "Detachment"
+                        : "Battalion"}
+                    </p>
+                  )}
                 </div>
               )}
               <div className="col-span-2 flex items-center gap-3">

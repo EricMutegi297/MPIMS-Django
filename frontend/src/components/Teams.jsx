@@ -10,6 +10,7 @@ const ROLE_LABELS = {
   investigator: "Investigator",
   personnel:    "Personnel",
   detachment:   "Detachment IC",
+  ic_cases:     "IC Cases",
   det_cmdr:     "Detachment Commander",
   pltn_cmdr:    "Platoon Commander",
   det_2ic:      "Detachment 2IC",
@@ -174,10 +175,12 @@ function TeamFormFields({ name, setName, ic, onICChange, mems, toggleMem, eligib
 }
 
 export default function Teams({ user, scope = "detachment" }) {
-  const isDetachmentIC = user?.role === "detachment";
+  const isDetachmentIC = user?.role === "detachment" || (user?.role === "ic_cases" && Boolean(user?.detachment));
   const isBattalionScope = scope === "battalion";
   const isCompanyScope = scope === "company";
-  const canManageTeams = isDetachmentIC || isBattalionScope;
+  const isSpecialBattalionAdmin = user?.role === "admin"
+    && String(user?.battalion_type || "").toLowerCase() === "special";
+  const canManageTeams = isDetachmentIC || (isBattalionScope && isSpecialBattalionAdmin);
   const scopeId = isBattalionScope
     ? (user?.battalion ?? user?.battalion_id)
     : isCompanyScope

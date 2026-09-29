@@ -51,6 +51,10 @@ class CaseAccessMixin:
                 or getattr(getattr(getattr(case_obj, "assigned_to", None), "detachment", None), "company_id", None) == company_id
                 or getattr(getattr(getattr(case_obj, "assigned_team", None), "detachment", None), "company_id", None) == company_id
             )
+        if user.role == User.Role.IC_CASES:
+            return Case.objects.filter(pk=case_obj.pk).filter(ic_cases_scope_q(user)).exists()
+        if is_scoped_to_company(user):
+            return Case.objects.filter(pk=case_obj.pk).filter(company_case_scope_q(user)).exists()
         if case_obj.tasked_battalion_id and user.battalion_id == case_obj.tasked_battalion_id:
             return True
         if case_obj.tasked_detachment_id and user.battalion_id == getattr(case_obj.tasked_detachment, "battalion_id", None):
@@ -105,6 +109,14 @@ class CaseAccessMixin:
                 | Q(assigned_team__team_ic=user)
                 | Q(assigned_team__members=user)
             ).distinct())
+
+        if user.role == User.Role.IC_CASES:
+            return self._prepare_case_queryset(base_qs.filter(ic_cases_scope_q(user)).distinct())
+
+        if is_scoped_to_company(user):
+            return self._prepare_case_queryset(
+                base_qs.filter(company_case_scope_q(user)).distinct()
+            )
 
         if is_company_command(user):
             return self._prepare_case_queryset(

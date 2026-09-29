@@ -112,9 +112,13 @@ export default function DetachmentDashboard({ user }) {
   const navigate = useNavigate();
   const detachmentId = user?.detachment_id ?? user?.detachment;
   const companyId = user?.company_id ?? user?.detachment?.company_id ?? user?.detachment_company_id ?? user?.company;
-  const isDetachmentUser = DETACHMENT_ROLES.includes(user?.role);
-  const isCompanyCommand = ["co", "company_cmd", "oc"].includes(user?.role) && !!companyId;
-  const canManageDetachmentTeams = user?.role === "detachment";
+  const isIcCases = user?.role === "ic_cases";
+  const isDetachmentUser = DETACHMENT_ROLES.includes(user?.role) || (isIcCases && Boolean(detachmentId));
+  const isCompanyCommand = (
+    ["co", "company_cmd", "oc"].includes(user?.role)
+    || (isIcCases && !detachmentId)
+  ) && Boolean(companyId);
+  const canManageDetachmentTeams = user?.role === "detachment" || (isIcCases && Boolean(detachmentId));
   const canAssignCases = canManageDetachmentTeams || user?.role === "det_cmdr" || isCompanyCommand;
 
   // Cases

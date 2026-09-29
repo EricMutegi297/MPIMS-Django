@@ -1891,7 +1891,11 @@ function AbstractAttachmentsCell({ c, clickable = true }) {
 }
 
 const BRIEF_FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC Cases" },
+  { value: "ic_cases", label: "IC Cases" },
+  { value: "detachment_ic", label: "Detachment IC" },
+  { value: "detachment_commander", label: "Detachment Commander" },
+  { value: "company_2ic", label: "Company 2IC" },
+  { value: "company_oc", label: "Company OC" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -1913,19 +1917,24 @@ function currentBriefForwardHistory(brief) {
   return briefForwardHistory(brief).filter((event) => Number(event.revision || 1) === revision);
 }
 
+function briefTargetForUser(user) {
+  if (user?.role === "2ic") return user?.company_id ? "company_2ic" : "2ic";
+  if (user?.role === "oc") return user?.company_id ? "company_oc" : "oc";
+  return {
+    detachment: "detachment_ic",
+    det_cmdr: "detachment_commander",
+    ic_cases: "ic_cases",
+    hod: "hod",
+    adj: "adj",
+    co: "co",
+    corps_cmd: "corps_cmd",
+  }[user?.role] || "";
+}
+
 function hasBriefForwardAccess(user, caseObj) {
   const role = user?.role;
   if (role === "investigator") return true;
-  const targetByRole = {
-    detachment: "detachment",
-    hod: "hod",
-    adj: "adj",
-    "2ic": "2ic",
-    oc: "oc",
-    co: "co",
-    corps_cmd: "corps_cmd",
-  };
-  const target = targetByRole[role];
+  const target = briefTargetForUser(user);
   const brief = caseObj?.brief || {};
   if (!target) return false;
   if (brief.forwarded_to_role === target) return true;
@@ -1943,30 +1952,36 @@ function getBriefForwardOptions(user, caseObj) {
   let options = [];
   if (user?.role === "investigator") {
     if (caseHasDetachmentRoute(user, caseObj)) {
-      options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "detachment");
+      options = BRIEF_FORWARD_OPTIONS.filter((option) =>
+        ["ic_cases", "detachment_ic", "detachment_commander"].includes(option.value)
+      );
       return removeUsedBriefForwardOptions(brief, options);
     }
-    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["hod", "adj"].includes(option.value));
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "ic_cases");
     return removeUsedBriefForwardOptions(brief, options);
   }
-  if (user?.role === "detachment" && (currentTarget === "detachment" || hasBriefForwardAccess(user, caseObj))) {
+  if (["detachment", "det_cmdr", "ic_cases"].includes(user?.role)
+    && (currentTarget === briefTargetForUser(user) || hasBriefForwardAccess(user, caseObj))
+    && (user?.role !== "ic_cases" || user?.detachment || user?.company_id)) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["company_2ic", "company_oc"].includes(option.value));
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (["2ic", "oc"].includes(user?.role) && user?.company_id
+    && (currentTarget === briefTargetForUser(user) || hasBriefForwardAccess(user, caseObj))) {
     options = BRIEF_FORWARD_OPTIONS.filter((option) => ["adj", "hod", "2ic", "oc"].includes(option.value));
     return removeUsedBriefForwardOptions(brief, options);
   }
   if (user?.role === "hod" && (currentTarget === "hod" || hasBriefForwardAccess(user, caseObj))) {
-    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
-    return removeUsedBriefForwardOptions(brief, options);
-  }
-  if (user?.role === "adj" && (currentTarget === "adj" || hasBriefForwardAccess(user, caseObj))) {
-    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
-    return removeUsedBriefForwardOptions(brief, options);
-  }
-  if (user?.role === "2ic" && (currentTarget === "2ic" || hasBriefForwardAccess(user, caseObj))) {
     options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeUsedBriefForwardOptions(brief, options);
   }
-  if (user?.role === "oc" && (currentTarget === "oc" || hasBriefForwardAccess(user, caseObj))) {
-    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
+  if (user?.role === "adj" && (currentTarget === "adj" || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "co");
+    return removeUsedBriefForwardOptions(brief, options);
+  }
+  if (["2ic", "oc"].includes(user?.role) && !user?.company_id
+    && (currentTarget === briefTargetForUser(user) || hasBriefForwardAccess(user, caseObj))) {
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeUsedBriefForwardOptions(brief, options);
   }
   if (user?.role === "co" && (currentTarget === "co" || hasBriefForwardAccess(user, caseObj))) {
@@ -2160,7 +2175,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const criminalAssignmentLabel = CRIMINAL_CASE_TYPE_LABELS[activeCriminalTypeFilter] || "Criminal Offence";
   // Battalion admin/CO who is NOT HQS can assign teams
   const canAssignTeam = !isHqsAdmin && !isSuperuser &&
-    (user?.role === "admin" || user?.role === "co");
+    ["admin", "co", "company_cmd", "oc", "detachment", "ic_cases", "det_cmdr", "pltn_cmdr", "det_2ic"].includes(user?.role);
   const isInvestigator = user?.role === "investigator";
   const canAttachBrief = isInvestigator || user?.role === "company_cmd";
   const isAccusedUnitUser = Boolean(user?.unit_id || user?.unit) && ["adj", "co", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role);
@@ -2413,9 +2428,12 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
 
     const params = { role: "investigator", page_size: 200 };
     const selectedDetachment = selected?.tasked_detachment || user?.detachment_id || user?.detachment;
+    const selectedCompany = selected?.tasked_company || user?.company_id;
     const selectedBattalion = selected?.tasked_battalion || user?.battalion_id || user?.battalion;
     if (selectedDetachment) {
       params.detachment = selectedDetachment;
+    } else if (selectedCompany) {
+      params.company = selectedCompany;
     } else if (selectedBattalion) {
       params.battalion = selectedBattalion;
     }
@@ -2423,7 +2441,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       .list(params)
       .then((res) => setInvestigators(toArray(res.data).filter((u) => u.role === "investigator" && u.is_active !== false)))
       .catch(() => setInvestigators([]));
-  }, [selectedId, selected?.tasked_detachment, selected?.tasked_battalion, user?.detachment_id, user?.detachment, user?.battalion_id, user?.battalion]);
+  }, [selectedId, selected?.tasked_detachment, selected?.tasked_company, selected?.tasked_battalion, user?.detachment_id, user?.detachment, user?.company_id, user?.battalion_id, user?.battalion]);
 
   // Keep table status in sync with dashboard card links (?status=...)
   useEffect(() => {

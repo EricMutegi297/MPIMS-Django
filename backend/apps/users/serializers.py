@@ -15,6 +15,7 @@ class UserSerializer(serializers.ModelSerializer):
     battalion_type = serializers.SerializerMethodField()
     detachment_name = serializers.SerializerMethodField()
     company_id = serializers.SerializerMethodField()
+    company_name = serializers.SerializerMethodField()
     is_superuser = serializers.SerializerMethodField()
     mfa_exempt = serializers.SerializerMethodField()
     email_otp_enabled = serializers.SerializerMethodField()
@@ -26,8 +27,9 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             "id", "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
+            "company",
             "unit_name", "battalion_name", "battalion_type", "detachment_name",
-            "company_id",
+            "company_id", "company_name",
             "is_active", "is_superuser", "must_change_password",
             "mfa_exempt", "email_otp_enabled",
             "totp_configured", "totp_required",
@@ -48,7 +50,12 @@ class UserSerializer(serializers.ModelSerializer):
         return obj.detachment.name if obj.detachment else None
 
     def get_company_id(self, obj):
-        return obj.detachment.company_id if obj.detachment else None
+        return obj.company_id or (obj.detachment.company_id if obj.detachment else None)
+
+    def get_company_name(self, obj):
+        if obj.company_id:
+            return obj.company.name
+        return obj.detachment.company.name if obj.detachment_id else None
 
     def get_is_superuser(self, obj):
         return bool(obj.is_superuser)
@@ -75,6 +82,31 @@ class UserSerializer(serializers.ModelSerializer):
                 field: "MFA exemptions and email OTP are no longer supported; authenticator MFA is mandatory."
                 for field in sorted(removed_mfa_fields)
             })
+        role = attrs.get("role", getattr(self.instance, "role", None))
+        company = attrs.get("company", getattr(self.instance, "company", None))
+        detachment = attrs.get("detachment", getattr(self.instance, "detachment", None))
+        battalion = attrs.get("battalion", getattr(self.instance, "battalion", None))
+        if company and battalion and company.battalion_id != battalion.id:
+            raise serializers.ValidationError(
+                {"company": "Company must belong to the selected battalion."}
+            )
+        if detachment and battalion and detachment.company.battalion_id != battalion.id:
+            raise serializers.ValidationError(
+                {"detachment": "Detachment must belong to the selected battalion."}
+            )
+        if role == User.Role.IC_CASES:
+            if not battalion:
+                raise serializers.ValidationError(
+                    {"battalion": "Battalion is required for an IC Cases account."}
+                )
+            if company and detachment:
+                raise serializers.ValidationError(
+                    {"company": "Assign IC Cases at only one level: battalion, company, or detachment."}
+                )
+        elif company:
+            raise serializers.ValidationError(
+                {"company": "Direct company assignment is only supported for IC Cases accounts."}
+            )
         return attrs
 
 
@@ -84,6 +116,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         fields = [
             "service_number", "name", "rank", "email", "role",
             "unit", "battalion", "formation", "detachment",
+            "company",
         ]
         extra_kwargs = {
             "rank":  {"required": True, "allow_blank": False},
@@ -98,16 +131,37 @@ class UserCreateSerializer(serializers.ModelSerializer):
         unit = data.get("unit")
         battalion = data.get("battalion")
         detachment = data.get("detachment")
+        company = data.get("company")
         request = self.context.get("request")
         actor = getattr(request, "user", None)
+        scoped_battalion = battalion or (
+            actor.battalion if is_battalion_admin(actor) else None
+        )
 
         if battalion and unit and unit.battalion_id and unit.battalion_id != battalion.id:
             raise serializers.ValidationError(
                 {"unit": "Unit must belong to the selected battalion."}
             )
-        if battalion and detachment and detachment.company.battalion_id != battalion.id:
+        if scoped_battalion and detachment and detachment.company.battalion_id != scoped_battalion.id:
             raise serializers.ValidationError(
                 {"detachment": "Company must belong to the selected battalion."}
+            )
+        if scoped_battalion and company and company.battalion_id != scoped_battalion.id:
+            raise serializers.ValidationError(
+                {"company": "Company must belong to the selected battalion."}
+            )
+        if role == User.Role.IC_CASES:
+            if not scoped_battalion:
+                raise serializers.ValidationError(
+                    {"battalion": "Battalion is required for an IC Cases account."}
+                )
+            if company and detachment:
+                raise serializers.ValidationError(
+                    {"company": "Assign IC Cases at only one level: battalion, company, or detachment."}
+                )
+        elif company:
+            raise serializers.ValidationError(
+                {"company": "Direct company assignment is only supported for IC Cases accounts."}
             )
 
         if role in unit_roles and not unit:

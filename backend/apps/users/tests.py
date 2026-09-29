@@ -345,6 +345,26 @@ class UserManagementPermissionTests(APITestCase):
         self.assertEqual(created.battalion, self.battalion)
         self.assertEqual(created.detachment, self.company_detachment)
 
+    def test_battalion_admin_can_create_company_scoped_ic_cases_user(self):
+        self.client.force_authenticate(self.battalion_admin)
+
+        response = self.client.post(
+            self.user_list_url,
+            {
+                **self.user_payload("700110"),
+                "role": User.Role.IC_CASES,
+                "company": self.company.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        created = User.objects.get(service_number="700110")
+        self.assertEqual(created.role, User.Role.IC_CASES)
+        self.assertEqual(created.battalion, self.battalion)
+        self.assertEqual(created.company, self.company)
+        self.assertIsNone(created.detachment)
+
     def test_battalion_admin_cannot_create_user_for_other_battalion_company(self):
         self.client.force_authenticate(self.battalion_admin)
 

@@ -122,18 +122,55 @@ def is_detachment_ic(user):
     )
 
 
+def user_company_id(user):
+    return getattr(user, "company_id", None) or getattr(
+        getattr(user, "detachment", None), "company_id", None
+    )
+
+
+def is_scoped_to_company(user):
+    return bool(
+        user
+        and user.is_authenticated
+        and user.role in {User.Role.OC, User.Role.TWO_IC}
+        and user_company_id(user)
+    )
+
+
+def ic_cases_scope_q(user):
+    if not user or not user.is_authenticated:
+        return Q(pk__in=[])
+    if user.detachment_id:
+        return (
+            Q(tasked_detachment_id=user.detachment_id)
+            | Q(assigned_to__detachment_id=user.detachment_id)
+            | Q(assigned_team__detachment_id=user.detachment_id)
+        )
+    if user.company_id:
+        return company_case_scope_q(user)
+    if user.battalion_id:
+        return (
+            Q(tasked_battalion_id=user.battalion_id)
+            | Q(tasked_detachment__company__battalion_id=user.battalion_id)
+            | Q(assigned_to__battalion_id=user.battalion_id)
+            | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
+            | Q(assigned_team__battalion_id=user.battalion_id)
+            | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
+        )
+    return Q(pk__in=[])
+
+
 def is_company_command(user):
     return bool(
         user
         and user.is_authenticated
         and user.role in COMPANY_COMMAND_ROLES
-        and user.detachment_id
-        and getattr(getattr(user, "detachment", None), "company_id", None)
+        and user_company_id(user)
     )
 
 
 def company_case_scope_q(user):
-    company_id = getattr(getattr(user, "detachment", None), "company_id", None)
+    company_id = user_company_id(user)
     if not company_id:
         return Q(pk__in=[])
     return (

@@ -87,7 +87,11 @@ function printTable(title, headers, rows) {
 }
 
 const FORWARD_OPTIONS = [
-  { value: "detachment", label: "IC Cases" },
+  { value: "ic_cases", label: "IC Cases" },
+  { value: "detachment_ic", label: "Detachment IC" },
+  { value: "detachment_commander", label: "Detachment Commander" },
+  { value: "company_2ic", label: "Company 2IC" },
+  { value: "company_oc", label: "Company OC" },
   { value: "hod", label: "HOD" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
@@ -98,7 +102,12 @@ const FORWARD_OPTIONS = [
 
 const BRIEF_STAGE_LABELS = {
   investigator: "Investigator",
-  detachment: "IC Cases",
+  ic_cases: "IC Cases",
+  detachment_ic: "Detachment IC",
+  detachment_commander: "Detachment Commander",
+  detachment: "Legacy IC Cases",
+  company_2ic: "Company 2IC",
+  company_oc: "Company OC",
   adj: "Adjutant",
   hod: "HOD",
   "2ic": "2IC",
@@ -115,7 +124,9 @@ function roleLabel(value) {
   const labels = {
     investigator: "Investigator",
     hod: "HOD",
-    detachment: "IC Cases",
+    ic_cases: "IC Cases",
+    detachment: "Detachment IC",
+    det_cmdr: "Detachment Commander",
     adj: "Adjutant",
     "2ic": "2IC",
     oc: "OC",
@@ -127,13 +138,15 @@ function roleLabel(value) {
   return labels[value] || forwardLabel(value);
 }
 
-function targetForRole(role) {
+function targetForRole(role, user) {
+  if (role === "2ic") return user?.company_id ? "company_2ic" : "2ic";
+  if (role === "oc") return user?.company_id ? "company_oc" : "oc";
   return {
-    detachment: "detachment",
+    detachment: "detachment_ic",
+    det_cmdr: "detachment_commander",
+    ic_cases: "ic_cases",
     hod: "hod",
     adj: "adj",
-    "2ic": "2ic",
-    oc: "oc",
     co: "co",
     corps_cmd: "corps_cmd",
   }[role] || "";
@@ -170,13 +183,13 @@ function forwardedByText(event) {
 
 function forwardedSource(brief, user) {
   const history = briefHistory(brief);
-  const viewerTarget = targetForRole(user?.role);
+  const viewerTarget = targetForRole(user?.role, user);
   if (viewerTarget) {
     const viewerEvent = history.find((event) => event.to_role === viewerTarget);
     const viewerText = forwardedByText(viewerEvent);
     if (viewerText) return viewerText;
   }
-  if (["detachment", "hod", "adj"].includes(viewerTarget) && brief?.attached_by_name) {
+  if (["ic_cases", "detachment_ic", "detachment_commander", "detachment", "hod", "adj"].includes(viewerTarget) && brief?.attached_by_name) {
     return `Investigator - ${brief.attached_by_name}`;
   }
   const latestEvent = history[0];
@@ -199,7 +212,7 @@ function hasDetachmentRoute(user, caseObj) {
 function hasForwardStageAccess(user, caseObj) {
   const role = user?.role;
   if (role === "investigator") return true;
-  const target = targetForRole(role);
+  const target = targetForRole(role, user);
   const brief = caseObj?.brief || {};
   if (!target) return false;
   if (brief.forwarded_to_role === target) return true;
@@ -217,30 +230,36 @@ function forwardOptionsFor(user, caseObj) {
   let options = [];
   if (user?.role === "investigator") {
     if (hasDetachmentRoute(user, caseObj)) {
-      options = FORWARD_OPTIONS.filter((option) => option.value === "detachment");
+      options = FORWARD_OPTIONS.filter((option) =>
+        ["ic_cases", "detachment_ic", "detachment_commander"].includes(option.value)
+      );
       return removeAlreadyForwardedOptions(brief, options);
     }
-    options = FORWARD_OPTIONS.filter((option) => ["hod", "adj"].includes(option.value));
+    options = FORWARD_OPTIONS.filter((option) => option.value === "ic_cases");
     return removeAlreadyForwardedOptions(brief, options);
   }
-  if (user?.role === "detachment" && (currentTarget === "detachment" || hasForwardStageAccess(user, caseObj))) {
+  if (["detachment", "det_cmdr", "ic_cases"].includes(user?.role)
+    && (currentTarget === targetForRole(user?.role, user) || hasForwardStageAccess(user, caseObj))
+    && (user?.role !== "ic_cases" || user?.detachment || user?.company_id)) {
+    options = FORWARD_OPTIONS.filter((option) => ["company_2ic", "company_oc"].includes(option.value));
+    return removeAlreadyForwardedOptions(brief, options);
+  }
+  if (["2ic", "oc"].includes(user?.role) && user?.company_id
+    && (currentTarget === targetForRole(user?.role, user) || hasForwardStageAccess(user, caseObj))) {
     options = FORWARD_OPTIONS.filter((option) => ["adj", "hod", "2ic", "oc"].includes(option.value));
     return removeAlreadyForwardedOptions(brief, options);
   }
   if (user?.role === "hod" && (currentTarget === "hod" || hasForwardStageAccess(user, caseObj))) {
-    options = FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
-    return removeAlreadyForwardedOptions(brief, options);
-  }
-  if (user?.role === "adj" && (currentTarget === "adj" || hasForwardStageAccess(user, caseObj))) {
-    options = FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
-    return removeAlreadyForwardedOptions(brief, options);
-  }
-  if (user?.role === "2ic" && (currentTarget === "2ic" || hasForwardStageAccess(user, caseObj))) {
     options = FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeAlreadyForwardedOptions(brief, options);
   }
-  if (user?.role === "oc" && (currentTarget === "oc" || hasForwardStageAccess(user, caseObj))) {
-    options = FORWARD_OPTIONS.filter((option) => ["2ic", "co"].includes(option.value));
+  if (user?.role === "adj" && (currentTarget === "adj" || hasForwardStageAccess(user, caseObj))) {
+    options = FORWARD_OPTIONS.filter((option) => option.value === "co");
+    return removeAlreadyForwardedOptions(brief, options);
+  }
+  if (["2ic", "oc"].includes(user?.role) && !user?.company_id
+    && (currentTarget === targetForRole(user?.role, user) || hasForwardStageAccess(user, caseObj))) {
+    options = FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeAlreadyForwardedOptions(brief, options);
   }
   if (user?.role === "co" && (currentTarget === "co" || hasForwardStageAccess(user, caseObj))) {
@@ -631,7 +650,12 @@ export default function Briefs({ user }) {
             >
               <option value="all">All stages</option>
               <option value="investigator">Investigator</option>
-              <option value="detachment">IC Cases</option>
+              <option value="ic_cases">IC Cases</option>
+              <option value="detachment_ic">Detachment IC</option>
+              <option value="detachment_commander">Detachment Commander</option>
+              <option value="detachment">Legacy IC Cases</option>
+              <option value="company_2ic">Company 2IC</option>
+              <option value="company_oc">Company OC</option>
               <option value="hod">HOD</option>
               <option value="adj">Adjutant</option>
               <option value="2ic">2IC</option>

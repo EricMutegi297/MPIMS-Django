@@ -171,6 +171,8 @@ class CaseActionsMixin:
     def _brief_case_scope(self, user, qs):
         if has_global_read_access(user):
             return qs
+        if getattr(user, "role", None) == User.Role.IC_CASES:
+            return qs
         if getattr(user, "role", None) == User.Role.COMPANY_CMD:
             return qs
         if getattr(user, "role", None) == User.Role.INVESTIGATOR:
@@ -195,22 +197,39 @@ class CaseActionsMixin:
         ).distinct()
 
     def _brief_forward_target_for_role(self, user):
-        if is_detachment_ic(user):
-            return CaseBrief.ForwardRole.DETACHMENT
+        role = getattr(user, "role", None)
+        if role == User.Role.IC_CASES:
+            return CaseBrief.ForwardRole.IC_CASES
+        if role == User.Role.DETACHMENT:
+            return CaseBrief.ForwardRole.DETACHMENT_IC
+        if role == User.Role.DET_CMD:
+            return CaseBrief.ForwardRole.DETACHMENT_COMMANDER
+        if role == User.Role.TWO_IC:
+            return (
+                CaseBrief.ForwardRole.COMPANY_TWO_IC
+                if user_company_id(user)
+                else CaseBrief.ForwardRole.TWO_IC
+            )
+        if role == User.Role.OC:
+            return (
+                CaseBrief.ForwardRole.COMPANY_OC
+                if user_company_id(user)
+                else CaseBrief.ForwardRole.OC
+            )
         return {
             User.Role.HOD: CaseBrief.ForwardRole.HOD,
             User.Role.ADJ: CaseBrief.ForwardRole.ADJ,
-            User.Role.TWO_IC: CaseBrief.ForwardRole.TWO_IC,
             User.Role.CO: CaseBrief.ForwardRole.CO,
-            User.Role.OC: CaseBrief.ForwardRole.OC,
             User.Role.CORPS_CMD: CaseBrief.ForwardRole.CORPS_CMD,
-        }.get(getattr(user, "role", None))
+        }.get(role)
 
     def _brief_visible_scope(self, user, qs):
         if getattr(user, "role", None) == User.Role.INVESTIGATOR:
             return qs
         if getattr(user, "role", None) == User.Role.COMPANY_CMD:
             return qs.filter(company_case_scope_q(user)).distinct()
+        if getattr(user, "role", None) == User.Role.IC_CASES:
+            return qs.filter(ic_cases_scope_q(user)).distinct()
 
         if getattr(user, "role", None) == User.Role.ADMIN and not has_global_read_access(user):
             if not user.battalion_id:
@@ -241,6 +260,8 @@ class CaseActionsMixin:
                     | Q(assigned_to__detachment_id=user.detachment_id)
                     | Q(assigned_team__detachment_id=user.detachment_id)
                 ).distinct()
+            if is_scoped_to_company(user):
+                return qs.filter(company_case_scope_q(user)).distinct()
             if not user.battalion_id:
                 return qs.none()
             return qs.filter(
@@ -285,14 +306,41 @@ class CaseActionsMixin:
                 return detachment_id
         return getattr(user, "detachment_id", None)
 
+    def _case_company_id(self, case_obj):
+        if case_obj.tasked_company_id:
+            return case_obj.tasked_company_id
+        if case_obj.tasked_detachment_id:
+            return getattr(case_obj.tasked_detachment, "company_id", None)
+        if case_obj.assigned_team_id:
+            team = case_obj.assigned_team
+            return getattr(getattr(team, "detachment", None), "company_id", None)
+        if case_obj.assigned_to_id:
+            return getattr(
+                getattr(getattr(case_obj.assigned_to, "detachment", None), "company", None),
+                "id",
+                None,
+            )
+        return None
+
     def _brief_role_has_history_access(self, user, brief):
         target = self._brief_forward_target_for_role(user)
         if not target:
             return False
         if brief.forwarded_to_role == target:
             return True
+        if (
+            target == CaseBrief.ForwardRole.DETACHMENT_IC
+            and brief.forwarded_to_role == CaseBrief.ForwardRole.DETACHMENT
+        ):
+            return True
         return brief.forward_history.filter(
-            Q(to_role=target) | Q(from_role=getattr(user, "role", ""))
+            Q(to_role=target)
+            | Q(from_role=getattr(user, "role", ""))
+            | (
+                Q(to_role=CaseBrief.ForwardRole.DETACHMENT)
+                if target == CaseBrief.ForwardRole.DETACHMENT_IC
+                else Q(pk__in=[])
+            )
         ).exists()
 
     def _brief_forward_label(self, role):
@@ -311,24 +359,39 @@ class CaseActionsMixin:
         base_roles = set()
         if role == User.Role.INVESTIGATOR:
             if self._case_detachment_id(user, case_obj):
-                base_roles = {CaseBrief.ForwardRole.DETACHMENT}
+                base_roles = {
+                    CaseBrief.ForwardRole.IC_CASES,
+                    CaseBrief.ForwardRole.DETACHMENT_IC,
+                    CaseBrief.ForwardRole.DETACHMENT_COMMANDER,
+                }
             else:
-                base_roles = {CaseBrief.ForwardRole.HOD, CaseBrief.ForwardRole.ADJ}
-        elif is_detachment_ic(user) and self._brief_role_has_history_access(user, brief):
+                base_roles = {CaseBrief.ForwardRole.IC_CASES}
+        elif (
+            role in {User.Role.DETACHMENT, User.Role.DET_CMD, User.Role.IC_CASES}
+            and (role != User.Role.IC_CASES or user.detachment_id or user_company_id(user))
+            and self._brief_role_has_history_access(user, brief)
+        ):
+            base_roles = {
+                CaseBrief.ForwardRole.COMPANY_TWO_IC,
+                CaseBrief.ForwardRole.COMPANY_OC,
+            }
+        elif (
+            role in {User.Role.TWO_IC, User.Role.OC}
+            and user_company_id(user)
+            and self._brief_role_has_history_access(user, brief)
+        ):
             base_roles = {
                 CaseBrief.ForwardRole.ADJ,
                 CaseBrief.ForwardRole.HOD,
                 CaseBrief.ForwardRole.TWO_IC,
                 CaseBrief.ForwardRole.OC,
             }
-        elif role == User.Role.HOD and self._brief_role_has_history_access(user, brief):
-            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
-        elif role == User.Role.ADJ and self._brief_role_has_history_access(user, brief):
-            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
-        elif role == User.Role.TWO_IC and self._brief_role_has_history_access(user, brief):
+        elif (
+            role in {User.Role.HOD, User.Role.ADJ, User.Role.TWO_IC, User.Role.OC}
+            and not user_company_id(user)
+            and self._brief_role_has_history_access(user, brief)
+        ):
             base_roles = {CaseBrief.ForwardRole.CO}
-        elif role == User.Role.OC and self._brief_role_has_history_access(user, brief):
-            base_roles = {CaseBrief.ForwardRole.TWO_IC, CaseBrief.ForwardRole.CO}
         elif role == User.Role.CO and self._brief_role_has_history_access(user, brief):
             base_roles = {CaseBrief.ForwardRole.CORPS_CMD}
         if not base_roles:
@@ -346,6 +409,8 @@ class CaseActionsMixin:
             return False
         if user.role == User.Role.INVESTIGATOR:
             return self._can_manage_case_brief(user, case_obj)
+        if user.role == User.Role.IC_CASES:
+            return Case.objects.filter(pk=case_obj.pk).filter(ic_cases_scope_q(user)).exists()
         if user.role == User.Role.COMPANY_CMD:
             return self._can_manage_case_brief(user, case_obj)
         if user.role == User.Role.ADMIN and not has_global_read_access(user):
@@ -357,6 +422,8 @@ class CaseActionsMixin:
                 return True
             if is_detachment_ic(user):
                 return bool(user.detachment_id and self._case_detachment_id(user, case_obj) == user.detachment_id)
+            if is_scoped_to_company(user):
+                return self._case_company_id(case_obj) == user_company_id(user)
             return bool(user.battalion_id and self._case_battalion_id(case_obj) == user.battalion_id)
 
         return has_global_read_access(user) and user.role != User.Role.CORPS_CMD
