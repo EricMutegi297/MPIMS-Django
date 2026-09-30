@@ -4,6 +4,225 @@ from ..services import approve_case_brief, forward_case_brief
 
 class CaseRecordsMixin:
 
+    def _case_comments_battalion_id(self, case):
+        if case.tasked_company_id:
+            return case.tasked_company.battalion_id
+        if case.tasked_detachment_id:
+            return case.tasked_detachment.company.battalion_id
+        return case.tasked_battalion_id
+
+    def _can_view_case_comments(self, user, case):
+        if not user or not user.is_authenticated:
+            return False
+        battalion_id = self._case_comments_battalion_id(case)
+        if not battalion_id:
+            return False
+
+        if user.is_superuser:
+            return True
+        if (
+            user.role == User.Role.ADMIN
+            and user.battalion_id == battalion_id
+            and not user.company_id
+            and not user.detachment_id
+            and not user.unit_id
+        ):
+            return True
+        if user.role == User.Role.IC_CASES:
+            return Case.objects.filter(pk=case.pk).filter(ic_cases_scope_q(user)).exists()
+        if user.role == User.Role.CO:
+            return (
+                user.battalion_id == battalion_id
+                and not user.company_id
+                and not user.detachment_id
+                and not user.unit_id
+            )
+        if user.role == User.Role.INVESTIGATOR:
+            if case.status not in {Case.Status.UNDER_INVESTIGATION, Case.Status.PENDING}:
+                return False
+            if case.assigned_to_id == user.id:
+                return True
+            if case.assigned_team_id:
+                team = case.assigned_team
+                return bool(
+                    team
+                    and (team.team_ic_id == user.id or team.members.filter(pk=user.pk).exists())
+                )
+            return False
+
+        if case.tasked_detachment_id:
+            return (
+                user.detachment_id == case.tasked_detachment_id
+                and user.role in {User.Role.DET_CMD, User.Role.DETACHMENT}
+            )
+        if case.tasked_company_id:
+            return (
+                user.role in {User.Role.OC, User.Role.TWO_IC}
+                and user_company_id(user) == case.tasked_company_id
+            )
+        if case.tasked_battalion_id == battalion_id and not case.tasked_company_id:
+            return (
+                user.battalion_id == battalion_id
+                and not user.company_id
+                and not user.detachment_id
+                and not user.unit_id
+                and user.role in {
+                    User.Role.TWO_IC,
+                    User.Role.ADJ,
+                    User.Role.HOB,
+                    User.Role.OC,
+                }
+            )
+        return False
+
+    def _can_create_case_comment(self, user, case):
+        battalion_id = self._case_comments_battalion_id(case)
+        return bool(
+            user
+            and user.is_authenticated
+            and user.role == User.Role.CO
+            and user.battalion_id == battalion_id
+            and not user.company_id
+            and not user.detachment_id
+            and not user.unit_id
+        )
+
+    def _notify_case_comment_recipients(self, case, comment):
+        battalion_id = self._case_comments_battalion_id(case)
+        if not battalion_id:
+            return
+
+        recipient_scope = (
+            Q(
+                role=User.Role.ADMIN,
+                battalion_id=battalion_id,
+                company__isnull=True,
+                detachment__isnull=True,
+                unit__isnull=True,
+            )
+            | Q(
+                role=User.Role.IC_CASES,
+                battalion_id=battalion_id,
+                company__isnull=True,
+                detachment__isnull=True,
+            )
+        )
+        if case.tasked_company_id:
+            recipient_scope |= Q(
+                role=User.Role.IC_CASES,
+                company_id=case.tasked_company_id,
+            ) | Q(
+                role=User.Role.IC_CASES,
+                detachment__company_id=case.tasked_company_id,
+            )
+        if case.tasked_detachment_id:
+            recipient_scope |= Q(
+                role=User.Role.IC_CASES,
+                detachment_id=case.tasked_detachment_id,
+            )
+        if case.tasked_battalion_id == battalion_id and not case.tasked_company_id and not case.tasked_detachment_id:
+            recipient_scope |= Q(
+                role__in={User.Role.TWO_IC, User.Role.ADJ, User.Role.HOB, User.Role.OC},
+                battalion_id=battalion_id,
+                company__isnull=True,
+                detachment__isnull=True,
+                unit__isnull=True,
+            )
+        if case.tasked_company_id and not case.tasked_detachment_id:
+            recipient_scope |= Q(
+                role__in={User.Role.OC, User.Role.TWO_IC},
+            ) & (
+                Q(company_id=case.tasked_company_id)
+                | Q(detachment__company_id=case.tasked_company_id)
+            )
+        if case.tasked_detachment_id:
+            recipient_scope |= Q(
+                role__in={User.Role.DET_CMD, User.Role.DETACHMENT},
+                detachment_id=case.tasked_detachment_id,
+            )
+
+        assigned_user_ids = set()
+        if case.assigned_to_id:
+            assigned_user_ids.add(case.assigned_to_id)
+        if case.assigned_team_id:
+            team = case.assigned_team
+            if team:
+                if team.team_ic_id:
+                    assigned_user_ids.add(team.team_ic_id)
+                assigned_user_ids.update(team.members.values_list("id", flat=True))
+        if assigned_user_ids and case.status in {
+            Case.Status.UNDER_INVESTIGATION,
+            Case.Status.PENDING,
+        }:
+            recipient_scope |= Q(role=User.Role.INVESTIGATOR, pk__in=assigned_user_ids)
+
+        candidate_users = User.objects.filter(
+            recipient_scope,
+            is_active=True,
+        ).exclude(pk=comment.author_id).distinct()
+        notifications = [
+            Notification(
+                recipient=recipient,
+                message=f"New CO comment on case {case.case_number}. Click to read and reply.",
+                notification_type=Notification.Type.CASE,
+                related_model="case_comment",
+                related_id=comment.pk,
+                related_case_id=case.pk,
+            )
+            for recipient in candidate_users
+        ]
+        Notification.objects.bulk_create(notifications)
+
+    def _comment_read_receipts(self, comments, requesting_user):
+        authored_comment_ids = [
+            comment.pk
+            for comment in comments
+            if comment.parent_id is None and comment.author_id == requesting_user.pk
+        ]
+        if not authored_comment_ids:
+            return {}
+
+        notifications = Notification.objects.filter(
+            related_model="case_comment",
+            related_id__in=authored_comment_ids,
+            related_case_id=comments[0].case_id,
+        ).select_related("recipient").order_by("recipient__name")
+        receipts = {comment_id: [] for comment_id in authored_comment_ids}
+        for notification in notifications:
+            recipient_name = " ".join(
+                part
+                for part in (notification.recipient.rank, notification.recipient.name)
+                if part
+            ).strip()
+            receipts[notification.related_id].append({
+                "recipient_id": notification.recipient_id,
+                "recipient": recipient_name,
+                "is_read": notification.is_read,
+                "read_at": notification.read_at,
+            })
+        return receipts
+
+    def _notify_case_comment_author(self, case, reply):
+        root_comment = reply.parent
+        while root_comment and root_comment.parent_id:
+            root_comment = root_comment.parent
+        if (
+            not root_comment
+            or not root_comment.author_id
+            or root_comment.author_id == reply.author_id
+            or root_comment.author.role != User.Role.CO
+        ):
+            return
+
+        Notification.objects.create(
+            recipient=root_comment.author,
+            message=f"A reply was added to your comment on case {case.case_number}. Click to read and reply.",
+            notification_type=Notification.Type.CASE,
+            related_model="case_comment_reply",
+            related_id=reply.pk,
+            related_case_id=case.pk,
+        )
+
     @action(
         detail=False,
         methods=["get"],
@@ -516,3 +735,46 @@ class CaseRecordsMixin:
         qs = case.activity_logs.select_related("actor").all()
         serializer = CaseActivityLogSerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
+
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path="command-comments",
+        parser_classes=[JSONParser],
+    )
+    def command_comments(self, request, pk=None):
+        case = self.get_object()
+        if not self._can_view_case_comments(request.user, case):
+            raise PermissionDenied("You may not view comments on this case.")
+
+        if request.method == "GET":
+            comments = list(case.command_comments.select_related("author", "parent").all())
+            serializer = CaseCommentSerializer(comments, many=True)
+            serialized_comments = serializer.data
+            read_receipts = self._comment_read_receipts(comments, request.user)
+            for comment_data in serialized_comments:
+                comment_data["read_receipts"] = read_receipts.get(comment_data["id"], [])
+            return Response({
+                "comments": serialized_comments,
+                "can_create": self._can_create_case_comment(request.user, case),
+            })
+
+        if request.data.get("parent") in (None, ""):
+            if not self._can_create_case_comment(request.user, case):
+                raise PermissionDenied("Only the battalion CO may create a top-level comment.")
+        serializer = CaseCommentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        parent = serializer.validated_data.get("parent")
+        if parent and parent.case_id != case.pk:
+            raise ValidationError({"parent": "Replies must belong to the same case."})
+
+        with transaction.atomic():
+            comment = serializer.save(case=case, author=request.user)
+            if parent is None:
+                self._notify_case_comment_recipients(case, comment)
+            else:
+                self._notify_case_comment_author(case, comment)
+        return Response(
+            CaseCommentSerializer(comment).data,
+            status=http_status.HTTP_201_CREATED,
+        )

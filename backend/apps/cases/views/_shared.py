@@ -23,6 +23,7 @@ from datetime import date
 from ..models import (
     Case,
     CaseActivityLog,
+    CaseComment,
     CaseAccused,
     CaseAttachment,
     CaseBackBrief,
@@ -35,6 +36,7 @@ from ..models import (
 )
 from ..serializers import (
     CaseActivityLogSerializer,
+    CaseCommentSerializer,
     CaseAttachmentSerializer,
     CaseBackBriefSerializer,
     CaseBriefSerializer,
@@ -63,6 +65,7 @@ from apps.users.access import (
     is_detachment_ic,
     should_block_command_write,
     unit_case_scope_q,
+    user_company_id,
 )
 from apps.users.models import User
 

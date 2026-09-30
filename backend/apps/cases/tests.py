@@ -14,7 +14,14 @@ from rest_framework.test import APIClient
 from apps.formations.models import Battalion, Company, Detachment, Formation, Unit
 from apps.notifications.models import Notification
 from apps.users.models import User
-from .models import Case, CaseAttachment, CaseNumberSequence, InvestigationTeam
+from .models import (
+    Case,
+    CaseAttachment,
+    CaseBrief,
+    CaseComment,
+    CaseNumberSequence,
+    InvestigationTeam,
+)
 from .uploads import UploadScanUnavailable, validate_case_upload
 
 
@@ -182,6 +189,307 @@ class CaseApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.client.force_authenticate(user=self.superuser)
+
+    def test_co_comment_notifies_scoped_recipients_and_allows_replies(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="Comment Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="Other Comment Company",
+        )
+        co = User.objects.create_user(
+            "410001",
+            "test-password",
+            name="Battalion CO",
+            role=User.Role.CO,
+            battalion=self.battalion,
+        )
+        battalion_admin = User.objects.create_user(
+            "410002",
+            "test-password",
+            name="Battalion Admin",
+            role=User.Role.ADMIN,
+            battalion=self.battalion,
+        )
+        company_ic_cases = User.objects.create_user(
+            "410003",
+            "test-password",
+            name="Company IC Cases",
+            role=User.Role.IC_CASES,
+            battalion=self.battalion,
+            company=company,
+        )
+        company_oc = User.objects.create_user(
+            "410004",
+            "test-password",
+            name="Company OC",
+            role=User.Role.OC,
+            battalion=self.battalion,
+            company=company,
+        )
+        battalion_two_ic = User.objects.create_user(
+            "410005",
+            "test-password",
+            name="Battalion 2IC",
+            role=User.Role.TWO_IC,
+            battalion=self.battalion,
+        )
+        other_company_oc = User.objects.create_user(
+            "410006",
+            "test-password",
+            name="Other Company OC",
+            role=User.Role.OC,
+            battalion=self.battalion,
+            company=other_company,
+        )
+        investigator = User.objects.create_user(
+            "410007",
+            "test-password",
+            name="Assigned Investigator",
+            role=User.Role.INVESTIGATOR,
+            battalion=self.battalion,
+            company=company,
+        )
+        case = Case.objects.create(
+            title="Company comment case",
+            tasked_company=company,
+            assigned_to=investigator,
+            status=Case.Status.PENDING,
+            created_by=co,
+        )
+        url = reverse("case-command-comments", args=[case.pk])
+
+        self.client.force_authenticate(user=co)
+        response = self.client.post(url, {"body": "Review the outstanding evidence."}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        comment = CaseComment.objects.get(case=case)
+        self.assertEqual(comment.author_id, co.pk)
+        self.assertEqual(comment.body, "Review the outstanding evidence.")
+
+        self.assertSetEqual(
+            set(
+                Notification.objects.filter(related_model="case_comment", related_id=comment.pk)
+                .values_list("recipient_id", flat=True)
+            ),
+            {battalion_admin.pk, company_ic_cases.pk, company_oc.pk, investigator.pk},
+        )
+        notification = Notification.objects.get(recipient=company_oc, related_id=comment.pk)
+        self.assertEqual(notification.related_case_id, case.pk)
+
+        self.client.force_authenticate(user=company_oc)
+        thread_response = self.client.get(url)
+        self.assertEqual(thread_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(thread_response.data["comments"][0]["body"], comment.body)
+        self.assertFalse(thread_response.data["can_create"])
+        reply_response = self.client.post(
+            url,
+            {"body": "The company has started the evidence review.", "parent": comment.pk},
+            format="json",
+        )
+        self.assertEqual(reply_response.status_code, status.HTTP_201_CREATED, reply_response.data)
+        reply_notification = Notification.objects.get(
+            recipient=co,
+            related_model="case_comment_reply",
+            related_id=reply_response.data["id"],
+        )
+        self.assertEqual(reply_notification.related_case_id, case.pk)
+
+        original_notification = Notification.objects.get(
+            recipient=company_oc,
+            related_model="case_comment",
+            related_id=comment.pk,
+        )
+        mark_read_response = self.client.post(
+            reverse("notification-mark-read", args=[original_notification.pk])
+        )
+        self.assertEqual(mark_read_response.status_code, status.HTTP_200_OK)
+        original_notification.refresh_from_db()
+        self.assertTrue(original_notification.is_read)
+        self.assertIsNotNone(original_notification.read_at)
+
+        self.client.force_authenticate(user=co)
+        co_thread_response = self.client.get(url)
+        self.assertEqual(co_thread_response.status_code, status.HTTP_200_OK)
+        co_comment = next(
+            item for item in co_thread_response.data["comments"]
+            if item["id"] == comment.pk
+        )
+        receipt = next(
+            item for item in co_comment["read_receipts"]
+            if item["recipient"] == "Company OC"
+        )
+        self.assertTrue(receipt["is_read"])
+        self.assertIsNotNone(receipt["read_at"])
+
+        self.client.force_authenticate(user=other_company_oc)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+        self.client.force_authenticate(user=investigator)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+        case.status = Case.Status.CLOSED
+        case.save(update_fields=["status"])
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=battalion_two_ic)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_detachment_comment_scope_and_cross_case_reply_are_restricted(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="Detachment Comment Company",
+        )
+        detachment = Detachment.objects.create(company=company, name="Comment Detachment")
+        co = User.objects.create_user(
+            "420001",
+            "test-password",
+            name="Comment Battalion CO",
+            role=User.Role.CO,
+            battalion=self.battalion,
+        )
+        detachment_ic = User.objects.create_user(
+            "420002",
+            "test-password",
+            name="Detachment IC",
+            role=User.Role.DETACHMENT,
+            battalion=self.battalion,
+            detachment=detachment,
+        )
+        detachment_commander = User.objects.create_user(
+            "420003",
+            "test-password",
+            name="Detachment Commander",
+            role=User.Role.DET_CMD,
+            battalion=self.battalion,
+            detachment=detachment,
+        )
+        detachment_ic_cases = User.objects.create_user(
+            "420005",
+            "test-password",
+            name="Detachment IC Cases",
+            role=User.Role.IC_CASES,
+            battalion=self.battalion,
+            detachment=detachment,
+        )
+        company_oc = User.objects.create_user(
+            "420004",
+            "test-password",
+            name="Parent Company OC",
+            role=User.Role.OC,
+            battalion=self.battalion,
+            company=company,
+        )
+        case = Case.objects.create(
+            title="Detachment comment case",
+            tasked_company=company,
+            tasked_detachment=detachment,
+            status=Case.Status.TASKED,
+            created_by=co,
+        )
+        other_case = Case.objects.create(title="Different case", created_by=co)
+        other_comment = CaseComment.objects.create(
+            case=other_case,
+            author=co,
+            body="A different case thread.",
+        )
+        url = reverse("case-command-comments", args=[case.pk])
+
+        self.client.force_authenticate(user=co)
+        comment_response = self.client.post(
+            url,
+            {"body": "Detachment-specific direction."},
+            format="json",
+        )
+        self.assertEqual(comment_response.status_code, status.HTTP_201_CREATED, comment_response.data)
+        comment = CaseComment.objects.get(pk=comment_response.data["id"])
+
+        self.client.force_authenticate(user=detachment_ic)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+        reply_response = self.client.post(
+            url,
+            {"body": "Acknowledged.", "parent": comment.pk},
+            format="json",
+        )
+        self.assertEqual(reply_response.status_code, status.HTTP_201_CREATED, reply_response.data)
+        recipients = set(
+            Notification.objects.filter(
+                related_model="case_comment",
+                related_id=comment.pk,
+            ).values_list("recipient_id", flat=True)
+        )
+        self.assertIn(detachment_ic_cases.pk, recipients)
+        self.assertIn(detachment_ic.pk, recipients)
+        self.assertIn(detachment_commander.pk, recipients)
+        self.assertNotIn(company_oc.pk, recipients)
+
+        self.client.force_authenticate(user=detachment_commander)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=detachment_ic_cases)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+
+        self.client.force_authenticate(user=company_oc)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(user=detachment_ic)
+        cross_case_reply = self.client.post(
+            url,
+            {"body": "Cross-case reply.", "parent": other_comment.pk},
+            format="json",
+        )
+        self.assertEqual(cross_case_reply.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.client.force_authenticate(user=company_oc)
+        unauthorized_top_level = self.client.post(
+            url,
+            {"body": "A company user cannot create a CO comment."},
+            format="json",
+        )
+        self.assertEqual(unauthorized_top_level.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_battalion_comment_reaches_hob_and_battalion_command_roles(self):
+        co = User.objects.create_user(
+            "430001",
+            "test-password",
+            name="Battalion Comment CO",
+            role=User.Role.CO,
+            battalion=self.battalion,
+        )
+        case = Case.objects.create(
+            title="Battalion-level comment case",
+            tasked_battalion=self.battalion,
+            status=Case.Status.TASKED,
+            created_by=co,
+        )
+        url = reverse("case-command-comments", args=[case.pk])
+        self.client.force_authenticate(user=co)
+        post_response = self.client.post(
+            url,
+            {"body": "Battalion direction."},
+            format="json",
+        )
+        self.assertEqual(post_response.status_code, status.HTTP_201_CREATED, post_response.data)
+
+        for index, role in enumerate(
+            [User.Role.TWO_IC, User.Role.ADJ, User.Role.HOB, User.Role.OC],
+            start=1,
+        ):
+            command_user = User.objects.create_user(
+                f"43000{index + 1}",
+                "test-password",
+                name=f"Battalion {role} User",
+                role=role,
+                battalion=self.battalion,
+            )
+            self.client.force_authenticate(user=command_user)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+            self.assertEqual(len(response.data["comments"]), 1)
 
     def test_case_list_filters_status_and_criminal_offence_type(self):
         Case.objects.create(
@@ -439,6 +747,158 @@ class CaseApiTests(TestCase):
             format="json",
         )
         self.assertEqual(unrelated_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_brief_forwarding_chain_scopes_company_and_battalion_roles(self):
+        company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.A,
+            name="Forwarding Company",
+        )
+        other_company = Company.objects.create(
+            battalion=self.battalion,
+            company=Company.Company.B,
+            name="Other Forwarding Company",
+        )
+        detachment = Detachment.objects.create(company=company, name="Forwarding Detachment")
+        investigator = User.objects.create_user(
+            "300020",
+            "test-password",
+            name="Brief Investigator",
+            role=User.Role.INVESTIGATOR,
+            battalion=self.battalion,
+            detachment=detachment,
+        )
+        company_ic_cases = User.objects.create_user(
+            "300021",
+            "test-password",
+            name="Company IC Cases",
+            role=User.Role.IC_CASES,
+            battalion=self.battalion,
+            company=company,
+        )
+        battalion_ic_cases = User.objects.create_user(
+            "300026",
+            "test-password",
+            name="Battalion IC Cases",
+            role=User.Role.IC_CASES,
+            battalion=self.battalion,
+        )
+        company_two_ic = User.objects.create_user(
+            "300022",
+            "test-password",
+            name="Company 2IC",
+            role=User.Role.TWO_IC,
+            battalion=self.battalion,
+            company=company,
+        )
+        battalion_two_ic = User.objects.create_user(
+            "300023",
+            "test-password",
+            name="Battalion 2IC",
+            role=User.Role.TWO_IC,
+            battalion=self.battalion,
+        )
+        commanding_officer = User.objects.create_user(
+            "300024",
+            "test-password",
+            name="Commanding Officer",
+            role=User.Role.CO,
+            battalion=self.battalion,
+        )
+        corps_commander = User.objects.create_user(
+            "300025",
+            "test-password",
+            name="Corps Commander",
+            role=User.Role.CORPS_CMD,
+        )
+        case = Case.objects.create(
+            title="Direct company-tasked brief",
+            tasked_company=company,
+            assigned_to=investigator,
+            status=Case.Status.UNDER_INVESTIGATION,
+            created_by=self.superuser,
+        )
+        unrelated_case = Case.objects.create(
+            title="Other-company brief",
+            tasked_company=other_company,
+            status=Case.Status.TASKED,
+            created_by=self.superuser,
+        )
+
+        media_root = tempfile.mkdtemp()
+        try:
+            with override_settings(MEDIA_ROOT=media_root):
+                brief = CaseBrief.objects.create(
+                    case=case,
+                    file=ContentFile(b"%PDF-1.4\nbrief", name="forwarding-brief.pdf"),
+                    attached_by=investigator,
+                )
+                CaseBrief.objects.create(
+                    case=unrelated_case,
+                    file=ContentFile(b"%PDF-1.4\nother", name="other-brief.pdf"),
+                    attached_by=investigator,
+                )
+
+                self.client.force_authenticate(user=investigator)
+                response = self.client.patch(
+                    reverse("case-brief", args=[case.id]),
+                    {"forwarded_to_role": CaseBrief.ForwardRole.IC_CASES},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+                self.client.force_authenticate(user=battalion_ic_cases)
+                battalion_ic_briefs = self.client.get(reverse("case-briefs"))
+                self.assertEqual(battalion_ic_briefs.status_code, status.HTTP_200_OK)
+                self.assertIn(case.id, {item["id"] for item in battalion_ic_briefs.data})
+
+                self.client.force_authenticate(user=company_ic_cases)
+                company_briefs = self.client.get(reverse("case-briefs"))
+                self.assertEqual(company_briefs.status_code, status.HTTP_200_OK)
+                self.assertEqual(
+                    {item["id"] for item in company_briefs.data},
+                    {case.id},
+                )
+                response = self.client.patch(
+                    reverse("case-brief", args=[case.id]),
+                    {"forwarded_to_role": CaseBrief.ForwardRole.COMPANY_TWO_IC},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+                self.client.force_authenticate(user=company_two_ic)
+                response = self.client.patch(
+                    reverse("case-brief", args=[case.id]),
+                    {"forwarded_to_role": CaseBrief.ForwardRole.TWO_IC},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+                self.client.force_authenticate(user=battalion_two_ic)
+                battalion_briefs = self.client.get(reverse("case-briefs"))
+                self.assertEqual(battalion_briefs.status_code, status.HTTP_200_OK)
+                self.assertIn(case.id, {item["id"] for item in battalion_briefs.data})
+                self.assertNotIn(unrelated_case.id, {item["id"] for item in battalion_briefs.data})
+                response = self.client.patch(
+                    reverse("case-brief", args=[case.id]),
+                    {"forwarded_to_role": CaseBrief.ForwardRole.CO},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+                self.client.force_authenticate(user=commanding_officer)
+                response = self.client.patch(
+                    reverse("case-brief", args=[case.id]),
+                    {"forwarded_to_role": CaseBrief.ForwardRole.CORPS_CMD},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+                brief.refresh_from_db()
+                self.assertEqual(brief.forwarded_to_role, CaseBrief.ForwardRole.CORPS_CMD)
+                self.assertEqual(brief.forward_history.count(), 5)
+        finally:
+            shutil.rmtree(media_root, ignore_errors=True)
 
     def test_company_commander_can_view_and_attach_briefs_within_company_scope(self):
         company = Company.objects.create(

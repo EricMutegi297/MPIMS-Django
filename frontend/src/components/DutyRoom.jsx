@@ -901,8 +901,8 @@ export default function DutyRoom({ user }) {
 
   const isOrderNco = user?.role === "order_nco";
   const orderNcoHasUnit = !!(user?.battalion || user?.detachment);
-  const canApproveRole = ["detachment", "adj", "hod", "2ic", "oc"].includes(user?.role);
-  const canConvertIncident = ["duty_officer", "admin", "co", "oc", "hod", "adj", "2ic", "detachment"].includes(user?.role) || activeDuty?.can_record_ob;
+  const canApproveRole = ["detachment", "adj", "hob", "2ic", "oc"].includes(user?.role);
+  const canConvertIncident = ["duty_officer", "admin", "co", "oc", "hob", "adj", "2ic", "detachment"].includes(user?.role) || activeDuty?.can_record_ob;
 
   const personnelOptions = useMemo(() => personnel.filter((item) => item.is_active !== false), [personnel]);
   const personnelById = useMemo(() => new Map(personnel.map((person) => [Number(person.id), person])), [personnel]);

@@ -313,9 +313,9 @@ class CaseWorkflowsMixin:
                     Q(company_id=company_id) | Q(detachment__company_id=company_id)
                 )
             )
-        elif brief.forwarded_to_role == CaseBrief.ForwardRole.HOD:
+        elif brief.forwarded_to_role == CaseBrief.ForwardRole.HOB:
             recipients.update(
-                User.objects.filter(role=User.Role.HOD, battalion_id=battalion_id, is_active=True)
+                User.objects.filter(role=User.Role.HOB, battalion_id=battalion_id, is_active=True)
             )
         elif brief.forwarded_to_role == CaseBrief.ForwardRole.CO:
             recipients.update(
@@ -411,7 +411,7 @@ class CaseWorkflowsMixin:
                     role__in=[
                         User.Role.ADMIN,
                         User.Role.ADJ,
-                        User.Role.HOD,
+                        User.Role.HOB,
                         User.Role.CO,
                         User.Role.OC,
                         User.Role.TWO_IC,

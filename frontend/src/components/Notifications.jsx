@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { notificationService } from "../services/api";
+import { groupNotifications, notificationCategory } from "../utils/notificationGroups";
 
 function fmtTime(ts) {
   if (!ts) return "";
@@ -79,7 +80,7 @@ export default function Notifications({ onRead }) {
   };
 
   const unread = notifications.filter((n) => !n.is_read);
-  const read = notifications.filter((n) => n.is_read);
+  const notificationSections = groupNotifications(notifications);
 
   return (
     <div className="p-6 max-w-2xl">
@@ -126,45 +127,38 @@ export default function Notifications({ onRead }) {
         </div>
       ) : (
         <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-          {/* Unread section */}
-          {unread.length > 0 && (
-            <>
-              <div className="px-4 py-2 bg-gray-750 border-b border-gray-700">
-                <span className="text-[11px] font-semibold text-blue-400 uppercase tracking-wide">
-                  New . {unread.length}
-                </span>
-              </div>
-              <ul>
-                {unread.map((n) => (
-                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} onNavigate={navigate} />
-                ))}
-              </ul>
-            </>
-          )}
-
-          {/* Read section */}
-          {read.length > 0 && (
-            <>
+          {notificationSections.map((section) => (
+            <section key={section.key}>
               <div className="px-4 py-2 border-b border-gray-700 bg-gray-800">
-                <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
-                  Earlier . {read.length}
+                <span className={`text-[11px] font-semibold uppercase tracking-wide ${
+                  section.read ? "text-gray-500" : "text-blue-400"
+                }`}>
+                  {section.label} · {section.items.length}
                 </span>
               </div>
               <ul>
-                {read.map((n) => (
-                  <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} onNavigate={navigate} />
+                {section.items.map((n) => (
+                  <NotifRow
+                    key={n.id}
+                    n={n}
+                    category={notificationCategory(n)}
+                    onRead={handleMarkRead}
+                    onDelete={handleDelete}
+                    onNavigate={navigate}
+                  />
                 ))}
               </ul>
-            </>
-          )}
+            </section>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function NotifRow({ n, onRead, onDelete, onNavigate }) {
+function NotifRow({ n, category, onRead, onDelete, onNavigate }) {
   const acknowledgementNotice = n.related_model === "case" && /acknowledgement sheet/i.test(n.message || "");
+  const caseCommentNotice = ["case_comment", "case_comment_reply"].includes(n.related_model) && n.related_case_id && n.related_id;
   return (
     <li
       onClick={() => onRead(n)}
@@ -179,6 +173,9 @@ function NotifRow({ n, onRead, onDelete, onNavigate }) {
 
       {/* Content */}
       <div className="flex-1 min-w-0">
+        <span className="inline-flex mb-1 rounded bg-gray-700 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-300">
+          {category}
+        </span>
         <p className={`text-sm leading-relaxed break-words ${n.is_read ? "text-gray-400" : "text-gray-100 font-medium"}`}>
           {n.message}
         </p>
@@ -193,6 +190,19 @@ function NotifRow({ n, onRead, onDelete, onNavigate }) {
             className="mt-2 text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
           >
             Click here to attach acknowledgement
+          </button>
+        )}
+        {caseCommentNotice && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRead(n);
+              onNavigate(`/dashboard/cases?case=${n.related_case_id}&comment=${n.related_id}`);
+            }}
+            className="mt-2 text-xs font-semibold text-sky-400 hover:text-sky-300 hover:underline"
+          >
+            Read comment and reply
           </button>
         )}
         <div className="flex items-center gap-2 mt-0.5">

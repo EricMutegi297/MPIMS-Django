@@ -1,6 +1,7 @@
 from .case import Case, CaseAccused, CaseAccusedOffence
 from .case_numbers import CaseNumberSequence
 from .attachments import CaseAttachment, CaseActivityLog
+from .comments import CaseComment
 from .briefs import CaseBrief, CaseBriefForward, CaseBackBrief
 from .exhibits import ExhibitStorageRequest
 from .court_martial import CaseCourtMartialHearing, CaseCourtMartialMilestone

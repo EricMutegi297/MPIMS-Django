@@ -351,7 +351,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
         command_roles = {
             User.Role.ADMIN,
             User.Role.ADJ,
-            User.Role.HOD,
+            User.Role.HOB,
             User.Role.OC,
             User.Role.CO,
             User.Role.TWO_IC,
@@ -363,7 +363,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             if user.battalion_id in battalion_ids:
                 return
 
-        raise PermissionDenied("Only Admin, IC Cases, Adjutant, HOD, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
+        raise PermissionDenied("Only Admin, IC Cases, Adjutant, HOB, OC, CO, or 2IC for the storage unit can authorise exhibit release.")
 
     def _ensure_can_scan_release_document(self, user):
         allowed_roles = {
@@ -371,7 +371,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
             User.Role.ADMIN,
             User.Role.DETACHMENT,
             User.Role.ADJ,
-            User.Role.HOD,
+            User.Role.HOB,
             User.Role.OC,
             User.Role.CO,
             User.Role.TWO_IC,
@@ -574,7 +574,7 @@ class ExhibitStorageRequestViewSet(viewsets.ModelViewSet):
                 role__in=[
                     User.Role.ADMIN,
                     User.Role.ADJ,
-                    User.Role.HOD,
+                    User.Role.HOB,
                     User.Role.OC,
                     User.Role.CO,
                     User.Role.TWO_IC,

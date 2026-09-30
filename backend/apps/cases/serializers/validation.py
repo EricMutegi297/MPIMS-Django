@@ -571,7 +571,7 @@ class CaseValidationMixin:
             if not can_assign_case:
                 raise serializers.ValidationError({"assignment": "You are not allowed to assign cases for investigation."})
             if is_company_command(user):
-                company_id = user.detachment.company_id
+                company_id = user_company_id(user)
                 case_company_id = (
                     tasked_company.id if tasked_company else
                     tasked_detachment.company_id if tasked_detachment else None
@@ -619,7 +619,7 @@ class CaseValidationMixin:
                 tasked_detachment,
             )
             if is_company_command(user):
-                company_id = user.detachment.company_id
+                company_id = user_company_id(user)
                 if assigned_team and (
                     not assigned_team.detachment_id
                     or assigned_team.detachment.company_id != company_id

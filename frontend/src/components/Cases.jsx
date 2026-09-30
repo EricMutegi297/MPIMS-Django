@@ -1896,7 +1896,7 @@ const BRIEF_FORWARD_OPTIONS = [
   { value: "detachment_commander", label: "Detachment Commander" },
   { value: "company_2ic", label: "Company 2IC" },
   { value: "company_oc", label: "Company OC" },
-  { value: "hod", label: "HOD" },
+  { value: "hob", label: "HOB" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
   { value: "oc", label: "OC" },
@@ -1924,7 +1924,7 @@ function briefTargetForUser(user) {
     detachment: "detachment_ic",
     det_cmdr: "detachment_commander",
     ic_cases: "ic_cases",
-    hod: "hod",
+    hob: "hob",
     adj: "adj",
     co: "co",
     corps_cmd: "corps_cmd",
@@ -1968,10 +1968,10 @@ function getBriefForwardOptions(user, caseObj) {
   }
   if (["2ic", "oc"].includes(user?.role) && user?.company_id
     && (currentTarget === briefTargetForUser(user) || hasBriefForwardAccess(user, caseObj))) {
-    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["adj", "hod", "2ic", "oc"].includes(option.value));
+    options = BRIEF_FORWARD_OPTIONS.filter((option) => ["adj", "hob", "2ic", "oc"].includes(option.value));
     return removeUsedBriefForwardOptions(brief, options);
   }
-  if (user?.role === "hod" && (currentTarget === "hod" || hasBriefForwardAccess(user, caseObj))) {
+  if (user?.role === "hob" && (currentTarget === "hob" || hasBriefForwardAccess(user, caseObj))) {
     options = BRIEF_FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeUsedBriefForwardOptions(brief, options);
   }
@@ -1993,12 +1993,14 @@ function getBriefForwardOptions(user, caseObj) {
 
 export default function Cases({ user, criminalTypeFilter, clearanceOnly = false }) {
   const detailPanelRef = useRef(null);
+  const caseQueryRequestRef = useRef("");
   const actionSaveInFlightRef = useRef(new Set());
   const accusedLookupTimersRef = useRef({});
   const accusedLookupTokensRef = useRef({});
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const caseQueryId = searchParams.get("case");
+  const commentQueryId = searchParams.get("comment");
   const caseAction = searchParams.get("action");
   const initialStatus = searchParams.get("status");
   const initialFilter = ALL_STATUSES.includes(initialStatus) ? initialStatus : "all";
@@ -2148,6 +2150,16 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const [caseActivity, setCaseActivity] = useState([]);
   const [caseActivityLoading, setCaseActivityLoading] = useState(false);
   const [caseActivityErr, setCaseActivityErr] = useState("");
+  const [caseComments, setCaseComments] = useState([]);
+  const [caseCommentsLoading, setCaseCommentsLoading] = useState(false);
+  const [caseCommentsErr, setCaseCommentsErr] = useState("");
+  const [caseCommentCanCreate, setCaseCommentCanCreate] = useState(false);
+  const [caseCommentDraft, setCaseCommentDraft] = useState("");
+  const [caseCommentReplyTo, setCaseCommentReplyTo] = useState(null);
+  const [caseCommentReplyDraft, setCaseCommentReplyDraft] = useState("");
+  const [caseCommentSaving, setCaseCommentSaving] = useState(false);
+  const [focusCommandCommentsOnOpen, setFocusCommandCommentsOnOpen] = useState(false);
+  const handledCommentRequestRef = useRef("");
   const [updateFlowCase, setUpdateFlowCase] = useState(null);
   const [updateFlow, setUpdateFlow] = useState([]);
   const [updateFlowLoading, setUpdateFlowLoading] = useState(false);
@@ -2360,6 +2372,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     if (!caseQueryId || loading) return;
     const caseFromQuery = cases.find((caseObj) => String(caseObj.id) === String(caseQueryId));
     if (caseFromQuery) {
+      setToastMessage("");
       if (caseAction === "acknowledge" && caseFromQuery.served_abstract && !caseFromQuery.abstract_acknowledged_at) {
         setAcknowledgementFile(null);
         setUnitWorkflowErr("");
@@ -2367,7 +2380,19 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       } else {
         setSelected(caseFromQuery);
       }
+      return;
     }
+    if (caseQueryRequestRef.current === String(caseQueryId)) return;
+    caseQueryRequestRef.current = String(caseQueryId);
+    caseService.get(caseQueryId)
+      .then((response) => {
+        setToastMessage("");
+        setSelected(response.data);
+      })
+      .catch(() => {
+        setToastMessage("Unable to open the case linked to this notification.");
+        setToastVariant("error");
+      });
   }, [caseAction, caseQueryId, cases, loading]);
 
   // Load offences for dropdown
@@ -2900,6 +2925,12 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
     setCourtMilestoneSuccess("");
     setCaseActivity([]);
     setCaseActivityErr("");
+    setCaseComments([]);
+    setCaseCommentsErr("");
+    setCaseCommentCanCreate(false);
+    setCaseCommentDraft("");
+    setCaseCommentReplyTo(null);
+    setCaseCommentReplyDraft("");
     setActionDrafts({});
     setEditingActionMilestoneId(null);
     if (!showCourtCloseModal) {
@@ -2914,6 +2945,46 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       setCloseRtaAuthorityFile(null);
       setCourtCloseErr("");
     }
+
+  }
+
+  async function submitCaseComment(parent = null) {
+    if (!selectedId) return;
+    const body = parent ? caseCommentReplyDraft : caseCommentDraft;
+    if (!body.trim() || caseCommentSaving) return;
+
+    setCaseCommentSaving(true);
+    setCaseCommentsErr("");
+    try {
+      const response = await caseService.createCommandComment(selectedId, {
+        body: body.trim(),
+        ...(parent ? { parent: parent.id } : {}),
+      });
+      setCaseComments((current) => [...current, response.data]);
+      if (parent) {
+        setCaseCommentReplyDraft("");
+        setCaseCommentReplyTo(null);
+      } else {
+        setCaseCommentDraft("");
+      }
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      const bodyError = error?.response?.data?.body;
+      const message = typeof detail === "string"
+        ? detail
+        : Array.isArray(bodyError)
+          ? bodyError.join(" ")
+          : "Failed to send the comment. Please try again.";
+      setCaseCommentsErr(message);
+    } finally {
+      setCaseCommentSaving(false);
+    }
+  }
+
+  function openCaseCommentFromRow(caseObj, event) {
+    event.stopPropagation();
+    selectCase(caseObj);
+    setFocusCommandCommentsOnOpen(true);
   }
 
   function openServeFromRow(caseObj, event) {
@@ -3001,6 +3072,56 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
       .catch(() => setCaseActivityErr("Failed to load case progress updates."))
       .finally(() => setCaseActivityLoading(false));
   }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || !focusCommandCommentsOnOpen || caseCommentsLoading) return undefined;
+    const frameId = requestAnimationFrame(() => {
+      document.getElementById("case-command-comments")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      setFocusCommandCommentsOnOpen(false);
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [selectedId, focusCommandCommentsOnOpen, caseCommentsLoading]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setCaseComments([]);
+      setCaseCommentCanCreate(false);
+      return;
+    }
+    setCaseCommentsLoading(true);
+    setCaseCommentsErr("");
+    caseService.commandComments(selectedId)
+      .then((response) => {
+        setCaseComments(toArray(response.data?.comments));
+        setCaseCommentCanCreate(Boolean(response.data?.can_create));
+      })
+      .catch((error) => {
+        const detail = error?.response?.data?.detail;
+        setCaseCommentsErr(typeof detail === "string" ? detail : "Failed to load command comments.");
+        setCaseComments([]);
+        setCaseCommentCanCreate(false);
+      })
+      .finally(() => setCaseCommentsLoading(false));
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId || !commentQueryId || caseCommentsLoading) return;
+    const comment = caseComments.find((item) => String(item.id) === String(commentQueryId));
+    if (!comment) return;
+    const requestKey = `${selectedId}:${commentQueryId}`;
+    if (handledCommentRequestRef.current === requestKey) return;
+    handledCommentRequestRef.current = requestKey;
+    setCaseCommentReplyTo(comment.id);
+    requestAnimationFrame(() => {
+      document.getElementById(`case-comment-${comment.id}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+  }, [selectedId, commentQueryId, caseComments, caseCommentsLoading]);
 
   useEffect(() => {
     if (!updateFlowCase?.id) {
@@ -4159,6 +4280,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
   const isPendingFilter = filter === "pending";
   const isServedFilter = filter === "served";
   const isClosedFilter = filter === "closed";
+  const showCoActionColumn = user?.role === "co";
   const canCloseServedCases = isHqsAdmin || isSuperuser;
   const showServedActionColumn = isServedFilter && (canCloseServedCases || (isAccusedUnitUser && supportsUnitServiceAcknowledgement));
   const defaultCaseExportColumns = [
@@ -4707,6 +4829,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                     <th className="text-left px-4 py-3 font-medium">Originating Unit</th>
                     <th className="text-left px-4 py-3 font-medium">Traffic Accident Report</th>
                     <th className="text-left px-4 py-3 font-medium">Status</th>
+                    {showCoActionColumn && <th className="text-left px-4 py-3 font-medium">Action</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -4817,6 +4940,17 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                             style={STATUS_STYLE[c.status] || "bg-gray-600 text-gray-300"}
                           />
                         </td>
+                        {showCoActionColumn && (
+                          <td className="px-4 py-2.5 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={(event) => openCaseCommentFromRow(c, event)}
+                              className="rounded bg-blue-700 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-600"
+                            >
+                              Comment
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -4833,6 +4967,9 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                   <th className="text-left px-4 py-3 font-medium">Unit</th>
                   <th className="text-left px-4 py-3 font-medium">Offence</th>
                   <th className="text-left px-4 py-3 font-medium">Description</th>
+                  {showCoActionColumn && (
+                    <th className="text-left px-4 py-3 font-medium">Action</th>
+                  )}
                   {isDciFilter && (
                     <th className="text-left px-4 py-3 font-medium">Police Station</th>
                   )}
@@ -4940,6 +5077,17 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                         </button>
                       )}
                     </td>
+                    {showCoActionColumn && (
+                      <td className="px-4 py-2.5 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(event) => openCaseCommentFromRow(c, event)}
+                          className="rounded bg-blue-700 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-600"
+                        >
+                          Comment
+                        </button>
+                      </td>
+                    )}
                     {isDciFilter && (
                       <td className="px-4 py-2.5 text-gray-300 min-w-[160px] max-w-[240px]">
                         <p className="line-clamp-2 break-words">{c.police_station || "--"}</p>
@@ -5590,6 +5738,145 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
               </div>
             )}
 
+            <div id="case-command-comments" className="border-t border-gray-700 pt-4 space-y-3">
+              <div>
+                <SectionLabel>Command Comments</SectionLabel>
+                <p className="text-xs text-gray-500 mt-1">
+                  CO comments and authorized replies for this case.
+                </p>
+              </div>
+              {caseCommentCanCreate && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitCaseComment();
+                  }}
+                  className="space-y-2 rounded-lg border border-blue-500/20 bg-blue-950/20 p-3"
+                >
+                  <label className="text-xs text-gray-300 block" htmlFor="co-case-comment">
+                    Add a CO comment
+                  </label>
+                  <textarea
+                    id="co-case-comment"
+                    value={caseCommentDraft}
+                    onChange={(event) => setCaseCommentDraft(event.target.value)}
+                    maxLength={5000}
+                    rows={3}
+                    disabled={caseCommentSaving}
+                    className="w-full resize-y bg-gray-800 border border-gray-700 text-white text-sm rounded px-3 py-2 disabled:opacity-60"
+                    placeholder="Enter a direction or comment for this case..."
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={caseCommentSaving || !caseCommentDraft.trim()}
+                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-xs font-medium"
+                    >
+                      {caseCommentSaving ? "Sending..." : "Send comment"}
+                    </button>
+                  </div>
+                </form>
+              )}
+              {caseCommentsLoading ? (
+                <p className="text-sm text-gray-500">Loading command comments...</p>
+              ) : caseCommentsErr ? (
+                <ErrMsg msg={caseCommentsErr} />
+              ) : caseComments.length === 0 ? (
+                <p className="text-sm text-gray-500 bg-gray-700/30 rounded-lg p-3">
+                  No command comments have been added.
+                </p>
+              ) : (
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  {caseComments.map((comment) => (
+                    <article
+                      key={comment.id}
+                      id={`case-comment-${comment.id}`}
+                      className={`rounded-lg border p-3 ${
+                        String(comment.id) === String(commentQueryId)
+                          ? "border-sky-400/70 bg-sky-950/30"
+                          : comment.parent
+                            ? "ml-5 border-gray-700 bg-gray-800/50"
+                            : "border-gray-700 bg-gray-700/25"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-blue-300">
+                          {comment.author_name || "User"}
+                          {comment.author_role ? ` · ${comment.author_role}` : ""}
+                        </p>
+                        <time className="text-[11px] text-gray-500">
+                          {comment.created_at ? new Date(comment.created_at).toLocaleString("en-GB") : ""}
+                        </time>
+                      </div>
+                      {comment.parent && (
+                        <p className="text-[10px] text-gray-500 mt-1">Reply</p>
+                      )}
+                      <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap break-words">
+                        {comment.body}
+                      </p>
+                      {comment.read_receipts?.length > 0 && (
+                        <div className="mt-2 rounded bg-gray-800/70 px-2.5 py-2 text-[11px] text-gray-400">
+                          <p className="font-medium text-gray-300">
+                            Read by {comment.read_receipts.filter((receipt) => receipt.is_read).length} of {comment.read_receipts.length} notified
+                          </p>
+                          <ul className="mt-1 space-y-0.5">
+                            {comment.read_receipts.map((receipt) => (
+                              <li key={receipt.recipient_id}>
+                                {receipt.recipient}: {receipt.is_read
+                                  ? receipt.read_at
+                                    ? `read ${new Date(receipt.read_at).toLocaleString("en-GB")}`
+                                    : "read"
+                                  : "not read yet"}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCaseCommentReplyTo((current) => current === comment.id ? null : comment.id);
+                          setCaseCommentReplyDraft("");
+                        }}
+                        className="mt-2 text-xs font-medium text-sky-400 hover:text-sky-300"
+                      >
+                        {caseCommentReplyTo === comment.id ? "Cancel reply" : "Reply"}
+                      </button>
+                      {caseCommentReplyTo === comment.id && (
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            submitCaseComment(comment);
+                          }}
+                          className="mt-2 space-y-2"
+                        >
+                          <textarea
+                            aria-label={`Reply to comment by ${comment.author_name || "user"}`}
+                            value={caseCommentReplyDraft}
+                            onChange={(event) => setCaseCommentReplyDraft(event.target.value)}
+                            maxLength={5000}
+                            rows={2}
+                            disabled={caseCommentSaving}
+                            className="w-full resize-y bg-gray-800 border border-gray-700 text-white text-sm rounded px-3 py-2 disabled:opacity-60"
+                            placeholder="Write a reply..."
+                          />
+                          <div className="flex justify-end">
+                            <button
+                              type="submit"
+                              disabled={caseCommentSaving || !caseCommentReplyDraft.trim()}
+                              className="px-3 py-1.5 bg-sky-700 hover:bg-sky-600 disabled:opacity-50 text-white rounded text-xs font-medium"
+                            >
+                              {caseCommentSaving ? "Sending..." : "Send reply"}
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="border-t border-gray-700 pt-4 space-y-3">
               <SectionLabel>Case Progress Timeline</SectionLabel>
               {caseActivityLoading ? (
@@ -6058,7 +6345,7 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                         <p className="text-gray-300 text-xs mt-1">
                           {canAttachBrief && !isInvestigator
                             ? "A brief has already been attached to this case."
-                            : "A brief has already been attached. Forward it to HOD or Adjutant instead of uploading another one."}
+                            : "A brief has already been attached. Continue it through the appropriate forwarding level instead of uploading another copy."}
                         </p>
                       </div>
                       <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2.5 py-1 text-[11px] text-emerald-100">

@@ -5,5 +5,6 @@ from .court_martial import CaseCourtMartialHearingSerializer, CaseCourtMartialMi
 from .briefs import CaseBackBriefSerializer, CaseBriefSerializer, CaseBriefForwardSerializer
 from .exhibits import ExhibitStorageRequestSerializer
 from .activity import CaseActivityLogSerializer
+from .comments import CaseCommentSerializer
 from .teams import InvestigationTeamSerializer
 from .case import CaseSerializer

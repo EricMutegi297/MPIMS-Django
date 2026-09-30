@@ -31,7 +31,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         SEC_CORPS_CMD = "sec_corps_cmd", "Secretary Corps Commander"
         INVESTIGATOR = "investigator", "Investigator"
         DUTY_OFFICER = "duty_officer", "Duty Officer"
-        HOD = "hod", "Head of Department"
+        HOB = "hob", "HOB"
         GUARDROOM_IC = "guardroom_ic", "Guardroom IC"
         DETACHMENT = "detachment", "Detachment IC"
         IC_CASES = "ic_cases", "IC Cases"

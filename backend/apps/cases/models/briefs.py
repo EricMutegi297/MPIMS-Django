@@ -14,7 +14,7 @@ class CaseBrief(models.Model):
 
     class ForwardRole(models.TextChoices):
         IC_CASES = "ic_cases", "IC Cases"
-        HOD = "hod", "HOD"
+        HOB = "hob", "HOB"
         CO = "co", "Commanding Officer"
         OC = "oc", "OC"
         CORPS_CMD = "corps_cmd", "Corps Cmd"

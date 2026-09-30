@@ -44,13 +44,7 @@ class CaseAccessMixin:
                 return bool(team and (team.team_ic_id == user.id or team.members.filter(id=user.id).exists()))
             return False
         if is_company_command(user):
-            company_id = user.detachment.company_id
-            return bool(
-                case_obj.tasked_company_id == company_id
-                or getattr(getattr(case_obj, "tasked_detachment", None), "company_id", None) == company_id
-                or getattr(getattr(getattr(case_obj, "assigned_to", None), "detachment", None), "company_id", None) == company_id
-                or getattr(getattr(getattr(case_obj, "assigned_team", None), "detachment", None), "company_id", None) == company_id
-            )
+            return Case.objects.filter(pk=case_obj.pk).filter(company_case_scope_q(user)).exists()
         if user.role == User.Role.IC_CASES:
             return Case.objects.filter(pk=case_obj.pk).filter(ic_cases_scope_q(user)).exists()
         if is_scoped_to_company(user):
@@ -131,7 +125,9 @@ class CaseAccessMixin:
                     battalion_field="tasked_battalion_id",
                     detachment_field="tasked_detachment",
                 )
+                | Q(tasked_company__battalion_id=user.battalion_id)
                 | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)

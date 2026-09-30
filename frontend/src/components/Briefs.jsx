@@ -92,7 +92,7 @@ const FORWARD_OPTIONS = [
   { value: "detachment_commander", label: "Detachment Commander" },
   { value: "company_2ic", label: "Company 2IC" },
   { value: "company_oc", label: "Company OC" },
-  { value: "hod", label: "HOD" },
+  { value: "hob", label: "HOB" },
   { value: "adj", label: "Adjutant" },
   { value: "2ic", label: "2IC" },
   { value: "oc", label: "OC" },
@@ -109,7 +109,7 @@ const BRIEF_STAGE_LABELS = {
   company_2ic: "Company 2IC",
   company_oc: "Company OC",
   adj: "Adjutant",
-  hod: "HOD",
+  hob: "HOB",
   "2ic": "2IC",
   oc: "OC",
   co: "CO (Commanding Officer)",
@@ -123,7 +123,7 @@ function forwardLabel(value) {
 function roleLabel(value) {
   const labels = {
     investigator: "Investigator",
-    hod: "HOD",
+    hob: "HOB",
     ic_cases: "IC Cases",
     detachment: "Detachment IC",
     det_cmdr: "Detachment Commander",
@@ -145,7 +145,7 @@ function targetForRole(role, user) {
     detachment: "detachment_ic",
     det_cmdr: "detachment_commander",
     ic_cases: "ic_cases",
-    hod: "hod",
+    hob: "hob",
     adj: "adj",
     co: "co",
     corps_cmd: "corps_cmd",
@@ -189,7 +189,7 @@ function forwardedSource(brief, user) {
     const viewerText = forwardedByText(viewerEvent);
     if (viewerText) return viewerText;
   }
-  if (["ic_cases", "detachment_ic", "detachment_commander", "detachment", "hod", "adj"].includes(viewerTarget) && brief?.attached_by_name) {
+  if (["ic_cases", "detachment_ic", "detachment_commander", "detachment", "hob", "adj"].includes(viewerTarget) && brief?.attached_by_name) {
     return `Investigator - ${brief.attached_by_name}`;
   }
   const latestEvent = history[0];
@@ -246,10 +246,10 @@ function forwardOptionsFor(user, caseObj) {
   }
   if (["2ic", "oc"].includes(user?.role) && user?.company_id
     && (currentTarget === targetForRole(user?.role, user) || hasForwardStageAccess(user, caseObj))) {
-    options = FORWARD_OPTIONS.filter((option) => ["adj", "hod", "2ic", "oc"].includes(option.value));
+    options = FORWARD_OPTIONS.filter((option) => ["adj", "hob", "2ic", "oc"].includes(option.value));
     return removeAlreadyForwardedOptions(brief, options);
   }
-  if (user?.role === "hod" && (currentTarget === "hod" || hasForwardStageAccess(user, caseObj))) {
+  if (user?.role === "hob" && (currentTarget === "hob" || hasForwardStageAccess(user, caseObj))) {
     options = FORWARD_OPTIONS.filter((option) => option.value === "co");
     return removeAlreadyForwardedOptions(brief, options);
   }
@@ -276,7 +276,7 @@ function briefStatus(brief) {
 
 function canEditBrief(user, caseObj) {
   if (user?.role === "investigator") return true;
-  if (user?.role === "hod" && hasForwardStageAccess(user, caseObj)) return true;
+  if (user?.role === "hob" && hasForwardStageAccess(user, caseObj)) return true;
   if (user?.role === "oc" && hasForwardStageAccess(user, caseObj)) return true;
   if (user?.role === "adj" && hasForwardStageAccess(user, caseObj)) return true;
   return false;
@@ -656,7 +656,7 @@ export default function Briefs({ user }) {
               <option value="detachment">Legacy IC Cases</option>
               <option value="company_2ic">Company 2IC</option>
               <option value="company_oc">Company OC</option>
-              <option value="hod">HOD</option>
+              <option value="hob">HOB</option>
               <option value="adj">Adjutant</option>
               <option value="2ic">2IC</option>
               <option value="oc">OC</option>

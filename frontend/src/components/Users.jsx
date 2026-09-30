@@ -11,7 +11,7 @@ const ROLE_LABELS = {
   sec_corps_cmd: "Secretary Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
-  hod:          "Head of Department",
+  hob:          "HOB",
   guardroom_ic: "Guardroom IC",
   detachment:   "Detachment IC",
   ic_cases:     "IC Cases",
@@ -40,7 +40,7 @@ const ROLE_BADGE = {
   corps_cmd:    "bg-red-500/20 text-red-400",
   investigator: "bg-indigo-500/20 text-indigo-400",
   duty_officer: "bg-yellow-500/20 text-yellow-400",
-  hod:          "bg-lime-500/20 text-lime-400",
+  hob:          "bg-lime-500/20 text-lime-400",
   guardroom_ic: "bg-orange-500/20 text-orange-400",
   detachment:   "bg-teal-500/20 text-teal-400",
   ic_cases:     "bg-cyan-500/20 text-cyan-300",
@@ -212,9 +212,9 @@ export default function Users({ user }) {
   const canDeleteUsers  = isSuperuser || isHqsAdmin || isBattalionAdmin || isDocusClerk;
   // Roles each actor type can assign
   const ASSIGNABLE_ROLES = isSuperuser || isHqsAdmin
-    ? ["admin","co","company_cmd","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hod","guardroom_ic","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
+    ? ["admin","co","company_cmd","oc","corps_cmd","sec_corps_cmd","investigator","duty_officer","hob","guardroom_ic","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","legal","order_nco","mpc_hqs","bsm","cop","adj","2ic","docus_clerk","commandant","ci","si"]
     : isBattalionAdmin
-    ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+    ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hob","adj","2ic","docus_clerk"]
     : isCompanyUserManager
     ? ["detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator"]
     : isDocusClerk
@@ -228,7 +228,7 @@ export default function Users({ user }) {
     isSuperuser || isHqsAdmin
       ? Object.keys(ROLE_LABELS)
       : isBattalionAdmin
-      ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hod","adj","2ic","docus_clerk"]
+      ? ["co","company_cmd","oc","detachment","ic_cases","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator","hob","adj","2ic","docus_clerk"]
       : isCompanyUserManager || isDetachmentUserManager
       ? Object.keys(ROLE_LABELS)
       : isDocusClerk

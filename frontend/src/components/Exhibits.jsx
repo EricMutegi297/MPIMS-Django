@@ -205,7 +205,7 @@ function canAuthorizeRelease(user, row) {
   ) {
     return true;
   }
-  if (!["admin", "adj", "hod", "oc", "co", "2ic"].includes(user?.role) || !userBattalionId) {
+  if (!["admin", "adj", "hob", "oc", "co", "2ic"].includes(user?.role) || !userBattalionId) {
     return false;
   }
   const battalionIds = [

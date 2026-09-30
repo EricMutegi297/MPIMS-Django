@@ -20,8 +20,10 @@ class Notification(models.Model):
     message = EncryptedTextField()
     notification_type = models.CharField(max_length=20, choices=Type.choices, default=Type.SYSTEM)
     is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
     related_model = models.CharField(max_length=50, blank=True)
     related_id = models.PositiveIntegerField(null=True, blank=True)
+    related_case_id = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

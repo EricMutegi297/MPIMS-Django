@@ -37,7 +37,7 @@ BATTALION_COMMAND_ROLES = {
     User.Role.ADMIN,
     User.Role.CO,
     User.Role.OC,
-    User.Role.HOD,
+    User.Role.HOB,
     User.Role.ADJ,
     User.Role.TWO_IC,
 }
@@ -151,8 +151,10 @@ def ic_cases_scope_q(user):
     if user.battalion_id:
         return (
             Q(tasked_battalion_id=user.battalion_id)
+            | Q(tasked_company__battalion_id=user.battalion_id)
             | Q(tasked_detachment__company__battalion_id=user.battalion_id)
             | Q(assigned_to__battalion_id=user.battalion_id)
+            | Q(assigned_to__company__battalion_id=user.battalion_id)
             | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
             | Q(assigned_team__battalion_id=user.battalion_id)
             | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
@@ -176,6 +178,7 @@ def company_case_scope_q(user):
     return (
         Q(tasked_company_id=company_id)
         | Q(tasked_detachment__company_id=company_id)
+        | Q(assigned_to__company_id=company_id)
         | Q(assigned_to__detachment__company_id=company_id)
         | Q(assigned_team__detachment__company_id=company_id)
     )

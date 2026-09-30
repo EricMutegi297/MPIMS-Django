@@ -64,7 +64,7 @@ BATTALION_ADMIN_ROLES = {
     "det_2ic",
     "personnel",
     "investigator",
-    "hod",
+    "hob",
     "adj",
     "2ic",
     "order_nco",

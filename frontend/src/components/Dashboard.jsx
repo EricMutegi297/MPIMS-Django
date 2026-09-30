@@ -112,7 +112,7 @@ const ROLE_LABELS = {
   sec_corps_cmd: "Secretary Corps Commander",
   investigator: "Investigator",
   duty_officer: "Duty Officer",
-  hod: "Head of Department",
+  hob: "HOB",
   guardroom_ic: "Guardroom IC",
   detachment: "Detachment IC",
   ic_cases: "IC Cases",
@@ -139,7 +139,7 @@ function getNavItems(user) {
   const isHqsBnAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "hqs";
   const isBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() !== "hqs";
   const isSpecialBattalionAdmin = user?.role === "admin" && String(user?.battalion_type || "").toLowerCase() === "special";
-  const isBattalionCommand = ["admin", "co", "hod", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
+  const isBattalionCommand = ["admin", "co", "hob", "oc", "adj", "2ic"].includes(user?.role) && !!user?.battalion;
   const isUnitCommandRole = ["co", "adj", "2ic", "commandant", "ci", "si"].includes(user?.role) && !!user?.unit;
   const caseViewerRoles = ["admin", "co", "company_cmd", "oc", "corps_cmd", "investigator", "detachment", "ic_cases", "det_cmdr", "pltn_cmdr", "det_2ic", "legal", "mpc_hqs", "cop", "adj", "2ic", "docus_clerk", "commandant", "ci", "si"];
   const items = [

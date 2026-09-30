@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { notificationService } from "../services/api";
+import { groupNotifications, notificationCategory } from "../utils/notificationGroups";
+
+const UNREAD_REMINDER_INTERVAL = 15 * 60 * 1000;
+const REMINDER_STORAGE_PREFIX = "mpims_unread_notification_reminder_at";
 
 function scheduleNonCritical(callback) {
   if (typeof window === "undefined") {
@@ -23,10 +28,21 @@ function scheduleNonCritical(callback) {
   };
 }
 
+function getCurrentUserId() {
+  if (typeof window === "undefined") return "unknown";
+  try {
+    return JSON.parse(sessionStorage.getItem("mpims_user_cache") || "{}").id || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export default function NotificationBell() {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
   const [busyAll, setBusyAll] = useState(false);
+  const [showUnreadReminder, setShowUnreadReminder] = useState(false);
   const panelRef = useRef(null);
 
   const fetchNotifications = useCallback(async () => {
@@ -74,6 +90,29 @@ export default function NotificationBell() {
   }, [open]);
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
+  const notificationSections = groupNotifications(notifications);
+  const currentUserId = getCurrentUserId();
+
+  useEffect(() => {
+    const reminderStorageKey = `${REMINDER_STORAGE_PREFIX}:${currentUserId}`;
+
+    if (!unreadCount) {
+      setShowUnreadReminder(false);
+      sessionStorage.removeItem(reminderStorageKey);
+      return undefined;
+    }
+
+    const maybeRemind = () => {
+      const lastReminder = Number(sessionStorage.getItem(reminderStorageKey) || 0);
+      if (!lastReminder || Date.now() - lastReminder >= UNREAD_REMINDER_INTERVAL) {
+        setShowUnreadReminder(true);
+        sessionStorage.setItem(reminderStorageKey, String(Date.now()));
+      }
+    };
+    maybeRemind();
+    const intervalId = window.setInterval(maybeRemind, 60 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [unreadCount, currentUserId]);
 
   const handleMarkRead = async (n) => {
     if (n.is_read) return;
@@ -83,6 +122,12 @@ export default function NotificationBell() {
         prev.map((x) => (x.id === n.id ? { ...x, is_read: true } : x))
       );
     } catch {}
+  };
+
+  const handleOpenCaseComment = async (notification) => {
+    await handleMarkRead(notification);
+    setOpen(false);
+    navigate(`/dashboard/cases?case=${notification.related_case_id}&comment=${notification.related_id}`);
   };
 
   const handleMarkAllRead = async () => {
@@ -121,11 +166,36 @@ export default function NotificationBell() {
     return `${Math.floor(h / 24)}d ago`;
   };
 
-  const unread = notifications.filter((n) => !n.is_read);
-  const read   = notifications.filter((n) =>  n.is_read);
-
   return (
     <div className="relative" ref={panelRef}>
+      {showUnreadReminder && (
+        <div className="fixed right-4 top-4 z-[60] flex max-w-sm items-start gap-3 rounded-lg border border-amber-400/40 bg-gray-900 px-4 py-3 shadow-xl">
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-200">Unread notifications</p>
+            <p className="mt-1 text-xs text-gray-300">
+              You have {unreadCount} unread notification{unreadCount === 1 ? "" : "s"}. This reminder will return every 15 minutes until they are read.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(true);
+                setShowUnreadReminder(false);
+              }}
+              className="mt-2 text-xs font-semibold text-sky-300 hover:text-sky-200"
+            >
+              Review notifications
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowUnreadReminder(false)}
+            className="text-gray-500 hover:text-white"
+            aria-label="Dismiss unread notifications reminder"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {/* ── Bell button ───────────────────────────────────────── */}
       <button
         onClick={() => setOpen((v) => !v)}
@@ -193,33 +263,28 @@ export default function NotificationBell() {
               </div>
             ) : (
               <>
-                {/* ── Unread section ── */}
-                {unread.length > 0 && (
-                  <>
-                    <p className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-blue-400 bg-blue-900/10 border-b border-gray-700/40">
-                      New . {unread.length}
+                {notificationSections.map((section) => (
+                  <section key={section.key}>
+                    <p className={`px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest border-b border-gray-700/40 ${
+                      section.read ? "text-gray-500 bg-gray-700/20" : "text-blue-400 bg-blue-900/10"
+                    }`}>
+                      {section.label} · {section.items.length}
                     </p>
                     <ul>
-                      {unread.map((n) => (
-                        <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} fmtTime={fmtTime} />
+                      {section.items.map((n) => (
+                        <NotifRow
+                          key={n.id}
+                          n={n}
+                          category={notificationCategory(n)}
+                          onRead={handleMarkRead}
+                          onOpenCaseComment={handleOpenCaseComment}
+                          onDelete={handleDelete}
+                          fmtTime={fmtTime}
+                        />
                       ))}
                     </ul>
-                  </>
-                )}
-
-                {/* ── Read section ── */}
-                {read.length > 0 && (
-                  <>
-                    <p className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-500 bg-gray-700/20 border-b border-t border-gray-700/40 mt-0">
-                      Earlier . {read.length}
-                    </p>
-                    <ul>
-                      {read.map((n) => (
-                        <NotifRow key={n.id} n={n} onRead={handleMarkRead} onDelete={handleDelete} fmtTime={fmtTime} />
-                      ))}
-                    </ul>
-                  </>
-                )}
+                  </section>
+                ))}
               </>
             )}
           </div>
@@ -229,7 +294,7 @@ export default function NotificationBell() {
   );
 }
 
-function NotifRow({ n, onRead, onDelete, fmtTime }) {
+function NotifRow({ n, category, onRead, onOpenCaseComment, onDelete, fmtTime }) {
   return (
     <li
       onClick={() => onRead(n)}
@@ -246,6 +311,9 @@ function NotifRow({ n, onRead, onDelete, fmtTime }) {
 
       {/* Body */}
       <div className="flex-1 min-w-0">
+        <span className="inline-flex mb-1 rounded bg-gray-700 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-300">
+          {category}
+        </span>
         <p
           className={`text-xs leading-relaxed break-words ${
             n.is_read ? "text-gray-400" : "text-gray-100 font-medium"
@@ -253,6 +321,18 @@ function NotifRow({ n, onRead, onDelete, fmtTime }) {
         >
           {n.message}
         </p>
+        {["case_comment", "case_comment_reply"].includes(n.related_model) && n.related_case_id && n.related_id && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenCaseComment(n);
+            }}
+            className="mt-2 text-[11px] font-semibold text-sky-400 hover:text-sky-300 hover:underline"
+          >
+            Read comment and reply
+          </button>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           {!n.is_read && (
             <span className="text-[9px] font-bold uppercase tracking-wide text-blue-400">

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 DUTY_ROOM_POST_NAME = "duty room"
-APPROVER_ROLES = {User.Role.DETACHMENT, User.Role.ADJ, User.Role.HOD, User.Role.TWO_IC, User.Role.OC}
+APPROVER_ROLES = {User.Role.DETACHMENT, User.Role.ADJ, User.Role.HOB, User.Role.TWO_IC, User.Role.OC}
 MOBILE_USER_AGENT_RE = re.compile(r"Android.*Mobile|iPhone|iPod|IEMobile|Opera Mini|Mobi", re.IGNORECASE)
 MOBILE_ALLOWED_ACTIONS = {"active_duty_room", "approvers"}
 COMMAND_WRITE_ALLOWED_ACTIONS = {"approve", "return_for_correction", "decline"}

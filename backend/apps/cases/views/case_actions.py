@@ -217,7 +217,7 @@ class CaseActionsMixin:
                 else CaseBrief.ForwardRole.OC
             )
         return {
-            User.Role.HOD: CaseBrief.ForwardRole.HOD,
+            User.Role.HOB: CaseBrief.ForwardRole.HOB,
             User.Role.ADJ: CaseBrief.ForwardRole.ADJ,
             User.Role.CO: CaseBrief.ForwardRole.CO,
             User.Role.CORPS_CMD: CaseBrief.ForwardRole.CORPS_CMD,
@@ -236,8 +236,10 @@ class CaseActionsMixin:
                 return qs.none()
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
+                | Q(tasked_company__battalion_id=user.battalion_id)
                 | Q(tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
@@ -266,8 +268,10 @@ class CaseActionsMixin:
                 return qs.none()
             return qs.filter(
                 Q(tasked_battalion_id=user.battalion_id)
+                | Q(tasked_company__battalion_id=user.battalion_id)
                 | Q(tasked_detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__battalion_id=user.battalion_id)
+                | Q(assigned_to__company__battalion_id=user.battalion_id)
                 | Q(assigned_to__detachment__company__battalion_id=user.battalion_id)
                 | Q(assigned_team__battalion_id=user.battalion_id)
                 | Q(assigned_team__detachment__company__battalion_id=user.battalion_id)
@@ -279,6 +283,8 @@ class CaseActionsMixin:
 
     def _case_battalion_id(self, case_obj):
         battalion_id = case_obj.tasked_battalion_id
+        if not battalion_id and case_obj.tasked_company_id:
+            battalion_id = getattr(case_obj.tasked_company, "battalion_id", None)
         if not battalion_id and case_obj.tasked_detachment_id:
             battalion_id = getattr(case_obj.tasked_detachment, "battalion_id", None)
         if not battalion_id and case_obj.assigned_team_id:
@@ -382,12 +388,12 @@ class CaseActionsMixin:
         ):
             base_roles = {
                 CaseBrief.ForwardRole.ADJ,
-                CaseBrief.ForwardRole.HOD,
+                CaseBrief.ForwardRole.HOB,
                 CaseBrief.ForwardRole.TWO_IC,
                 CaseBrief.ForwardRole.OC,
             }
         elif (
-            role in {User.Role.HOD, User.Role.ADJ, User.Role.TWO_IC, User.Role.OC}
+            role in {User.Role.HOB, User.Role.ADJ, User.Role.TWO_IC, User.Role.OC}
             and not user_company_id(user)
             and self._brief_role_has_history_access(user, brief)
         ):
@@ -433,7 +439,7 @@ class CaseActionsMixin:
             return False
         if user.role == User.Role.INVESTIGATOR:
             return self._can_manage_case_brief(user, case_obj)
-        if user.role == User.Role.HOD and self._brief_role_has_history_access(user, brief):
+        if user.role == User.Role.HOB and self._brief_role_has_history_access(user, brief):
             return self._can_view_case_brief(user, case_obj, brief)
         if user.role == User.Role.OC and self._brief_role_has_history_access(user, brief):
             return self._can_view_case_brief(user, case_obj, brief)
