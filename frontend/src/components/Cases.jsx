@@ -7226,18 +7226,40 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                   <div className="grid gap-3 md:grid-cols-3">
                     {CASE_SOURCE_OPTIONS.map((option) => {
                       const selectedSource = caseSource === option.value;
+                      const sourceTheme = {
+                        [CASE_SOURCE_RFI]: {
+                          selected: "border-blue-500 bg-blue-50 ring-2 ring-blue-200",
+                          idle: "border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50/60",
+                          title: "text-blue-800",
+                          marker: "bg-blue-500",
+                        },
+                        [CASE_SOURCE_INCIDENT]: {
+                          selected: "border-amber-500 bg-amber-50 ring-2 ring-amber-200",
+                          idle: "border-amber-200 bg-white hover:border-amber-400 hover:bg-amber-50/60",
+                          title: "text-amber-800",
+                          marker: "bg-amber-500",
+                        },
+                        [CASE_SOURCE_RTA]: {
+                          selected: "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200",
+                          idle: "border-emerald-200 bg-white hover:border-emerald-400 hover:bg-emerald-50/60",
+                          title: "text-emerald-800",
+                          marker: "bg-emerald-500",
+                        },
+                      }[option.value];
                       return (
                         <button
                           key={option.value}
                           type="button"
                           onClick={() => chooseCaseSource(option.value)}
-                          className={`rounded-xl border p-3 text-left transition-colors ${
-                            selectedSource
-                              ? "border-blue-500 bg-blue-50 shadow-sm"
-                              : "border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40"
+                          aria-pressed={selectedSource}
+                          className={`rounded-xl border p-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${
+                            selectedSource ? sourceTheme.selected : sourceTheme.idle
                           }`}
                         >
-                          <span className="block text-sm font-bold text-slate-950">{option.label}</span>
+                          <span className="flex items-center gap-2 text-sm font-bold text-slate-950">
+                            <span className={`h-2 w-2 rounded-full ${sourceTheme.marker}`} />
+                            <span className={sourceTheme.title}>{option.label}</span>
+                          </span>
                           <span className="mt-1 block text-xs leading-5 text-slate-600">{option.summary}</span>
                         </button>
                       );
@@ -7246,9 +7268,13 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                   {caseSource && (
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-100 bg-white px-3 py-2 text-xs text-slate-600">
                       <span>
-                        Selected: <span className="font-semibold text-blue-700">{caseSourceLabel(caseSource)}</span>
+                        Selected: <span className="font-semibold text-slate-900">{caseSourceLabel(caseSource)}</span>
                       </span>
-                      <button type="button" onClick={changeCaseSource} className="font-semibold text-blue-700 hover:text-blue-900">
+                      <button
+                        type="button"
+                        onClick={changeCaseSource}
+                        className="rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 font-semibold text-indigo-700 transition-colors hover:border-indigo-300 hover:bg-indigo-100"
+                      >
                         Change
                       </button>
                     </div>
@@ -8319,14 +8345,14 @@ export default function Cases({ user, criminalTypeFilter, clearanceOnly = false 
                 <button
                   type="button"
                   onClick={requestCloseCaseForm}
-                  className="px-4 py-2 border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-sm transition-colors"
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={createSaving || (caseFormMode === "create" && !activeCaseSource)}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none"
                 >
                   {createSaving
                     ? (caseFormMode === "edit" ? "Saving..." : "Creating...")
