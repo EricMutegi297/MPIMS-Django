@@ -21,11 +21,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name="case",
-            name="abstract_acknowledged_at",
-            field=models.DateTimeField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name="case",
             name="abstract_acknowledged_by",
             field=models.ForeignKey(
                 blank=True,
