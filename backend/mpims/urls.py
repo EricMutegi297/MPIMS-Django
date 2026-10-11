@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/formations/", include("apps.formations.urls")),
     path("api/offences/", include("apps.offences.urls")),
     path("api/todos/", include("apps.todos.urls")),
+    path("api/clearances/", include("apps.clearances.urls")),
 ]
 
 def deny_case_media(request, path=""):

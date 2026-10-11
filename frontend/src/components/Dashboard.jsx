@@ -10,6 +10,7 @@ const InvestigatorDashboard = lazy(() => import("./InvestigatorDashboard"));
 const BattalionDashboard = lazy(() => import("./BattalionDashboard"));
 const DetachmentDashboard = lazy(() => import("./DetachmentDashboard"));
 const Cases = lazy(() => import("./Cases"));
+const Clearance = lazy(() => import("./Clearance"));
 const Incidents = lazy(() => import("./Incidents"));
 const MorningBriefs = lazy(() => import("./MorningBriefs"));
 const Guardrooms = lazy(() => import("./Guardrooms"));
@@ -170,7 +171,9 @@ function getNavItems(user) {
     },
     {
       key: "clearance", label: "Clearance", path: "/dashboard/clearance",
-      show: Boolean(user?.unit || user?.unit_id) && ["co", "adj", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role),
+      show: (Boolean(user?.unit || user?.unit_id) && ["co", "adj", "2ic", "commandant", "ci", "si", "docus_clerk"].includes(user?.role))
+        || isHqsBnAdmin
+        || isSuperuser,
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 00-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622C17.176 19.29 21 14.591 21 9a12.02 12.02 0 00-.382-3.016z" />
@@ -887,7 +890,8 @@ export default function Dashboard() {
             <Route path="/cases/*" element={<Cases user={user} />} />
             <Route path="/transferred-cases" element={<TransferCases user={user} />} />
             <Route path="/todos" element={<TodoList user={user} />} />
-            <Route path="/clearance" element={<Cases user={user} clearanceOnly />} />
+            <Route path="/clearance" element={<Clearance user={user} />} />
+            <Route path="/case-clearance-documents" element={<Cases user={user} clearanceOnly />} />
             <Route path="/court-martial" element={<Cases user={user} criminalTypeFilter="court_martial" />} />
             <Route path="/dci-civ-police" element={<Cases user={user} criminalTypeFilter="dci_civ_police" />} />
             <Route path="/incidents/*" element={<Incidents user={user} />} />

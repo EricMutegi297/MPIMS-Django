@@ -59,6 +59,7 @@ const ROLE_BADGE = {
 };
 
 const UNIT_COMMAND_ROLES = ["adj", "co", "2ic", "commandant", "ci", "si"];
+const DOCUS_CLERK_CREATE_ROLES = [...UNIT_COMMAND_ROLES, "personnel"];
 const UNIT_SCOPED_ROLES = ["docus_clerk", "commandant", "ci", "si"];
 
 function toArray(data) {
@@ -218,7 +219,7 @@ export default function Users({ user }) {
     : isCompanyUserManager
     ? ["detachment","det_cmdr","pltn_cmdr","det_2ic","personnel","investigator"]
     : isDocusClerk
-    ? UNIT_COMMAND_ROLES
+    ? DOCUS_CLERK_CREATE_ROLES
     : isDetachmentUserManager
     ? ["personnel","investigator"]
     : [];
@@ -256,7 +257,7 @@ export default function Users({ user }) {
   const DETACHMENT_LEVEL_ROLES = ["company_cmd", "detachment", "det_cmdr", "pltn_cmdr", "det_2ic", "investigator", "personnel"];
   const GLOBAL_LEVEL_ROLES = ["corps_cmd", "cop"];
   const roleNeedsUnit = useCallback((role) => (
-    UNIT_SCOPED_ROLES.includes(role) || (isDocusClerk && UNIT_COMMAND_ROLES.includes(role))
+    UNIT_SCOPED_ROLES.includes(role) || (isDocusClerk && DOCUS_CLERK_CREATE_ROLES.includes(role))
   ), [isDocusClerk]);
 
   const loadDetachments = useCallback((battalionId) => {
@@ -912,7 +913,7 @@ export default function Users({ user }) {
               )}
               {roleNeedsUnit(form.role) && (
                 <div className="col-span-2">
-                  <label className="block text-xs text-gray-400 mb-1">Accused Unit *</label>
+                  <label className="block text-xs text-gray-400 mb-1">Assigned Unit *</label>
                   {isDocusClerk ? (
                     <input
                       readOnly

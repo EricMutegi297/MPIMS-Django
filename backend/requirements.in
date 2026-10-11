@@ -13,5 +13,6 @@ cryptography>=42.0.0
 celery[redis]>=5.5,<6
 pyotp>=2.10.0
 qrcode[pil]>=8.2
+reportlab>=4.2
 pywin32>=306; platform_system=="Windows"
 gunicorn>=23.0

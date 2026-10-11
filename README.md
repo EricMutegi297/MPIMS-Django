@@ -1,4 +1,4 @@
-﻿# MPIMS-Django
+# MPIMS-Django
 
 MPIMS-Django is a full-stack application for managing military police operations, case workflows, incident records, duty and guard room activities, and operational notifications.
 
@@ -16,6 +16,7 @@ This system is designed to support:
 - Morning brief workflows
 - Notification delivery and audit logging
 - MFA and secure password/account protections
+- Unit-scoped clearance requests with Admin HQ review and generated certificates
 
 ## Tech Stack
 
@@ -247,6 +248,22 @@ frontend to `127.0.0.1:3000`, Django API and admin requests to
 `127.0.0.1:4000`. Keep `/media/` private; do not map it to a public static-file
 route. Case uploads persist in `backend/media` on the host. Redis listens only
 on loopback port `6380`.
+
+Unit command and Docus Clerk users can request a clearance certificate for
+personnel assigned to their unit. MPIMS blocks requests when a non-closed case
+is recorded for that service number; the requester is shown the case number and
+current status and is directed to have the case cleared by MPC. Admin HQ reviews eligible requests and
+MPIMS generates a PDF certificate after approval, recording that no ongoing
+MPIMS case was found as of the approval date. The approval check is repeated
+before issuing the certificate. Certificates can be previewed before download,
+show the Military Police Corps logo as a watermark, and are valid for six
+calendar months from approval unless a new MPIMS case is recorded sooner.
+Recording a case against personnel with a current certificate invalidates it
+and sends an in-app alert to the unit's command and administration roles.
+Authorized unit users can view all clearance requests for their own unit,
+including pending, rejected, and approved requests. Docus Clerks can also create
+personnel accounts for their assigned unit; their access cannot create personnel
+in another unit.
 
 The configuration uses host networking for backend, worker, Redis, and realtime
 services. The API/worker must use the production database and secrets from

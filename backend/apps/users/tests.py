@@ -10,7 +10,7 @@ from django.utils.http import urlsafe_base64_encode
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.formations.models import Battalion, Company, Detachment
+from apps.formations.models import Battalion, Company, Detachment, Unit
 from apps.notifications.models import Notification
 
 from .models import LoginThrottle, TOTPDevice, User
@@ -243,6 +243,11 @@ class UserManagementPermissionTests(APITestCase):
         self.user_list_url = reverse("user-list")
         self.battalion = Battalion.objects.create(name="1 MP BN")
         self.other_battalion = Battalion.objects.create(name="2 MP BN")
+        self.unit = Unit.objects.create(name="1 MP BN Unit", battalion=self.battalion)
+        self.other_unit = Unit.objects.create(
+            name="2 MP BN Unit",
+            battalion=self.other_battalion,
+        )
         self.company = Company.objects.create(
             battalion=self.battalion,
             company=Company.Company.A,
@@ -306,6 +311,17 @@ class UserManagementPermissionTests(APITestCase):
             detachment=self.company_detachment,
             must_change_password=False,
         )
+        self.docus_clerk = User.objects.create_user(
+            service_number="700004",
+            password="test-password",
+            name="Docus Clerk",
+            rank="Sgt",
+            email="docus@example.test",
+            role=User.Role.DOCUS_CLERK,
+            unit=self.unit,
+            battalion=self.battalion,
+            must_change_password=False,
+        )
 
     def user_payload(self, service_number="700100", detachment=None):
         payload = {
@@ -344,6 +360,39 @@ class UserManagementPermissionTests(APITestCase):
         created = User.objects.get(service_number="700100")
         self.assertEqual(created.battalion, self.battalion)
         self.assertEqual(created.detachment, self.company_detachment)
+
+    def test_docus_clerk_can_create_personnel_in_assigned_unit(self):
+        self.client.force_authenticate(self.docus_clerk)
+
+        response = self.client.post(
+            self.user_list_url,
+            {
+                **self.user_payload("700120"),
+                "unit": self.unit.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        created = User.objects.get(service_number="700120")
+        self.assertEqual(created.role, User.Role.PERSONNEL)
+        self.assertEqual(created.unit, self.unit)
+        self.assertEqual(created.battalion, self.battalion)
+
+    def test_docus_clerk_cannot_create_personnel_outside_assigned_unit(self):
+        self.client.force_authenticate(self.docus_clerk)
+
+        response = self.client.post(
+            self.user_list_url,
+            {
+                **self.user_payload("700121"),
+                "unit": self.other_unit.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(User.objects.filter(service_number="700121").exists())
 
     def test_battalion_admin_can_create_company_scoped_ic_cases_user(self):
         self.client.force_authenticate(self.battalion_admin)

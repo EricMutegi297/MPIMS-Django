@@ -81,6 +81,7 @@ COMPANY_MANAGER_ROLES = {
 }
 DETACHMENT_MANAGER_ROLES = {User.Role.PERSONNEL, User.Role.INVESTIGATOR}
 DOCUS_CLERK_ROLES = {"adj", "co", "2ic", "commandant", "ci", "si"}
+DOCUS_CLERK_CREATE_ROLES = DOCUS_CLERK_ROLES | {User.Role.PERSONNEL}
 DOCUS_CLERK_PER_UNIT_LIMIT = 2
 CORPS_COMMANDER_MANAGEMENT_ERROR = (
     "Corps Commander accounts can only be managed by a superuser or HQS Admin."
@@ -1295,8 +1296,10 @@ class UserListCreateView(generics.ListCreateAPIView):
                 raise PermissionDenied("Battalion admin can only create company users in their battalion.")
             return serializer.save(battalion=actor.battalion)
         if is_docus_clerk(actor):
-            if new_role not in DOCUS_CLERK_ROLES:
-                raise PermissionDenied("Docus Clerk can only create unit command accounts.")
+            if new_role not in DOCUS_CLERK_CREATE_ROLES:
+                raise PermissionDenied(
+                    "Docus Clerk can only create personnel or unit command accounts."
+                )
             unit = serializer.validated_data.get("unit")
             if unit and unit.id != actor.unit_id:
                 raise PermissionDenied("Docus Clerk can only create users for their assigned unit.")

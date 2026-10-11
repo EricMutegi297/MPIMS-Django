@@ -139,6 +139,15 @@ export const exhibitService = {
   scanReleaseDocument: () => api.post("/api/cases/exhibits/scan-release-document/", {}, { responseType: "blob" }),
 };
 
+export const clearanceService = {
+  list: () => api.get("/api/clearances/requests/"),
+  request: (service_number) => api.post("/api/clearances/requests/", { service_number }),
+  approve: (id) => api.post(`/api/clearances/requests/${id}/approve/`),
+  reject: (id, decision_note) => api.post(`/api/clearances/requests/${id}/reject/`, { decision_note }),
+  certificate: (id) => api.get(`/api/clearances/requests/${id}/certificate/`, { responseType: "blob" }),
+  previewCertificate: (id) => api.get(`/api/clearances/requests/${id}/certificate/preview/`, { responseType: "blob" }),
+};
+
 export const incidentService = {
   list: (params) => api.get("/api/incidents/", { params }),
   get: (id) => api.get(`/api/incidents/${id}/`),
