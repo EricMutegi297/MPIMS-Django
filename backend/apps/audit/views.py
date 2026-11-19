@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime, time
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import filters, viewsets
 from rest_framework.exceptions import ValidationError
 
@@ -57,9 +58,11 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         if date_from and date_to and date_from > date_to:
             raise ValidationError({"date_from": "Date from cannot be later than date to."})
         if date_from:
-            qs = qs.filter(created_at__date__gte=date_from)
+            start = timezone.make_aware(datetime.combine(date_from, time.min))
+            qs = qs.filter(created_at__gte=start)
         if date_to:
-            qs = qs.filter(created_at__date__lte=date_to)
+            end = timezone.make_aware(datetime.combine(date_to, time.max))
+            qs = qs.filter(created_at__lte=end)
         return qs
 
     @staticmethod

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import serializers, status
@@ -14,6 +14,7 @@ from rest_framework.test import APIClient
 from apps.formations.models import Battalion, Company, Detachment, Formation, Unit
 from apps.notifications.models import Notification
 from apps.users.models import User
+from mpims.health import readiness_check
 from .models import (
     Case,
     CaseAttachment,
@@ -23,6 +24,49 @@ from .models import (
     InvestigationTeam,
 )
 from .uploads import UploadScanUnavailable, validate_case_upload
+
+
+class ReadinessCheckTests(SimpleTestCase):
+    def test_ready_when_database_and_cache_are_available(self):
+        stored_values = {}
+
+        with (
+            patch("mpims.health.connection.ensure_connection"),
+            patch(
+                "mpims.health.cache.set",
+                side_effect=lambda key, value, timeout: stored_values.__setitem__(key, value),
+            ),
+            patch(
+                "mpims.health.cache.get",
+                side_effect=lambda key: stored_values.get(key),
+            ),
+        ):
+            response = readiness_check(RequestFactory().get("/api/health/ready/"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {
+            "status": "ok",
+            "checks": {"database": "ok", "cache": "ok"},
+        })
+
+    def test_not_ready_when_a_dependency_is_unavailable(self):
+        with (
+            patch(
+                "mpims.health.connection.ensure_connection",
+                side_effect=OSError("database unavailable"),
+            ),
+            patch("mpims.health.cache.set", return_value=True),
+            patch("mpims.health.cache.get", return_value="not-the-probe-token"),
+            self.assertLogs("mpims.health", level="ERROR"),
+        ):
+            response = readiness_check(RequestFactory().get("/api/health/ready/"))
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)["status"], "unavailable")
+        self.assertEqual(
+            json.loads(response.content)["checks"]["database"],
+            "unavailable",
+        )
 
 
 class CaseUploadValidationTests(SimpleTestCase):

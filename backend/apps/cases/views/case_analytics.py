@@ -1,4 +1,6 @@
 from ._shared import *
+from django.db.models import Avg, Count, DateField, DurationField, ExpressionWrapper, F, Q
+from django.db.models.functions import Coalesce, TruncDate
 
 
 class CaseAnalyticsMixin:
@@ -31,7 +33,6 @@ class CaseAnalyticsMixin:
         resolved = with_deadline.filter(status__in=resolved_statuses, served_at__isnull=False)
 
         # On-time: served_at (datetime) cast to date <= investigation_deadline
-        from django.db.models.functions import TruncDate
         resolved_on_time = resolved.filter(
             served_at__date__lte=F("investigation_deadline")
         ).count()
@@ -46,32 +47,37 @@ class CaseAnalyticsMixin:
             investigation_deadline__lt=today
         ).exclude(status__in=resolved_statuses).count()
 
-        # Average variance in days (served_at.date − investigation_deadline)
-        # We compute in Python to avoid DB-level date subtraction dialect issues
-        variance_days = [
-            (c.served_at.date() - c.investigation_deadline).days
-            for c in resolved
-            if c.served_at and c.investigation_deadline
-        ]
-        avg_variance = round(sum(variance_days) / len(variance_days), 1) if variance_days else None
+        current_timezone = timezone.get_current_timezone()
 
-        # Team window: investigation_deadline − team_assigned_at (how long the team was given)
+        def average_days(queryset, end_date, start_date):
+            average = queryset.aggregate(
+                duration=Avg(
+                    ExpressionWrapper(
+                        end_date - start_date,
+                        output_field=DurationField(),
+                    )
+                )
+            )["duration"]
+            return round(average.total_seconds() / 86400, 1) if average is not None else None
+
+        avg_variance = average_days(
+            resolved,
+            TruncDate("served_at", tzinfo=current_timezone),
+            F("investigation_deadline"),
+        )
+
         team_cases = with_deadline.filter(team_assigned_at__isnull=False)
-        team_window_days = [
-            (c.investigation_deadline - c.team_assigned_at.date()).days
-            for c in team_cases
-            if c.investigation_deadline and c.team_assigned_at
-        ]
-        avg_team_window = round(sum(team_window_days) / len(team_window_days), 1) if team_window_days else None
-
-        # Team resolution time: served_at.date − team_assigned_at.date (how long they actually took)
+        avg_team_window = average_days(
+            team_cases,
+            F("investigation_deadline"),
+            TruncDate("team_assigned_at", tzinfo=current_timezone),
+        )
         resolved_with_assignment = resolved.filter(team_assigned_at__isnull=False)
-        team_resolution_days = [
-            (c.served_at.date() - c.team_assigned_at.date()).days
-            for c in resolved_with_assignment
-            if c.served_at and c.team_assigned_at
-        ]
-        avg_team_resolution = round(sum(team_resolution_days) / len(team_resolution_days), 1) if team_resolution_days else None
+        avg_team_resolution = average_days(
+            resolved_with_assignment,
+            TruncDate("served_at", tzinfo=current_timezone),
+            TruncDate("team_assigned_at", tzinfo=current_timezone),
+        )
 
         result = {
             "total_with_deadline":      with_deadline.count(),
@@ -91,26 +97,47 @@ class CaseAnalyticsMixin:
             has_global_read_access(user)
         )
         if is_hq_admin:
-            from apps.formations.models import Battalion
             breakdown = []
-            for bn in Battalion.objects.order_by("name"):
-                bn_qs = with_deadline.filter(tasked_battalion=bn)
-                bn_resolved = bn_qs.filter(status__in=resolved_statuses, served_at__isnull=False)
-                bn_on_time = bn_resolved.filter(
-                    served_at__date__lte=F("investigation_deadline")
-                ).count()
-                bn_total_resolved = bn_resolved.count()
-                bn_overdue = bn_qs.filter(
-                    investigation_deadline__lt=today
-                ).exclude(status__in=resolved_statuses).count()
+            battalion_rows = (
+                with_deadline.filter(tasked_battalion_id__isnull=False)
+                .values("tasked_battalion_id", "tasked_battalion__name")
+                .annotate(
+                    total=Count("pk", distinct=True),
+                    resolved_total=Count(
+                        "pk",
+                        filter=Q(status__in=resolved_statuses, served_at__isnull=False),
+                        distinct=True,
+                    ),
+                    resolved_on_time=Count(
+                        "pk",
+                        filter=Q(
+                            status__in=resolved_statuses,
+                            served_at__isnull=False,
+                            served_at__date__lte=F("investigation_deadline"),
+                        ),
+                        distinct=True,
+                    ),
+                    currently_overdue=Count(
+                        "pk",
+                        filter=Q(investigation_deadline__lt=today)
+                        & ~Q(status__in=resolved_statuses),
+                        distinct=True,
+                    ),
+                )
+                .order_by("tasked_battalion__name")
+            )
+            for row in battalion_rows:
+                total_resolved = row["resolved_total"]
                 breakdown.append({
-                    "battalion": bn.name,
-                    "total_with_deadline": bn_qs.count(),
-                    "resolved_total":      bn_total_resolved,
-                    "resolved_on_time":    bn_on_time,
-                    "on_time_rate_pct":    round(bn_on_time / bn_total_resolved * 100, 1)
-                                           if bn_total_resolved else None,
-                    "currently_overdue":   bn_overdue,
+                    "battalion": row["tasked_battalion__name"],
+                    "total_with_deadline": row["total"],
+                    "resolved_total": total_resolved,
+                    "resolved_on_time": row["resolved_on_time"],
+                    "on_time_rate_pct": (
+                        round(row["resolved_on_time"] / total_resolved * 100, 1)
+                        if total_resolved else None
+                    ),
+                    "currently_overdue": row["currently_overdue"],
                 })
             result["by_battalion"] = breakdown
 
@@ -227,7 +254,24 @@ class CaseAnalyticsMixin:
     def rta_statistics(self, request):
         today = timezone.localdate()
         period = request.query_params.get("period") or "range"
-        cases = self._rta_case_queryset(self.get_queryset()).select_related("source_incident", "offence_ref")
+        cases = (
+            self._rta_case_queryset(self.get_queryset())
+            .prefetch_related(None)
+            .select_related("source_incident", "offence_ref")
+            .annotate(
+                report_date=Coalesce(
+                    "date_of_offence",
+                    TruncDate(
+                        "source_incident__date_occurred",
+                        tzinfo=timezone.get_current_timezone(),
+                    ),
+                    TruncDate("created_at", tzinfo=timezone.get_current_timezone()),
+                    output_field=DateField(),
+                )
+            )
+            .annotate(_rta_classification=self._rta_classification_expression())
+            .annotate(type_key=self._rta_type_key_expression())
+        )
 
         if period == "as_at":
             as_at = self._parse_statistics_date(request.query_params.get("as_at"), today, "as_at")
@@ -248,6 +292,11 @@ class CaseAnalyticsMixin:
                 "date_to": date_to.isoformat(),
             }
 
+        if date_from:
+            cases = cases.filter(report_date__gte=date_from)
+        if date_to:
+            cases = cases.filter(report_date__lte=date_to)
+
         grouped = {
             key: {"key": key, "label": label, "reported": 0, "yankee": 0, "xray": 0}
             for key, label in RTA_STAT_TYPES
@@ -260,14 +309,9 @@ class CaseAnalyticsMixin:
             "xray": 0,
         }
 
-        for case in cases:
-            report_date = self._rta_case_report_date(case)
-            if date_from and (not report_date or report_date < date_from):
-                continue
-            if date_to and (not report_date or report_date > date_to):
-                continue
-
-            type_key = self._rta_case_type_key(case)
+        reported_by_type = cases.values("type_key").annotate(reported=Count("pk", distinct=True))
+        for item in reported_by_type:
+            type_key = item["type_key"]
             bucket = grouped.setdefault(type_key, {
                 "key": type_key,
                 "label": type_key.replace("_", " ").title(),
@@ -275,8 +319,32 @@ class CaseAnalyticsMixin:
                 "yankee": 0,
                 "xray": 0,
             })
-            counts = self._rta_case_casualty_counts(case, type_key)
-            bucket["reported"] += 1
+            bucket["reported"] = item["reported"]
+
+        casualty_rows = cases.values_list(
+            "pk",
+            "type_key",
+            "source_incident__rta_casualties",
+            "source_incident__injuries",
+            "source_incident__description",
+            "description",
+        )
+        for (
+            _case_id,
+            type_key,
+            casualties,
+            injuries,
+            incident_description,
+            description,
+        ) in casualty_rows.iterator(chunk_size=500):
+            bucket = grouped[type_key]
+            counts = self._rta_case_casualty_counts(
+                type_key,
+                casualties,
+                injuries,
+                incident_description,
+                description,
+            )
             bucket["yankee"] += counts["yankee"]
             bucket["xray"] += counts["xray"]
 

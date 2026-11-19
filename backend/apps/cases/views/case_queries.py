@@ -1,4 +1,6 @@
 from ._shared import *
+from django.db.models import Case as ConditionalCase, CharField, Q, Value, When
+from django.db.models.functions import Coalesce, Concat, Lower, Replace
 
 
 class CaseQueriesMixin:
@@ -43,10 +45,11 @@ class CaseQueriesMixin:
                 | Q(source_incident__incident_type__iexact=offence)
             )
 
-        date_from = self._parse_case_list_date("date_from") or self._parse_case_list_date("created_from")
-        date_to = self._parse_case_list_date("date_to") or self._parse_case_list_date("created_to")
-        if date_from or date_to:
-            queryset = queryset.filter(self._case_date_range_q(date_from, date_to))
+        if getattr(self, "action", None) != "rta_statistics":
+            date_from = self._parse_case_list_date("date_from") or self._parse_case_list_date("created_from")
+            date_to = self._parse_case_list_date("date_to") or self._parse_case_list_date("created_to")
+            if date_from or date_to:
+                queryset = queryset.filter(self._case_date_range_q(date_from, date_to))
 
         return queryset
 
@@ -95,13 +98,6 @@ class CaseQueriesMixin:
         ).distinct()
 
     @staticmethod
-    def _case_source_incident(case):
-        try:
-            return case.source_incident
-        except Exception:
-            return None
-
-    @staticmethod
     def _parse_statistics_date(value, fallback, field_name):
         if not value:
             return fallback
@@ -110,39 +106,43 @@ class CaseQueriesMixin:
         except ValueError as exc:
             raise ValidationError({field_name: "Use YYYY-MM-DD format."}) from exc
 
-    def _rta_case_report_date(self, case):
-        if case.date_of_offence:
-            return case.date_of_offence
-        incident = self._case_source_incident(case)
-        if incident and incident.date_occurred:
-            return timezone.localtime(incident.date_occurred).date()
-        if case.created_at:
-            return timezone.localtime(case.created_at).date()
-        return None
+    @staticmethod
+    def _rta_classification_expression():
+        empty_text = Value("", output_field=CharField())
+        text = Concat(
+            Coalesce("source_incident__incident_type", empty_text, output_field=CharField()),
+            Value(" "),
+            Coalesce("offence", empty_text, output_field=CharField()),
+            Value(" "),
+            Coalesce("offence_ref__name", empty_text, output_field=CharField()),
+            Value(" "),
+            Coalesce("title", empty_text, output_field=CharField()),
+            output_field=CharField(),
+        )
+        return Lower(Replace(text, Value("-"), Value(" ")))
 
-    def _rta_case_type_key(self, case):
-        incident = self._case_source_incident(case)
-        text = " ".join(
-            str(value or "")
-            for value in [
-                getattr(incident, "incident_type", ""),
-                case.offence,
-                getattr(case.offence_ref, "name", ""),
-                case.title,
-            ]
-        ).lower()
-        normalized = text.replace("-", " ")
-        if "non injury" in normalized or "noninjury" in normalized:
-            return "non_injury"
-        if "self involved" in normalized:
-            return "self_involved"
-        if "hit and run" in normalized or "hit run" in normalized:
-            return "hit_and_run"
-        if "fatal" in normalized:
-            return "fatal"
-        if "injury" in normalized:
-            return "injury"
-        return "not_recorded"
+    @staticmethod
+    def _rta_type_key_expression():
+        return ConditionalCase(
+            When(
+                Q(_rta_classification__icontains="non injury")
+                | Q(_rta_classification__icontains="noninjury"),
+                then=Value("non_injury"),
+            ),
+            When(
+                _rta_classification__icontains="self involved",
+                then=Value("self_involved"),
+            ),
+            When(
+                Q(_rta_classification__icontains="hit and run")
+                | Q(_rta_classification__icontains="hit run"),
+                then=Value("hit_and_run"),
+            ),
+            When(_rta_classification__icontains="fatal", then=Value("fatal")),
+            When(_rta_classification__icontains="injury", then=Value("injury")),
+            default=Value("not_recorded"),
+            output_field=CharField(),
+        )
 
     @staticmethod
     def _rta_count_from_text(text, label):
@@ -155,9 +155,9 @@ class CaseQueriesMixin:
             return 0
         return int(value)
 
-    def _rta_case_casualty_counts(self, case, type_key):
-        incident = self._case_source_incident(case)
-        casualties = getattr(incident, "rta_casualties", None) if incident else None
+    def _rta_case_casualty_counts(
+        self, type_key, casualties, incident_injuries, incident_description, case_description
+    ):
         if isinstance(casualties, list) and casualties:
             xray = sum(1 for casualty in casualties if casualty.get("casualty_status") == "dead")
             return {
@@ -166,9 +166,9 @@ class CaseQueriesMixin:
             }
 
         text_parts = [
-            getattr(incident, "injuries", "") if incident else "",
-            getattr(incident, "description", "") if incident else "",
-            case.description,
+            incident_injuries,
+            incident_description,
+            case_description,
         ]
         text = "\n".join(str(part or "") for part in text_parts)
         yankee = self._rta_count_from_text(text, "yankee")
