@@ -1,3 +1,4 @@
+import ipaddress
 from pathlib import Path
 from decouple import config
 from django.core.exceptions import ImproperlyConfigured
@@ -40,8 +41,19 @@ CASE_UPLOAD_CLAMAV_TIMEOUT = config("CASE_UPLOAD_CLAMAV_TIMEOUT", default=10, ca
 DEBUG = _as_bool(config("DEBUG", default=False), default=False)
 _allowed_hosts = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
 ALLOWED_HOSTS = ["*"] if DEBUG else _allowed_hosts
-USE_X_FORWARDED_HOST = _as_bool(config("USE_X_FORWARDED_HOST", default=True))
+USE_X_FORWARDED_HOST = _as_bool(config("USE_X_FORWARDED_HOST", default=False))
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+_trusted_proxy_ips = config("TRUSTED_PROXY_IPS", default="")
+try:
+    TRUSTED_PROXY_NETWORKS = tuple(
+        ipaddress.ip_network(value.strip(), strict=False)
+        for value in _trusted_proxy_ips.split(",")
+        if value.strip()
+    )
+except ValueError as exc:
+    raise ImproperlyConfigured(
+        "TRUSTED_PROXY_IPS must contain only valid IP addresses or CIDR networks."
+    ) from exc
 SECURE_SSL_REDIRECT = not DEBUG
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
@@ -91,6 +103,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "apps.users.middleware.SuperuserAdminMFAMiddleware",
     "apps.audit.middleware.AuditLogMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -167,6 +180,10 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "mpims.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 25,
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": config("API_ANON_RATE", default="60/minute"),
+        "user": config("API_USER_RATE", default="600/minute"),
+    },
 }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
@@ -245,18 +262,78 @@ FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 
 # Asynchronous email and background jobs use the same Redis broker.
 CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
+API_THROTTLING_ENABLED = _as_bool(
+    config("API_THROTTLING_ENABLED", default=not DEBUG),
+    default=not DEBUG,
+)
+if API_THROTTLING_ENABLED:
+    REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ]
+    CACHE_URL = config("CACHE_URL", default="redis://localhost:6379/1")
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+            "KEY_PREFIX": "mpims",
+            "TIMEOUT": 300,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "mpims-development",
+        }
+    }
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_PUBLISH_RETRY = True
+CELERY_TASK_ALWAYS_EAGER = DEBUG and _as_bool(
+    config("CELERY_TASK_ALWAYS_EAGER", default=True),
+    default=True,
+)
+CELERY_TASK_EAGER_PROPAGATES = CELERY_TASK_ALWAYS_EAGER
 CELERY_IMPORTS = ("apps.common.tasks",)
 
-# Google Authenticator / TOTP MFA is mandatory for every account and role.
+if not DEBUG:
+    if not API_THROTTLING_ENABLED:
+        raise ImproperlyConfigured(
+            "API_THROTTLING_ENABLED must be True outside DEBUG mode."
+        )
+    if not CASE_UPLOAD_CLAMAV_ENABLED:
+        raise ImproperlyConfigured(
+            "CASE_UPLOAD_CLAMAV_ENABLED must be True outside DEBUG mode."
+        )
+    if EMAIL_BACKEND == "django.core.mail.backends.console.EmailBackend":
+        raise ImproperlyConfigured(
+            "Configure a production email backend; console email is not permitted."
+        )
+    if (
+        EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend"
+        and not (EMAIL_HOST and EMAIL_HOST_USER and EMAIL_HOST_PASSWORD)
+    ):
+        raise ImproperlyConfigured(
+            "Production SMTP requires EMAIL_HOST, EMAIL_HOST_USER, and EMAIL_HOST_PASSWORD."
+        )
+    if not FRONTEND_URL.lower().startswith("https://"):
+        raise ImproperlyConfigured("FRONTEND_URL must use HTTPS outside DEBUG mode.")
+
+# TOTP is mandatory for standard accounts; superusers use email OTP.
 TOTP_REQUIRED = True
 TOTP_ISSUER_NAME = config("TOTP_ISSUER_NAME", default="MPIMS")
 TOTP_CODE_WINDOW = config("TOTP_CODE_WINDOW", default=1, cast=int)
 TOTP_SETUP_TOKEN_LIFETIME_MINUTES = config("TOTP_SETUP_TOKEN_LIFETIME_MINUTES", default=30, cast=int)
 TOTP_LOCKOUT_MINUTES = config("TOTP_LOCKOUT_MINUTES", default=15, cast=int)
+EMAIL_OTP_CODE_LENGTH = config("EMAIL_OTP_CODE_LENGTH", default=6, cast=int)
+EMAIL_OTP_LIFETIME_MINUTES = config("EMAIL_OTP_LIFETIME_MINUTES", default=10, cast=int)
+EMAIL_OTP_RESEND_COOLDOWN_SECONDS = config(
+    "EMAIL_OTP_RESEND_COOLDOWN_SECONDS",
+    default=60,
+    cast=int,
+)
 
 # Case reminder scheduler. Keep it off by default in local DEBUG runs so a
 # stopped database does not block the development server reload cycle.

@@ -5,6 +5,8 @@ import time
 from django.utils import timezone
 from django.urls import resolve
 
+from apps.common.client_ip import get_client_ip
+
 from .models import AuditLog
 
 
@@ -88,7 +90,7 @@ class AuditLogMiddleware:
     @staticmethod
     def _should_log(request):
         path = request.path or ""
-        if path.startswith(("/static/", "/media/")):
+        if path.startswith(("/static/", "/media/")) or path == "/api/health/ready/":
             return False
         return path.startswith("/api/") or path.startswith("/admin/")
 
@@ -311,10 +313,7 @@ class AuditLogMiddleware:
 
     @staticmethod
     def _client_ip(request):
-        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip() or None
-        return request.META.get("REMOTE_ADDR") or None
+        return get_client_ip(request)
 
     @staticmethod
     def _description(

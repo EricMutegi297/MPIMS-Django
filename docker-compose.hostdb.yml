@@ -3,11 +3,15 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     network_mode: host
-    command: redis-server --port 6380 --bind 127.0.0.1 --protected-mode yes --appendonly yes
+    command: ["sh", "-c", "exec redis-server --port 6380 --bind 127.0.0.1 --protected-mode yes --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in the production Compose environment}
     volumes:
       - redis_data:/data
+    mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
+    cpus: ${REDIS_CPU_LIMIT:-0.5}
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" -p 6380 ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -19,8 +23,10 @@ services:
     network_mode: host
     volumes:
       - ./backend/media:/app/media
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-1g}
+    cpus: ${BACKEND_CPU_LIMIT:-1.0}
     env_file:
-      - ./backend/.env
+      - ${MPIMS_ENV_FILE:?Set MPIMS_ENV_FILE to a protected external production environment file}
     environment:
       DB_HOST: 127.0.0.1
       DB_PORT: 5432
@@ -31,8 +37,19 @@ services:
       CSRF_TRUSTED_ORIGINS: https://marshal.mod.go.ke
       DB_SSLMODE: ${DB_SSLMODE:-verify-full}
       DB_SSLROOTCERT: ${DB_SSLROOTCERT:-}
-      CELERY_BROKER_URL: redis://127.0.0.1:6380/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in the production Compose environment}@127.0.0.1:6380/0
+      CACHE_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in the production Compose environment}@127.0.0.1:6380/1
       SECURE_HSTS_SECONDS: 31536000
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/api/health/ready/', headers={'X-Forwarded-Proto': 'https'}), timeout=4)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     depends_on:
       redis:
         condition: service_healthy
@@ -42,17 +59,28 @@ services:
     restart: unless-stopped
     command: ["celery", "-A", "mpims", "worker", "--loglevel=INFO", "--concurrency=${CELERY_WORKER_CONCURRENCY:-2}"]
     network_mode: host
+    mem_limit: ${WORKER_MEMORY_LIMIT:-1g}
+    cpus: ${WORKER_CPU_LIMIT:-1.0}
     env_file:
-      - ./backend/.env
+      - ${MPIMS_ENV_FILE:?Set MPIMS_ENV_FILE to a protected external production environment file}
     environment:
       DB_HOST: 127.0.0.1
       DB_PORT: 5432
       DEBUG: "False"
       DB_SSLMODE: ${DB_SSLMODE:-verify-full}
       DB_SSLROOTCERT: ${DB_SSLROOTCERT:-}
-      CELERY_BROKER_URL: redis://127.0.0.1:6380/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in the production Compose environment}@127.0.0.1:6380/0
+      CACHE_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in the production Compose environment}@127.0.0.1:6380/1
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A mpims inspect ping --timeout=5 | grep -q pong"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     depends_on:
       redis:
+        condition: service_healthy
+      backend:
         condition: service_healthy
 
   frontend:
@@ -62,22 +90,27 @@ services:
         VITE_API_URL: https://marshal.mod.go.ke
         VITE_WS_URL: https://marshal.mod.go.ke
     restart: unless-stopped
+    mem_limit: ${FRONTEND_MEMORY_LIMIT:-256m}
+    cpus: ${FRONTEND_CPU_LIMIT:-0.5}
     ports:
       - "127.0.0.1:3000:80"
   
   realtime:
     build: ./realtime
     restart: unless-stopped
+    mem_limit: ${REALTIME_MEMORY_LIMIT:-256m}
+    cpus: ${REALTIME_CPU_LIMIT:-0.5}
     network_mode: host
     env_file:
-      - ./realtime/.env
+      - ${REALTIME_ENV_FILE:?Set REALTIME_ENV_FILE to a protected external realtime environment file}
     environment:
       DJANGO_API_URL: http://127.0.0.1:8000
       CORS_ORIGIN: https://marshal.mod.go.ke
       HOST: 127.0.0.1
       PORT: 4000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   redis_data:

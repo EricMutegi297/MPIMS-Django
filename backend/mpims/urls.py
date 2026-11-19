@@ -4,8 +4,10 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.http import Http404
 import re
+from .health import readiness_check
 
 urlpatterns = [
+    path("api/health/ready/", readiness_check, name="readiness-check"),
     path("admin/", admin.site.urls),
     path("api/auth/", include("apps.users.urls")),
     path("api/cases/", include("apps.cases.urls")),

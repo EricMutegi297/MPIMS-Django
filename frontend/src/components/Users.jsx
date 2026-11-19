@@ -1234,9 +1234,9 @@ export default function Users({ user }) {
                 </button>
               </div>
               <div className="col-span-2 rounded-lg border border-blue-900 bg-blue-950/40 p-3">
-                <p className="text-sm font-semibold text-blue-200">Authenticator MFA is mandatory</p>
+                <p className="text-sm font-semibold text-blue-200">MFA is mandatory</p>
                 <p className="mt-1 text-xs text-blue-100/70">
-                  Every MPIMS account must configure Google Authenticator before accessing operational data.
+                  Standard accounts use Google Authenticator. Superusers receive a one-time verification code by email.
                 </p>
               </div>
             </div>

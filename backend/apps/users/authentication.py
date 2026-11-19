@@ -28,6 +28,10 @@ class MPIMSJWTAuthentication(JWTAuthentication):
             or validated_token.get("credential_version") != user_credential_version(user)
         ):
             raise AuthenticationFailed("Session has been revoked. Sign in again.")
+        if user.is_superuser:
+            if validated_token.get("mfa_method") != "email_otp":
+                raise PermissionDenied("Email verification is required before accessing MPIMS.")
+            return user, validated_token
         if validated_token.get("mfa_pending") and not self._path_allowed(request.path):
             raise PermissionDenied("Authenticator setup or verification is required before accessing MPIMS.")
         if not self._user_has_confirmed_totp(user) and not self._path_allowed(request.path):
@@ -54,6 +58,10 @@ class MPIMSSessionAuthentication(SessionAuthentication):
             return None
 
         user, auth = result
+        if user.is_superuser:
+            if request._request.session.get("mfa_method") != "email_otp":
+                raise PermissionDenied("Email verification is required before accessing MPIMS.")
+            return user, auth
         if (
             not MPIMSJWTAuthentication._user_has_confirmed_totp(user)
             and not MPIMSJWTAuthentication._path_allowed(request.path)

@@ -1,4 +1,6 @@
-from django.test import RequestFactory, SimpleTestCase
+import ipaddress
+
+from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.utils import timezone
 
 from .middleware import AuditLogMiddleware
@@ -26,6 +28,27 @@ class AuditLogImmutabilityTests(SimpleTestCase):
 
 
 class AuditLogPrivacyTests(SimpleTestCase):
+    def test_client_ip_ignores_forwarded_header_from_untrusted_peer(self):
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="203.0.113.10",
+            HTTP_X_FORWARDED_FOR="198.51.100.20",
+        )
+
+        with override_settings(TRUSTED_PROXY_NETWORKS=()):
+            self.assertEqual(AuditLogMiddleware._client_ip(request), "203.0.113.10")
+
+    def test_client_ip_uses_forwarded_chain_from_trusted_proxy(self):
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="10.0.0.3",
+            HTTP_X_FORWARDED_FOR="198.51.100.20, 10.0.0.2",
+        )
+        trusted_network = ipaddress.ip_network("10.0.0.0/8")
+
+        with override_settings(TRUSTED_PROXY_NETWORKS=(trusted_network,)):
+            self.assertEqual(AuditLogMiddleware._client_ip(request), "198.51.100.20")
+
     def test_sensitive_query_parameters_are_redacted(self):
         request = RequestFactory().get(
             "/api/cases/?service_number=AB1234&search=accused+name&status=open"

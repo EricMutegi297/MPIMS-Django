@@ -2,6 +2,7 @@ import re
 from unittest.mock import patch
 
 import pyotp
+from django.core import mail
 from django.contrib.auth.tokens import default_token_generator
 from django.test import override_settings
 from django.urls import reverse
@@ -13,7 +14,7 @@ from rest_framework.test import APITestCase
 from apps.formations.models import Battalion, Company, Detachment, Unit
 from apps.notifications.models import Notification
 
-from .models import LoginThrottle, TOTPDevice, User
+from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, User
 from .views import issue_auth_tokens
 
 
@@ -585,6 +586,163 @@ class MandatoryMfaPolicyTests(APITestCase):
         setup_status = self.client.get(reverse("totp-status"))
         self.assertEqual(setup_status.status_code, status.HTTP_200_OK)
         self.assertTrue(setup_status.data["required"])
+
+
+@override_settings(EMAIL_OTP_CODE_LENGTH=6, EMAIL_OTP_LIFETIME_MINUTES=10)
+class SuperuserEmailOTPTests(APITestCase):
+    def setUp(self):
+        self.login_url = reverse("login")
+        self.verify_url = reverse("email-otp-login-verify")
+        self.user = User.objects.create_superuser(
+            service_number="900001",
+            password="CorrectPass123!",
+            name="Superuser",
+            email="superuser@example.test",
+            must_change_password=False,
+        )
+
+    def begin_login(self, email="superuser@example.test"):
+        self.user.email = email
+        self.user.save(update_fields=["email"])
+        sent_codes = []
+
+        def capture_code(user, code):
+            sent_codes.append(code)
+            return True
+
+        with patch("apps.users.views.send_email_otp_login_code", side_effect=capture_code):
+            response = self.client.post(
+                self.login_url,
+                {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+                format="json",
+            )
+        return response, sent_codes
+
+    def test_superuser_login_sends_email_code_without_issuing_tokens(self):
+        response, sent_codes = self.begin_login()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["requiresEmailOtp"])
+        self.assertFalse(response.data["requiresTotp"])
+        self.assertFalse(response.data["totpSetupRequired"])
+        self.assertNotIn("access", response.data)
+        self.assertNotIn("refresh", response.data)
+        self.assertNotIn("user", response.data)
+        self.assertEqual(response.data["emailOtpChallenge"]["sent_to"], "su***r@example.test")
+        self.assertEqual(len(sent_codes), 1)
+        self.assertTrue(EmailOTPLoginChallenge.objects.filter(user=self.user).exists())
+        self.assertFalse(TOTPDevice.objects.filter(user=self.user).exists())
+
+    def test_superuser_with_totp_device_still_uses_email_code(self):
+        TOTPDevice.objects.create(user=self.user, secret=pyotp.random_base32(), confirmed=True)
+
+        response, _ = self.begin_login()
+
+        self.assertTrue(response.data["requiresEmailOtp"])
+        self.assertFalse(response.data["requiresTotp"])
+        self.assertNotIn("totpChallenge", response.data)
+
+    def test_superuser_otp_email_sends_are_rate_limited(self):
+        first_response, first_codes = self.begin_login()
+        second_response, second_codes = self.begin_login()
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(len(first_codes), 1)
+        self.assertEqual(second_codes, [])
+        self.assertEqual(EmailOTPLoginChallenge.objects.filter(user=self.user).count(), 1)
+
+    def test_email_code_verification_issues_access_and_refresh_tokens(self):
+        response, sent_codes = self.begin_login()
+        challenge_id = response.data["emailOtpChallenge"]["challenge_id"]
+
+        verified = self.client.post(
+            self.verify_url,
+            {"challenge_id": challenge_id, "code": sent_codes[0]},
+            format="json",
+        )
+
+        self.assertEqual(verified.status_code, status.HTTP_200_OK)
+        self.assertIn("access", verified.data)
+        self.assertIn("refresh", verified.data)
+        self.assertIsNotNone(
+            EmailOTPLoginChallenge.objects.get(challenge_id=challenge_id).consumed_at
+        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {verified.data['access']}")
+        self.assertEqual(self.client.get(reverse("me")).status_code, status.HTTP_200_OK)
+
+        refreshed = self.client.post(
+            reverse("token-refresh"),
+            {"refresh": verified.data["refresh"]},
+            format="json",
+        )
+        self.assertEqual(refreshed.status_code, status.HTTP_200_OK)
+
+    def test_superuser_without_email_cannot_fall_back_to_totp_or_password_only(self):
+        self.user.email = ""
+        self.user.save(update_fields=["email"])
+
+        response = self.client.post(
+            self.login_url,
+            {"service_number": self.user.service_number, "password": "CorrectPass123!"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn("access", response.data)
+        self.assertFalse(EmailOTPLoginChallenge.objects.filter(user=self.user).exists())
+
+    def test_unverified_superuser_token_cannot_access_protected_endpoints(self):
+        tokens = issue_auth_tokens(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+
+        response = self.client.get(reverse("case-list"))
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_login_requires_email_code_and_marks_verified_session(self):
+        sent_codes = []
+
+        def capture_code(user, code):
+            sent_codes.append(code)
+            return True
+
+        with patch("apps.users.admin.send_email_otp_login_code", side_effect=capture_code):
+            first_response = self.client.post(
+                reverse("admin:login"),
+                {
+                    "username": self.user.service_number,
+                    "password": "CorrectPass123!",
+                },
+            )
+            self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+            self.assertEqual(len(sent_codes), 1)
+
+            second_response = self.client.post(
+                reverse("admin:login"),
+                {
+                    "username": self.user.service_number,
+                    "password": "CorrectPass123!",
+                    "email_otp_code": sent_codes[0],
+                },
+            )
+
+        self.assertEqual(second_response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(self.client.session.get("mfa_method"), "email_otp")
+        self.assertEqual(self.client.get(reverse("me")).status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            EmailOTPLoginChallenge.objects.filter(
+                user=self.user,
+                consumed_at__isnull=False,
+            ).exists()
+        )
+
+        self.client.logout()
+        self.client.force_login(self.user)
+        blocked = self.client.get(reverse("admin:index"))
+        self.assertEqual(blocked.status_code, status.HTTP_302_FOUND)
+        self.assertTrue(blocked.url.endswith("/admin/login/"))
+        self.assertNotIn("_auth_user_id", self.client.session)
 
 
 @override_settings(

@@ -25,6 +25,8 @@ class MPIMSTokenRefreshSerializer(TokenRefreshSerializer):
             or refresh.get("credential_version") != user_credential_version(user)
         ):
             raise InvalidToken("Session has been revoked. Sign in again.")
+        if user.is_superuser and refresh.get("mfa_method") != "email_otp":
+            raise InvalidToken("Email verification is required. Sign in again.")
         return super().validate(attrs)
 
 

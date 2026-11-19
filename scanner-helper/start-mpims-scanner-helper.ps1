@@ -1,22 +1,40 @@
 param(
-    [int]$Port = 41527
+    [int]$Port = 41527,
+    [string[]]$AllowedOrigins = @(
+        "https://marshal.mod.go.ke",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    )
 )
 
 $ErrorActionPreference = "Stop"
 $prefix = "http://127.0.0.1:$Port/"
 $jpegFormat = "{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}"
 
+function Test-AllowedOrigin {
+    param([string]$Origin)
+    foreach ($allowedOrigin in $AllowedOrigins) {
+        if ($Origin -ceq $allowedOrigin) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Add-CorsHeaders {
-    param($Response)
-    $Response.Headers["Access-Control-Allow-Origin"] = "*"
+    param($Response, [string]$Origin)
+    $Response.Headers["Access-Control-Allow-Origin"] = $Origin
     $Response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    $Response.Headers["Access-Control-Allow-Headers"] = "Content-Type"
+    $Response.Headers["Access-Control-Allow-Headers"] = "Content-Type, X-MPIMS-Scanner-Token"
     $Response.Headers["Access-Control-Allow-Private-Network"] = "true"
+    $Response.Headers["Vary"] = "Origin"
 }
 
 function Write-TextResponse {
-    param($Response, [int]$StatusCode, [string]$Message)
-    Add-CorsHeaders $Response
+    param($Response, [int]$StatusCode, [string]$Message, [string]$Origin = "")
+    if ($Origin) {
+        Add-CorsHeaders $Response $Origin
+    }
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Message)
     $Response.StatusCode = $StatusCode
     $Response.ContentType = "text/plain; charset=utf-8"
@@ -69,9 +87,20 @@ function Scan-Document {
 
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($prefix)
-$listener.Start()
 
+$tokenBytes = New-Object byte[] 32
+$randomNumberGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $randomNumberGenerator.GetBytes($tokenBytes)
+} finally {
+    $randomNumberGenerator.Dispose()
+}
+$scannerToken = [BitConverter]::ToString($tokenBytes).Replace("-", "").ToLowerInvariant()
+
+$listener.Start()
 Write-Host "MPIMS scanner helper listening on $prefix"
+Write-Host "Allowed browser origins: $($AllowedOrigins -join ', ')"
+Write-Host "Temporary scanner access token (enter it in MPIMS when prompted): $scannerToken" -ForegroundColor Yellow
 Write-Host "Leave this window open while scanning from MPIMS. Press Ctrl+C to stop."
 
 try {
@@ -79,16 +108,45 @@ try {
         $context = $listener.GetContext()
         $request = $context.Request
         $response = $context.Response
-        Add-CorsHeaders $response
+        $origin = $request.Headers["Origin"]
+
+        if (-not (Test-AllowedOrigin $origin)) {
+            Write-TextResponse $response 403 "Origin is not allowed."
+            continue
+        }
+
+        Add-CorsHeaders $response $origin
 
         if ($request.HttpMethod -eq "OPTIONS") {
+            $requestedMethod = $request.Headers["Access-Control-Request-Method"]
+            $requestedHeaders = $request.Headers["Access-Control-Request-Headers"] -split ","
+            $requestedHeaders = @(
+                $requestedHeaders |
+                    ForEach-Object { $_.Trim().ToLowerInvariant() } |
+                    Where-Object { $_ }
+            )
+            $unsupportedHeaders = @(
+                $requestedHeaders | Where-Object {
+                    $_ -notin @("content-type", "x-mpims-scanner-token")
+                }
+            )
+            if ($requestedMethod -cne "POST" -or $unsupportedHeaders.Count -gt 0) {
+                Write-TextResponse $response 403 "Preflight request is not allowed." $origin
+                continue
+            }
             $response.StatusCode = 204
             $response.Close()
             continue
         }
 
         if ($request.HttpMethod -ne "POST" -or $request.Url.AbsolutePath -ne "/scan") {
-            Write-TextResponse $response 404 "Use POST /scan."
+            Write-TextResponse $response 404 "Use POST /scan." $origin
+            continue
+        }
+
+        $providedToken = $request.Headers["X-MPIMS-Scanner-Token"]
+        if ([string]::IsNullOrWhiteSpace($providedToken) -or $providedToken -cne $scannerToken) {
+            Write-TextResponse $response 401 "A valid scanner token is required." $origin
             continue
         }
 
@@ -101,7 +159,8 @@ try {
             $response.OutputStream.Write($bytes, 0, $bytes.Length)
             $response.Close()
         } catch {
-            Write-TextResponse $response 500 $_.Exception.Message
+            Write-Warning "Scanner request failed: $($_.Exception.Message)"
+            Write-TextResponse $response 500 "The scanner could not complete the request." $origin
         }
     }
 } finally {

@@ -1435,9 +1435,19 @@ function TextAutocompleteInput({ value, onChange, options = [], placeholder = "T
 }
 
 async function scanFromLocalScanner(documentType) {
+  const scannerToken = window.prompt(
+    "Enter the temporary scanner token shown in the scanner helper window.",
+  )?.trim();
+  if (!scannerToken) {
+    throw new Error("A scanner token is required.");
+  }
+
   const response = await fetch(SCANNER_HELPER_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-MPIMS-Scanner-Token": scannerToken,
+    },
     body: JSON.stringify({ document_type: documentType || "document" }),
   });
   if (!response.ok) {

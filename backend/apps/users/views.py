@@ -25,6 +25,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.client_ip import get_client_ip
 from apps.notifications.models import Notification
 
 from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
@@ -156,11 +157,11 @@ def email_delivery_mode():
 
 
 def totp_required_for_user(user):
-    return bool(user)
+    return bool(user and not user.is_superuser)
 
 
 def email_otp_required_for_user(user):
-    return False
+    return bool(user and user.is_superuser)
 
 
 def email_otp_lifetime():
@@ -173,6 +174,15 @@ def email_otp_code_length():
         return min(8, max(6, int(getattr(settings, "EMAIL_OTP_CODE_LENGTH", 6))))
     except (TypeError, ValueError):
         return 6
+
+
+def email_otp_resend_seconds_remaining(user):
+    cooldown = max(30, positive_int_setting("EMAIL_OTP_RESEND_COOLDOWN_SECONDS", 60))
+    recent_challenge = EmailOTPLoginChallenge.objects.filter(user=user).order_by("-created_at").first()
+    if not recent_challenge:
+        return 0
+    elapsed = (timezone.now() - recent_challenge.created_at).total_seconds()
+    return max(0, cooldown - int(elapsed))
 
 
 def totp_issuer_name():
@@ -221,10 +231,12 @@ def user_has_confirmed_totp(user):
     return get_confirmed_totp_device(user) is not None
 
 
-def issue_auth_tokens(user, *, mfa_pending=False):
+def issue_auth_tokens(user, *, mfa_pending=False, mfa_method=None):
     refresh = RefreshToken.for_user(user)
     refresh["auth_version"] = user.auth_token_version
     refresh["credential_version"] = user_credential_version(user)
+    if mfa_method:
+        refresh["mfa_method"] = mfa_method
     if mfa_pending:
         refresh["mfa_pending"] = True
         refresh["mfa_reason"] = "totp_setup"
@@ -232,6 +244,8 @@ def issue_auth_tokens(user, *, mfa_pending=False):
         access = refresh.access_token
         access["mfa_pending"] = True
         access["mfa_reason"] = "totp_setup"
+        if mfa_method:
+            access["mfa_method"] = mfa_method
         access.set_exp(lifetime=totp_setup_lifetime())
         return {
             "access": str(access),
@@ -243,7 +257,7 @@ def issue_auth_tokens(user, *, mfa_pending=False):
     }
 
 
-def authenticated_payload(user, *, mfa_pending=False):
+def authenticated_payload(user, *, mfa_pending=False, mfa_method=None):
     setup_required = totp_required_for_user(user) and not user_has_confirmed_totp(user)
     return {
         "user": UserSerializer(user).data,
@@ -251,15 +265,12 @@ def authenticated_payload(user, *, mfa_pending=False):
         "requiresTotp": False,
         "requiresEmailOtp": False,
         "totpSetupRequired": setup_required,
-        **issue_auth_tokens(user, mfa_pending=mfa_pending),
+        **issue_auth_tokens(user, mfa_pending=mfa_pending, mfa_method=mfa_method),
     }
 
 
 def client_ip(request):
-    forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip() or None
-    return request.META.get("REMOTE_ADDR") or None
+    return get_client_ip(request)
 
 
 def positive_int_setting(name, default):
@@ -707,7 +718,6 @@ def create_email_otp_login_challenge(user):
     EmailOTPLoginChallenge.objects.filter(
         user=user,
         consumed_at__isnull=True,
-        expires_at__lte=timezone.now(),
     ).delete()
     code = f"{secrets.randbelow(10 ** email_otp_code_length()):0{email_otp_code_length()}d}"
     challenge_id = secrets.token_urlsafe(32)
@@ -880,6 +890,39 @@ def login_view(request):
     user = serializer.validated_data["user"]
     reset_login_failures(service_number, ip_address)
 
+    if email_otp_required_for_user(user):
+        if not user.email:
+            return Response(
+                {"detail": "An email address is required for superuser email verification. Contact an administrator."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        retry_after = email_otp_resend_seconds_remaining(user)
+        if retry_after:
+            return Response(
+                {
+                    "detail": "A verification code was sent recently. Please wait before requesting another.",
+                    "retry_after_seconds": retry_after,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        challenge, code = create_email_otp_login_challenge(user)
+        if not send_email_otp_login_code(user, code):
+            challenge.delete()
+            return Response(
+                {"detail": "Could not send the email verification code. Please try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({
+            "requiresTotp": False,
+            "requiresEmailOtp": True,
+            "totpSetupRequired": False,
+            "emailOtpChallenge": {
+                "challenge_id": challenge.challenge_id,
+                "expires_at": challenge.expires_at,
+                "sent_to": masked_email(user.email),
+            },
+        })
+
     totp_required = totp_required_for_user(user)
     device = get_confirmed_totp_device(user)
 
@@ -951,9 +994,12 @@ def change_password(request):
     request.user.save(update_fields=["password", "must_change_password"])
     revoke_user_sessions(request.user)
     mfa_pending = totp_required_for_user(request.user) and not user_has_confirmed_totp(request.user)
+    mfa_method = request.auth.get("mfa_method") if request.auth else None
+    if request.user.is_superuser and not mfa_method:
+        mfa_method = "email_otp"
     return Response({
         "detail": "Password changed successfully.",
-        **authenticated_payload(request.user, mfa_pending=mfa_pending),
+        **authenticated_payload(request.user, mfa_pending=mfa_pending, mfa_method=mfa_method),
     })
 
 
@@ -1023,6 +1069,7 @@ def totp_status(request):
         "required": totp_required_for_user(request.user),
         "mfa_exempt": False,
         "email_otp_enabled": False,
+        "email_otp_required": email_otp_required_for_user(request.user),
         "configured": bool(device and device.confirmed),
         "pending": bool(device and not device.confirmed),
         "locked_until": device.locked_until if device else None,
@@ -1122,7 +1169,7 @@ def email_otp_login_verify(request):
         return Response({"detail": "Email verification expired. Please sign in again."}, status=status.HTTP_400_BAD_REQUEST)
 
     user = challenge.user
-    if not email_otp_required_for_user(user):
+    if not user.is_active or not email_otp_required_for_user(user):
         return Response({"detail": "Email OTP is not enabled for this account."}, status=status.HTTP_400_BAD_REQUEST)
 
     code = normalize_email_otp_code(request.data.get("code"))
@@ -1135,7 +1182,7 @@ def email_otp_login_verify(request):
     challenge.consume()
     return Response({
         "detail": "Email verification code accepted.",
-        **authenticated_payload(user, mfa_pending=False),
+        **authenticated_payload(user, mfa_pending=False, mfa_method="email_otp"),
     })
 
 

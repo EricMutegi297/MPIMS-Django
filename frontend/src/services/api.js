@@ -16,7 +16,7 @@ function storeAuthPayload(data = {}) {
   if (data.refresh) {
     sessionStorage.setItem("refresh_token", data.refresh);
   }
-  if (data.user) {
+  if (data.user && data.access) {
     sessionStorage.setItem(USER_CACHE_KEY, JSON.stringify(data.user));
   }
 }

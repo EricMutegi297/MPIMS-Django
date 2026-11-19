@@ -3,20 +3,46 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.admin.forms import AdminAuthenticationForm
 from django import forms
 from django.core.exceptions import ValidationError
+import secrets
 from .tokens import revoke_user_sessions
 from .models import EmailOTPLoginChallenge, LoginThrottle, TOTPDevice, TOTPLoginChallenge, User
-from .views import verify_totp_device
+from .views import (
+    email_otp_code_length,
+    email_otp_hash,
+    email_otp_resend_seconds_remaining,
+    get_usable_email_otp_challenge,
+    masked_email,
+    normalize_email_otp_code,
+    send_email_otp_login_code,
+    create_email_otp_login_challenge,
+    verify_totp_device,
+)
 
 
-class TOTPAdminAuthenticationForm(AdminAuthenticationForm):
+ADMIN_EMAIL_OTP_SESSION_KEY = "admin_email_otp_challenge"
+
+
+class MFAAdminAuthenticationForm(AdminAuthenticationForm):
     totp_code = forms.CharField(
         label="Google Authenticator code",
         max_length=6,
+        required=False,
         widget=forms.PasswordInput,
+    )
+    email_otp_code = forms.CharField(
+        label="Email verification code",
+        max_length=8,
+        required=False,
+        widget=forms.PasswordInput,
+        help_text="Superusers: enter the code sent to your registered email address.",
     )
 
     def confirm_login_allowed(self, user):
         super().confirm_login_allowed(user)
+        if user.is_superuser:
+            self._confirm_email_otp(user)
+            return
+
         try:
             device = user.totp_device
         except TOTPDevice.DoesNotExist as exc:
@@ -27,8 +53,52 @@ class TOTPAdminAuthenticationForm(AdminAuthenticationForm):
         if not valid:
             raise ValidationError(message)
 
+    def _confirm_email_otp(self, user):
+        session_challenge = self.request.session.get(ADMIN_EMAIL_OTP_SESSION_KEY, {})
+        challenge = None
+        if session_challenge.get("user_id") == user.pk:
+            challenge = get_usable_email_otp_challenge(session_challenge.get("challenge_id"))
 
-admin.site.login_form = TOTPAdminAuthenticationForm
+        if challenge and challenge.user_id != user.pk:
+            challenge = None
+        if not user.email:
+            self.request.session.pop(ADMIN_EMAIL_OTP_SESSION_KEY, None)
+            raise ValidationError("A registered email address is required for superuser sign-in.")
+
+        code = normalize_email_otp_code(self.cleaned_data.get("email_otp_code"))
+        if not challenge:
+            retry_after = email_otp_resend_seconds_remaining(user)
+            if retry_after:
+                raise ValidationError(
+                    f"A verification code was sent recently. Try again in {retry_after} seconds."
+                )
+            challenge, generated_code = create_email_otp_login_challenge(user)
+            if not send_email_otp_login_code(user, generated_code):
+                challenge.delete()
+                self.request.session.pop(ADMIN_EMAIL_OTP_SESSION_KEY, None)
+                raise ValidationError("Could not send the email verification code. Please try again later.")
+            self.request.session[ADMIN_EMAIL_OTP_SESSION_KEY] = {
+                "user_id": user.pk,
+                "challenge_id": challenge.challenge_id,
+            }
+            raise ValidationError(
+                f"Verification code sent to {masked_email(user.email)}. Enter it and submit your credentials again."
+            )
+
+        if len(code) != email_otp_code_length():
+            raise ValidationError("Enter the email verification code.")
+        expected_hash = email_otp_hash(user, challenge.challenge_id, code)
+        if not secrets.compare_digest(expected_hash, challenge.code_hash):
+            challenge.attempts = min(99, int(challenge.attempts or 0) + 1)
+            challenge.save(update_fields=["attempts"])
+            raise ValidationError("Invalid email verification code.")
+
+        challenge.consume()
+        self.request.session.pop(ADMIN_EMAIL_OTP_SESSION_KEY, None)
+        self.request.session["mfa_method"] = "email_otp"
+
+
+admin.site.login_form = MFAAdminAuthenticationForm
 
 
 @admin.register(User)

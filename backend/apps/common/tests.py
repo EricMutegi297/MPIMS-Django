@@ -1,8 +1,11 @@
+import ipaddress
 from unittest.mock import patch
 
+from django.core import mail
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
+from apps.common.client_ip import get_client_ip
 from apps.common.fields import (
     ENCRYPTED_PREFIX,
     _fernet_for_secret,
@@ -12,6 +15,29 @@ from apps.common.fields import (
 )
 from apps.common.mail import enqueue_email
 from apps.common.tasks import deliver_email
+
+
+class TrustedClientIPTests(SimpleTestCase):
+    def test_forwarded_header_is_ignored_when_remote_peer_is_untrusted(self):
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="203.0.113.10",
+            HTTP_X_FORWARDED_FOR="198.51.100.20",
+        )
+
+        with override_settings(TRUSTED_PROXY_NETWORKS=()):
+            self.assertEqual(get_client_ip(request), "203.0.113.10")
+
+    def test_forwarded_chain_is_walked_through_trusted_proxies(self):
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="10.0.0.3",
+            HTTP_X_FORWARDED_FOR="198.51.100.20, 10.0.0.2",
+        )
+        trusted_network = ipaddress.ip_network("10.0.0.0/8")
+
+        with override_settings(TRUSTED_PROXY_NETWORKS=(trusted_network,)):
+            self.assertEqual(get_client_ip(request), "198.51.100.20")
 
 
 class EncryptedFieldKeyTests(SimpleTestCase):
@@ -48,6 +74,30 @@ class EncryptedFieldKeyTests(SimpleTestCase):
 
 
 class AsyncEmailTests(SimpleTestCase):
+    @override_settings(
+        FIELD_ENCRYPTION_KEY="test-email-encryption-key",
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    )
+    def test_debug_email_delivery_does_not_require_redis(self):
+        mail.outbox = []
+        with patch(
+            "apps.common.mail.transaction.on_commit",
+            side_effect=lambda callback: callback(),
+        ):
+            queued = enqueue_email(
+                subject="Login code",
+                message="123456",
+                from_email="sender@example.test",
+                recipient_list=["admin@example.test"],
+            )
+
+        self.assertTrue(queued)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].subject, "Login code")
+        self.assertEqual(mail.outbox[0].body, "123456")
+
     @override_settings(FIELD_ENCRYPTION_KEY="test-email-encryption-key")
     def test_email_is_queued_on_commit_with_original_message_arguments(self):
         with patch("apps.common.mail.deliver_email.apply_async") as apply_async:

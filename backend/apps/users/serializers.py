@@ -19,6 +19,7 @@ class UserSerializer(serializers.ModelSerializer):
     is_superuser = serializers.SerializerMethodField()
     mfa_exempt = serializers.SerializerMethodField()
     email_otp_enabled = serializers.SerializerMethodField()
+    email_otp_required = serializers.SerializerMethodField()
     totp_configured = serializers.SerializerMethodField()
     totp_required = serializers.SerializerMethodField()
 
@@ -31,7 +32,7 @@ class UserSerializer(serializers.ModelSerializer):
             "unit_name", "battalion_name", "battalion_type", "detachment_name",
             "company_id", "company_name",
             "is_active", "is_superuser", "must_change_password",
-            "mfa_exempt", "email_otp_enabled",
+            "mfa_exempt", "email_otp_enabled", "email_otp_required",
             "totp_configured", "totp_required",
             "created_at",
         ]
@@ -66,6 +67,9 @@ class UserSerializer(serializers.ModelSerializer):
     def get_email_otp_enabled(self, obj):
         return False
 
+    def get_email_otp_required(self, obj):
+        return bool(obj.is_superuser)
+
     def get_totp_configured(self, obj):
         try:
             return bool(obj.totp_device.confirmed)
@@ -73,13 +77,13 @@ class UserSerializer(serializers.ModelSerializer):
             return False
 
     def get_totp_required(self, obj):
-        return True
+        return not obj.is_superuser
 
     def validate(self, attrs):
         removed_mfa_fields = {"mfa_exempt", "email_otp_enabled"}.intersection(self.initial_data)
         if removed_mfa_fields:
             raise serializers.ValidationError({
-                field: "MFA exemptions and email OTP are no longer supported; authenticator MFA is mandatory."
+                field: "MFA exemptions and per-account email OTP settings are not supported."
                 for field in sorted(removed_mfa_fields)
             })
         role = attrs.get("role", getattr(self.instance, "role", None))

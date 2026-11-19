@@ -78,7 +78,9 @@ Typical variables include:
 - `FIELD_ENCRYPTION_KEY` (required, unique Fernet key; never reuse `SECRET_KEY`)
 - `FIELD_ENCRYPTION_OLD_KEYS` (comma-separated previous field-encryption keys for rotation)
 - `CASE_DOCUMENT_MAX_UPLOAD_BYTES` (maximum case-document upload size; defaults to 25 MiB)
-- `CASE_UPLOAD_CLAMAV_ENABLED` and `CASE_UPLOAD_CLAMAV_*` (optional ClamAV scanning)
+- `CASE_UPLOAD_CLAMAV_ENABLED` and `CASE_UPLOAD_CLAMAV_*` (ClamAV scanning is required outside DEBUG mode)
+- `CACHE_URL` (Redis cache database used for shared API throttling in production)
+- `API_THROTTLING_ENABLED`, `API_ANON_RATE`, and `API_USER_RATE`
 - `DEBUG`
 - `ALLOWED_HOSTS`
 - `DB_NAME`
@@ -122,11 +124,17 @@ URL. Applications should open case files through the authenticated API rather
 than navigating directly to a media URL.
 
 The upload limit defaults to 25 MiB and can be changed with
-`CASE_DOCUMENT_MAX_UPLOAD_BYTES`. To scan uploads with ClamAV, configure
-`CASE_UPLOAD_CLAMAV_ENABLED=True` and the scanner host, port, and timeout. The
-scanner must be reachable from the Django application. When enabled, scanner
-errors reject the upload; deploy and monitor ClamAV before enabling this
-setting.
+`CASE_DOCUMENT_MAX_UPLOAD_BYTES`. ClamAV scanning must be enabled in production
+with `CASE_UPLOAD_CLAMAV_ENABLED=True` and a reachable scanner host, port, and
+timeout. Scanner errors reject the upload and fail the readiness check.
+
+### Local scanner helper
+
+On Windows, run `.\scanner-helper\start-mpims-scanner-helper.ps1` and keep its
+window open while scanning. It listens only on loopback and prints a temporary
+access token; MPIMS prompts for that token before each scan. The helper accepts
+requests only from its configured browser origins. Stop it with Ctrl+C when
+scanning is complete, and do not share the token.
 
 ## Local Development Setup
 
@@ -149,7 +157,14 @@ python manage.py createsuperuser
 python manage.py runserver 0.0.0.0:8000
 ```
 
-Run Redis locally and start the email worker in another terminal:
+With the sample `DEBUG=True` configuration, email tasks run synchronously
+through the configured Django email backend and do not require Redis or a
+Celery worker. With the console backend, the OTP appears in the backend
+terminal; configure SMTP in `backend/.env` to receive it in your mailbox.
+
+To exercise asynchronous delivery locally, set
+`CELERY_TASK_ALWAYS_EAGER=False`, run Redis, and start the email worker in
+another terminal:
 
 ```bash
 cd backend
@@ -157,9 +172,10 @@ celery -A mpims worker --loglevel=INFO
 ```
 
 Set `CELERY_BROKER_URL` in `backend/.env` to the Redis endpoint the backend and
-worker can both reach. Emails are queued and require the worker to be running.
-Email payloads are encrypted with `FIELD_ENCRYPTION_KEY` while queued, and
-delivery failures are retried by the worker.
+worker can both reach. In this mode, emails are queued and require the worker
+to be running. Email payloads are encrypted with `FIELD_ENCRYPTION_KEY` while
+queued, and delivery failures are retried by the worker. Production always
+uses asynchronous delivery; eager mode is enabled only when `DEBUG=True`.
 
 The API will be available at:
 
@@ -213,6 +229,10 @@ service and had no Channels event publishers or clients.
 The default Compose stack is for local development. It runs Django's development
 server and a local PostgreSQL container; do not use it as the production stack.
 It now includes Redis and a Celery worker for queued email delivery.
+Copy the root `.env.example` to `.env` and replace both `POSTGRES_PASSWORD` and
+`REDIS_PASSWORD` with long, URL-safe random values before running Compose. The
+database, Redis, API, frontend, and realtime ports bind to loopback only in
+this development stack.
 
 For the already-deployed physical server, `docker-compose.hostdb.yml` is the
 production-oriented Compose file. It does not create or replace PostgreSQL, does
@@ -222,24 +242,49 @@ database remain infrastructure you manage separately. This configuration uses
 Linux host networking so the app can continue to reach PostgreSQL on
 `127.0.0.1`; run it on the Linux server, not Docker Desktop for Windows.
 
-Before using it, configure `backend/.env` with production secrets and database
-settings. `DB_HOST` must be reachable from Docker, not necessarily
-`localhost`. Configure `realtime/.env` with a `DATABASE_URL` reachable from
-Docker as well; the realtime process uses PostgreSQL LISTEN/NOTIFY. The
-`realtime/.env.production.example` file shows the expected production values;
-copy it to `realtime/.env` and replace the placeholders. Use
+Before using it, create a production environment file outside the repository
+with the backend settings and secrets, restrict its filesystem permissions, set
+`MPIMS_ENV_FILE` in that file to its absolute path, and set
+`REALTIME_ENV_FILE` to a protected external file containing realtime settings.
+Provide a strong URL-safe `REDIS_PASSWORD` in the Compose environment file.
+Pass the protected file to every Compose command with `--env-file`; the
+production Compose file refuses to start without these values. Do not use
+`backend/.env` or `realtime/.env` for production. The Docker build excludes
+`.env` files, and production runtime settings must come from protected external
+files. `DB_HOST` must be reachable from Docker, not necessarily `localhost`.
+The realtime process uses PostgreSQL LISTEN/NOTIFY. The
+`realtime/.env.production.example` file shows the expected values. Use
 `verify-full` and the appropriate CA certificate for TLS database connections.
 Do not copy the development credentials into production.
+Set `CASE_UPLOAD_CLAMAV_ENABLED=True`, configure the production ClamAV endpoint,
+and configure a non-console email backend in `backend/.env`. Production startup
+fails closed if upload scanning, HTTPS frontend links, API throttling, or email
+delivery is misconfigured. API throttling uses the shared Redis cache at
+`CACHE_URL`; tune `API_ANON_RATE` and `API_USER_RATE` to the deployment's
+expected traffic. Redis requires authentication for both the development and
+production Compose stacks and remains bound to loopback in the host-database
+configuration. If the application is behind a reverse proxy, set
+`TRUSTED_PROXY_IPS` to the proxy's exact IP addresses or CIDR ranges. Forwarded
+client-IP headers are ignored from all other peers, including when this setting
+is empty.
+
+The credentials previously stored in `backend/.env` should be rotated at their
+respective providers before production use. Rotating `SECRET_KEY` invalidates
+existing signed sessions and tokens. Rotate the database password and Gmail app
+password with their providers. Rotate `FIELD_ENCRYPTION_KEY` using
+`FIELD_ENCRYPTION_OLD_KEYS` to retain read access to existing encrypted data,
+then re-encrypt the data with the new key before retiring the old one. Never
+include credential values in source control or support logs.
 
 Review the Compose configuration and database backup/migration plan before
 running any production commands. Apply migrations deliberately as a separate
 operation, after taking a backup:
 
-```powershell
-docker compose -f docker-compose.hostdb.yml config --quiet
-docker compose -f docker-compose.hostdb.yml build
-docker compose -f docker-compose.hostdb.yml run --rm backend python manage.py migrate
-docker compose -f docker-compose.hostdb.yml up -d
+```bash
+docker compose --env-file /etc/mpims/production.env -f docker-compose.hostdb.yml config --quiet
+docker compose --env-file /etc/mpims/production.env -f docker-compose.hostdb.yml build
+docker compose --env-file /etc/mpims/production.env -f docker-compose.hostdb.yml run --rm backend python manage.py migrate
+docker compose --env-file /etc/mpims/production.env -f docker-compose.hostdb.yml up -d
 ```
 
 Configure the existing HTTPS reverse proxy for `marshal.mod.go.ke` to route the
@@ -248,6 +293,28 @@ frontend to `127.0.0.1:3000`, Django API and admin requests to
 `127.0.0.1:4000`. Keep `/media/` private; do not map it to a public static-file
 route. Case uploads persist in `backend/media` on the host. Redis listens only
 on loopback port `6380`.
+The backend image runs as UID/GID `10001`. Before first startup, ensure the
+mounted media directory is writable by that account. Create it and transfer
+ownership of any existing case files before starting the container:
+
+```bash
+sudo install -d -o 10001 -g 10001 backend/media
+sudo chown -R 10001:10001 backend/media
+```
+
+The backend readiness endpoint at
+`/api/health/ready/` checks the database, shared cache, and configured ClamAV
+service; Compose uses it to gate dependent services. Compose resource limits
+can be adjusted with `BACKEND_MEMORY_LIMIT`, `BACKEND_CPU_LIMIT`,
+`WORKER_MEMORY_LIMIT`, `WORKER_CPU_LIMIT`, `FRONTEND_MEMORY_LIMIT`,
+`FRONTEND_CPU_LIMIT`, `REALTIME_MEMORY_LIMIT`, `REALTIME_CPU_LIMIT`,
+`REDIS_MEMORY_LIMIT`, and `REDIS_CPU_LIMIT`.
+
+The deployment environment must also keep an encrypted/off-host backup of the
+PostgreSQL database and private media, and periodically rehearse a restore into
+an isolated environment. The repository cannot verify the production backup
+destination or restore procedure; record the last successful restore test and
+confirm that database and media are consistent before each release.
 
 Unit command and Docus Clerk users can request a clearance certificate for
 personnel assigned to their unit. MPIMS blocks requests when a non-closed case
@@ -337,10 +404,13 @@ before merging.
   refresh rotation and blacklist-based revocation are enabled. Logout, password
   changes/resets, account deactivation, and administrator MFA resets invalidate
   existing sessions. Run database migrations before deploying these changes.
-- Google Authenticator TOTP MFA is mandatory for every account and role. Legacy
-  exemption and email-OTP flags are ignored; users without a confirmed
-  authenticator can only access the setup flow and minimal account endpoints.
-- Django admin sign-in also requires a current Google Authenticator code.
+- Google Authenticator TOTP MFA is mandatory for standard accounts. Superusers
+  receive a one-time code at their registered email after password verification;
+  no access or refresh token is issued until the code is verified. Email OTPs
+  expire after 10 minutes, allow up to five verification attempts, and can be
+  reissued once per minute.
+- Django admin sign-in uses email OTP for superusers and Google Authenticator
+  TOTP for other staff accounts.
 - In development, hosts may be relaxed for local testing; CORS still uses an
   explicit origin allowlist.
 - Production requires TLS for PostgreSQL connections (`verify-full` by default),
